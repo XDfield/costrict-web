@@ -14,6 +14,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// gitLifecycleActivationRefusal explains the one status transition Cloud may
+// not make on a Git-backed row, and names the only thing that lifts it.
+const gitLifecycleActivationRefusal = "This capability was archived because its Git source is gone " +
+	"(manifest removed, default branch missing, or repository deleted). It becomes active again when " +
+	"the repository is restored; a deleted repository requires adopting a replacement binding."
+
 // respondGitBackedItemsConflict maps the delete refusal onto 409, naming the
 // blocking rows. Duplicated (rather than shared with internal/handlers) because
 // admin modules deliberately do not import the public handler package.
@@ -167,6 +173,14 @@ func (m *Module) SetItemStatusHandler() gin.HandlerFunc {
 				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
 			case errors.Is(err, ErrItemNotFound):
 				c.JSON(http.StatusNotFound, gin.H{"error": "item not found"})
+			case errors.Is(err, models.ErrGitLifecycleArchived):
+				// Git says this capability's source is gone. Publishing it again
+				// would put an item in the marketplace whose every content read
+				// 404s, so the refusal is a conflict, not a server error.
+				c.JSON(http.StatusConflict, gin.H{
+					"error":      gitLifecycleActivationRefusal,
+					"error_code": "GIT_LIFECYCLE_ARCHIVED",
+				})
 			default:
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update item status"})
 			}
@@ -375,9 +389,18 @@ func (m *Module) BatchSetStatusHandler() gin.HandlerFunc {
 
 		updated, skipped, err := m.svc.BatchSetStatus(ids, req.Status)
 		if err != nil {
-			if errors.Is(err, ErrInvalidStatus) {
+			switch {
+			case errors.Is(err, ErrInvalidStatus):
 				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid status"})
-			} else {
+			case errors.Is(err, models.ErrGitLifecycleArchived):
+				// The batch is all-or-nothing by design, so one Git-archived row
+				// refuses the whole request rather than leaving the operator with a
+				// partial result they cannot distinguish from a complete one.
+				c.JSON(http.StatusConflict, gin.H{
+					"error":      gitLifecycleActivationRefusal,
+					"error_code": "GIT_LIFECYCLE_ARCHIVED",
+				})
+			default:
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update item status"})
 			}
 			return

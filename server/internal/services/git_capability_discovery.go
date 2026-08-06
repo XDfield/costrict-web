@@ -1369,7 +1369,11 @@ func buildDiscoveredCapability(
 		SourceRepoURL: repoURL, SourceRepoRef: branchName, SourceRepoPath: entry.Path, ContentBackend: "git",
 		SourceGitServerID: serverID, SourceGitRepoID: repo.ID, SourceGitEntryKey: entry.EntryKey,
 		GitSHA: headSHA, GitLastSyncedAt: &now, GitSyncStatus: gitCapabilitySyncSynced,
-		Status: "active", SecurityStatus: "unscanned", CreatedBy: ownerID, UpdatedBy: ownerID,
+		// The repository was read through the Git server to discover this row, so
+		// its visibility is verified as of now. A discovered row that left this
+		// NULL would be invisible to public browse until its first reconcile.
+		GitVisibilityVerifiedAt: &now,
+		Status:                  "active", SecurityStatus: "unscanned", CreatedBy: ownerID, UpdatedBy: ownerID,
 		IsBuiltIn: strings.EqualFold(strings.Split(repo.FullName, "/")[0], "costrict"),
 	}
 	return item, nil
@@ -1406,8 +1410,8 @@ func createDiscoveredCapability(
 		"ID", "RegistryID", "RepoID", "Slug", "ItemType", "Name", "Description", "Descriptions", "Category", "Version",
 		"ContentMD5", "CurrentRevision", "Metadata", "SourcePath", "SourceSHA", "SourceType", "Source",
 		"SourceRepoURL", "SourceRepoRef", "SourceRepoPath", "ContentBackend", "SourceGitServerID", "SourceGitRepoID",
-		"SourceGitEntryKey", "GitSHA", "GitLastSyncedAt", "GitSyncStatus", "GitSyncError", "Status", "SecurityStatus",
-		"CreatedBy", "UpdatedBy", "IsBuiltIn", "CreatedAt", "UpdatedAt",
+		"SourceGitEntryKey", "GitSHA", "GitLastSyncedAt", "GitSyncStatus", "GitSyncError", "GitVisibilityVerifiedAt",
+		"Status", "SecurityStatus", "CreatedBy", "UpdatedBy", "IsBuiltIn", "CreatedAt", "UpdatedAt",
 	).Create(item).Error; err != nil {
 		return fmt.Errorf("create discovered capability %s: %w", item.SourceRepoPath, err)
 	}

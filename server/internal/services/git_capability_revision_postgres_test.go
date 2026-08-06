@@ -73,10 +73,70 @@ var gitRevisionPostgresFixture = []string{
 		git_last_synced_at   TIMESTAMPTZ,
 		git_sync_status      VARCHAR(16) NOT NULL DEFAULT '',
 		git_sync_error       TEXT NOT NULL DEFAULT '',
+		-- Lifecycle columns, with the production CHECK. The enum and the
+		-- reason/timestamp pairing are the invariants the archive writer has to
+		-- satisfy on every path, so a permissive test schema would let a broken
+		-- writer pass here and fail in production.
+		git_lifecycle_reason       VARCHAR(32),
+		git_lifecycle_changed_at   TIMESTAMPTZ,
+		git_visibility_verified_at TIMESTAMPTZ,
 		status               TEXT NOT NULL DEFAULT 'active',
 		created_by           TEXT NOT NULL DEFAULT '',
 		created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-		updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+		updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+		CONSTRAINT chk_capability_items_git_lifecycle_reason CHECK (
+			git_lifecycle_reason IS NULL
+			OR (git_lifecycle_reason IN ('manifest_removed', 'default_branch_missing', 'repository_deleted')
+			    AND git_lifecycle_changed_at IS NOT NULL)
+		)
+	)`,
+	// A Git archive tombstones every principal entitled to the item in the same
+	// transaction, so these four tables are part of the archive path's schema
+	// whether or not a given test seeds rows into them.
+	`CREATE TABLE item_favorites (
+		id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		item_id    UUID NOT NULL,
+		user_id    VARCHAR(191) NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+		UNIQUE (item_id, user_id)
+	)`,
+	`CREATE TABLE item_distributions (
+		id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		item_id         UUID NOT NULL,
+		distributor_id  VARCHAR(191) NOT NULL DEFAULT '',
+		permission_mode TEXT NOT NULL DEFAULT 'readonly',
+		status          TEXT NOT NULL DEFAULT 'active',
+		scope_type      TEXT NOT NULL DEFAULT 'user',
+		target_id       TEXT NOT NULL DEFAULT '',
+		created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+		updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
+	`CREATE TABLE item_distribution_receipts (
+		id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		distribution_id UUID NOT NULL,
+		user_id         VARCHAR(191) NOT NULL,
+		receipt_status  TEXT NOT NULL DEFAULT 'unread',
+		created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+		updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+	)`,
+	`CREATE TABLE capability_sync_tombstones (
+		id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+		user_id          VARCHAR(191) NOT NULL,
+		item_id          UUID NOT NULL,
+		reason           VARCHAR(32) NOT NULL,
+		lifecycle_reason VARCHAR(32),
+		source           VARCHAR(32) NOT NULL,
+		event_id         UUID NOT NULL UNIQUE,
+		removed_at       TIMESTAMPTZ NOT NULL,
+		created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+		updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+		UNIQUE (user_id, item_id),
+		CONSTRAINT chk_capability_sync_tombstones_cause CHECK (
+			(reason = 'git_archived' AND source = 'git_lifecycle'
+			 AND lifecycle_reason IN ('manifest_removed', 'default_branch_missing', 'repository_deleted'))
+			OR (reason = 'unfavorited' AND source = 'favorite' AND lifecycle_reason IS NULL)
+			OR (reason = 'distribution_revoked' AND source = 'distribution' AND lifecycle_reason IS NULL)
+		)
 	)`,
 	`CREATE TABLE git_capability_repositories (
 		id                 UUID PRIMARY KEY,

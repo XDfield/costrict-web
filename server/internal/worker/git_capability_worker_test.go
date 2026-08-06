@@ -263,55 +263,165 @@ func TestGitCapabilityWorkerProcessOneMarksDeletedDefaultBranch(t *testing.T) {
 
 func ptrWorkerTime(value time.Time) *time.Time { return &value }
 
-func TestGitCapabilityWorkerReconcileIsBoundedStaleAndBucketIdempotent(t *testing.T) {
-	db := setupGitCapabilityWorkerDB(t)
+func seedGitCapabilityBinding(t *testing.T, db *gorm.DB, repoID int64, due time.Time, paused bool) models.GitCapabilityRepository {
+	t.Helper()
 	now := time.Now()
-	for i := int64(1); i <= 4; i++ {
-		repo := models.GitCapabilityRepository{ID: uuid.NewString(), GitServerID: workerGitServerID, GitRepoID: i, RepositoryID: uuid.NewString(), RegistryID: uuid.NewString(), FullName: "org/repo", RepoKind: "standalone", IdentificationStatus: "unknown", Visibility: "public", GitRemoteURL: "https://git/repo", DefaultBranch: "main", CreatedBy: "test", CreatedAt: now, UpdatedAt: now}
-		if i == 1 {
-			fresh := now
-			repo.LastSyncedAt = &fresh
-		}
-		if err := db.Create(&repo).Error; err != nil {
-			t.Fatal(err)
-		}
+	repo := models.GitCapabilityRepository{
+		ID: uuid.NewString(), GitServerID: workerGitServerID, GitRepoID: repoID,
+		RepositoryID: uuid.NewString(), RegistryID: uuid.NewString(), FullName: "org/repo",
+		RepoKind: "standalone", IdentificationStatus: "unknown", Visibility: "public",
+		GitRemoteURL: "https://git/repo", DefaultBranch: "main", NextDueAt: due,
+		ReconcilePaused: paused, CreatedBy: "test", CreatedAt: now, UpdatedAt: now,
 	}
-	p := &GitCapabilityWorkerPool{DB: db, ReconcileInterval: time.Hour, ReconcileBatchSize: 2}
-	p.reconcileIfDue()
+	if err := db.Create(&repo).Error; err != nil {
+		t.Fatalf("seed binding %d: %v", repoID, err)
+	}
+	return repo
+}
+
+// The freshness SLA is the reason this scheduler exists, so this is the test
+// that has to hold: with more bindings than fit in one batch, ONE drain pass
+// must still enqueue every one of them. The old fixed "one batch per interval"
+// loop enqueued exactly ReconcileBatchSize rows and then waited a full interval,
+// silently turning a 10-minute promise into ceil(bindings/batch) intervals.
+func TestGitCapabilityWorkerReconcileDrainsEveryDueBindingInOnePass(t *testing.T) {
+	db := setupGitCapabilityWorkerDB(t)
+	overdue := time.Now().Add(-time.Hour)
+	const bindings = 7
+	for i := int64(1); i <= bindings; i++ {
+		seedGitCapabilityBinding(t, db, i, overdue, false)
+	}
+
+	p := &GitCapabilityWorkerPool{DB: db, ReconcileInterval: time.Hour, ReconcileBatchSize: 2, PollInterval: time.Second}
+	p.drainDueReconciles()
+
 	var count int64
 	db.Model(&models.GitCapabilitySyncJob{}).Count(&count)
-	if count != 2 {
-		t.Fatalf("jobs=%d, want bounded batch 2", count)
+	if count != bindings {
+		t.Fatalf("jobs=%d, want every due binding drained (%d)", count, bindings)
 	}
-	p.lastReconcile = time.Time{}
-	p.reconcileIfDue()
-	db.Model(&models.GitCapabilitySyncJob{}).Count(&count)
-	if count != 2 {
-		t.Fatalf("jobs=%d after same bucket, want idempotent 2", count)
+
+	// And every binding's schedule moved, so nothing is due immediately after.
+	var stillDue int64
+	db.Model(&models.GitCapabilityRepository{}).
+		Where("reconcile_paused = ? AND next_due_at <= ?", false, time.Now()).Count(&stillDue)
+	if stillDue != 0 {
+		t.Fatalf("stillDue=%d after a complete drain, want 0", stillDue)
 	}
 }
 
-// A sub-second reconcile interval used to take the whole worker down: the
-// bucket divided by whole seconds, so anything under 1s truncated to zero and
-// panicked with a division by zero the moment a repository came due. The value
-// is reachable from configuration — GIT_CAPABILITY_RECONCILE_INTERVAL parses
-// any positive Duration — so this is a deployment away, not a programming error.
-func TestGitCapabilityWorkerReconcileSurvivesSubSecondInterval(t *testing.T) {
+func TestGitCapabilityWorkerReconcileSkipsPausedAndNotYetDueBindings(t *testing.T) {
 	db := setupGitCapabilityWorkerDB(t)
-	now := time.Now()
-	repo := models.GitCapabilityRepository{ID: uuid.NewString(), GitServerID: workerGitServerID, GitRepoID: 91, RepositoryID: uuid.NewString(), RegistryID: uuid.NewString(), FullName: "org/subsecond", RepoKind: "standalone", IdentificationStatus: "unknown", Visibility: "public", GitRemoteURL: "https://git/repo", DefaultBranch: "main", CreatedBy: "test", CreatedAt: now, UpdatedAt: now}
-	if err := db.Create(&repo).Error; err != nil {
+	overdue := time.Now().Add(-time.Hour)
+	seedGitCapabilityBinding(t, db, 1, overdue, false)
+	seedGitCapabilityBinding(t, db, 2, overdue, true)                    // operator kill switch
+	seedGitCapabilityBinding(t, db, 3, time.Now().Add(time.Hour), false) // not due yet
+
+	p := &GitCapabilityWorkerPool{DB: db, ReconcileInterval: time.Hour, ReconcileBatchSize: 10, PollInterval: time.Second}
+	p.drainDueReconciles()
+
+	var jobs []models.GitCapabilitySyncJob
+	if err := db.Find(&jobs).Error; err != nil {
 		t.Fatal(err)
 	}
+	if len(jobs) != 1 || jobs[0].RepoID != 1 {
+		t.Fatalf("jobs=%+v, want only the due, unpaused binding", jobs)
+	}
+}
 
-	// Deliberately bypass Start()'s clamp and hand reconcileIfDue the raw
-	// sub-second value: this pins the bucket arithmetic itself, so the guard and
-	// the arithmetic are independently safe rather than one covering for the other.
-	p := &GitCapabilityWorkerPool{DB: db, ReconcileInterval: 500 * time.Millisecond, ReconcileBatchSize: 2}
+// A second drain within the same schedule slot must not re-enqueue: next_due_at
+// was already pushed out, and the delivery id is derived from the slot that was
+// consumed.
+func TestGitCapabilityWorkerReconcileDrainIsIdempotentWithinASlot(t *testing.T) {
+	db := setupGitCapabilityWorkerDB(t)
+	seedGitCapabilityBinding(t, db, 1, time.Now().Add(-time.Hour), false)
 
-	// The real assertion is that this returns at all — before the fix it panicked
-	// with an integer divide by zero.
-	p.reconcileIfDue()
+	p := &GitCapabilityWorkerPool{DB: db, ReconcileInterval: time.Hour, ReconcileBatchSize: 10, PollInterval: time.Second}
+	p.drainDueReconciles()
+	p.lastDrain = time.Time{}
+	p.drainDueReconciles()
+
+	var count int64
+	db.Model(&models.GitCapabilitySyncJob{}).Count(&count)
+	if count != 1 {
+		t.Fatalf("jobs=%d, want idempotent 1", count)
+	}
+}
+
+// The old bucketed delivery id keyed on now/interval, so a binding rescheduled
+// early by backoff produced an id that already existed in a terminal state and
+// its retry was silently dropped. Deriving the id from the schedule slot fixes
+// it: a new slot is a new delivery.
+func TestGitCapabilityWorkerReconcileEnqueuesAgainInTheNextSlot(t *testing.T) {
+	db := setupGitCapabilityWorkerDB(t)
+	binding := seedGitCapabilityBinding(t, db, 1, time.Now().Add(-time.Hour), false)
+
+	p := &GitCapabilityWorkerPool{DB: db, ReconcileInterval: time.Hour, ReconcileBatchSize: 10, PollInterval: time.Second}
+	p.drainDueReconciles()
+
+	// Simulate a failure backoff bringing the binding due again inside the same
+	// wall-clock interval bucket.
+	if err := db.Model(&models.GitCapabilityRepository{}).Where("id = ?", binding.ID).
+		Update("next_due_at", time.Now().Add(-time.Minute)).Error; err != nil {
+		t.Fatal(err)
+	}
+	p.lastDrain = time.Time{}
+	p.drainDueReconciles()
+
+	var count int64
+	db.Model(&models.GitCapabilitySyncJob{}).Count(&count)
+	if count != 2 {
+		t.Fatalf("jobs=%d, want a second delivery for the new schedule slot", count)
+	}
+}
+
+func TestGitCapabilityWorkerRescheduleBindingResetsOnSuccessAndBacksOffOnFailure(t *testing.T) {
+	db := setupGitCapabilityWorkerDB(t)
+	binding := seedGitCapabilityBinding(t, db, 1, time.Now().Add(-time.Hour), false)
+	if err := db.Model(&models.GitCapabilityRepository{}).Where("id = ?", binding.ID).
+		Update("reconcile_failures", 2).Error; err != nil {
+		t.Fatal(err)
+	}
+	p := &GitCapabilityWorkerPool{DB: db, ReconcileInterval: 10 * time.Minute}
+	job := newGitCapabilityWorkerJob("job-1", "delivery-1", 1, models.GitCapabilitySyncJobStatusRunning)
+
+	p.rescheduleBinding(&job, p.ReconcileInterval, false)
+	var after models.GitCapabilityRepository
+	if err := db.First(&after, "id = ?", binding.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if after.ReconcileFailures != 0 {
+		t.Errorf("reconcileFailures = %d after success, want 0", after.ReconcileFailures)
+	}
+	if delay := time.Until(after.NextDueAt); delay < 9*time.Minute || delay > 11*time.Minute {
+		t.Errorf("next due in %s after success, want ~1 interval", delay)
+	}
+
+	job.RetryCount = 2
+	p.rescheduleBinding(&job, p.ReconcileInterval, true)
+	if err := db.First(&after, "id = ?", binding.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if after.ReconcileFailures != 1 {
+		t.Errorf("reconcileFailures = %d after failure, want 1", after.ReconcileFailures)
+	}
+	if delay := time.Until(after.NextDueAt); delay < 35*time.Minute {
+		t.Errorf("next due in %s after failure, want an exponential backoff", delay)
+	}
+}
+
+// A sub-second reconcile interval used to take the whole worker down: the old
+// bucket divided by whole seconds, so anything under 1s truncated to zero and
+// panicked with a division by zero. The value is reachable from configuration —
+// GIT_CAPABILITY_RECONCILE_INTERVAL parses any positive Duration — so this is a
+// deployment away, not a programming error. Kept after the rewrite so the
+// arithmetic stays safe independently of Start()'s clamp.
+func TestGitCapabilityWorkerReconcileSurvivesSubSecondInterval(t *testing.T) {
+	db := setupGitCapabilityWorkerDB(t)
+	seedGitCapabilityBinding(t, db, 91, time.Now().Add(-time.Second), false)
+
+	p := &GitCapabilityWorkerPool{DB: db, ReconcileInterval: 500 * time.Millisecond, ReconcileBatchSize: 2, PollInterval: time.Second}
+	p.drainDueReconciles()
 
 	var count int64
 	db.Model(&models.GitCapabilitySyncJob{}).Count(&count)

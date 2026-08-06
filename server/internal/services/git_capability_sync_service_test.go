@@ -210,6 +210,32 @@ func setupGitCapabilitySyncDB(t *testing.T) *gorm.DB {
 			lease_token TEXT NOT NULL DEFAULT '', finished_at DATETIME, created_at DATETIME,
 			UNIQUE(git_server_id, delivery_id)
 		)`,
+		// A Git archive now writes a csc tombstone for every principal entitled to
+		// the item, in the SAME transaction that archived it. Without these three
+		// tables the tests would be exercising an archive path that cannot commit
+		// in production.
+		`CREATE TABLE item_favorites (
+			id TEXT PRIMARY KEY, item_id TEXT NOT NULL, user_id TEXT NOT NULL, created_at DATETIME,
+			UNIQUE(item_id, user_id)
+		)`,
+		`CREATE TABLE item_distributions (
+			id TEXT PRIMARY KEY, item_id TEXT NOT NULL, distributor_id TEXT NOT NULL,
+			permission_mode TEXT DEFAULT 'readonly', status TEXT DEFAULT 'active',
+			scope_type TEXT DEFAULT 'user', target_id TEXT NOT NULL, message TEXT,
+			revoked_at DATETIME, expires_at DATETIME, created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE item_distribution_receipts (
+			id TEXT PRIMARY KEY, distribution_id TEXT NOT NULL, user_id TEXT NOT NULL,
+			receipt_status TEXT DEFAULT 'unread', forked_item_id TEXT, created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE capability_sync_tombstones (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, item_id TEXT NOT NULL,
+			reason TEXT NOT NULL, lifecycle_reason TEXT, source TEXT NOT NULL,
+			event_id TEXT NOT NULL UNIQUE, removed_at DATETIME NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE (user_id, item_id)
+		)`,
 	} {
 		if err := db.Exec(ddl).Error; err != nil {
 			t.Fatalf("create test table: %v", err)

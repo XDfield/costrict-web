@@ -1470,6 +1470,18 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		respondGitBackedItemConflict(c, &item, gitBackedContentUpdateRefusal)
 		return
 	}
+	// `status` is deliberately OUTSIDE the guard above so moderation stays
+	// possible on a Git-backed row — which is precisely what left this endpoint
+	// able to flip a Git-archived item back to 'active' while Git's archive claim
+	// was still on it, producing a live marketplace entry whose every content read
+	// 404s and which Git can no longer auto-recover (recovery requires the row to
+	// be archived). The models-layer hook refuses it as a backstop for every other
+	// writer; this pre-check exists so the caller gets the repository coordinate
+	// and a reason instead of an opaque conflict.
+	if refusal, refused := gitLifecycleStatusRefusal(&item, req.Status); refused {
+		respondGitBackedItemConflict(c, &item, refusal)
+		return
+	}
 
 	originalName := item.Name
 	originalDescription := item.Description

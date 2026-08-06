@@ -69,19 +69,64 @@ const gitBackedPushHint = "push the change to the bound repository instead"
 // first, the caller sees the same contract.
 const gitBackedContentUpdateRefusal = "Git-backed content fields must be updated through Git; " + gitBackedPushHint
 
-// respondGitOwnedFieldConflict maps the models-layer default-deny guard onto
-// the same 409 shape the explicit pre-checks use. The guard is a backstop for
-// writers that never learned about Git backing, so without this mapping a
-// blocked write would surface as an opaque 500.
-func respondGitOwnedFieldConflict(c *gin.Context, err error) bool {
-	if !errors.Is(err, models.ErrGitOwnedField) {
-		return false
+// gitLifecycleActivationRefusal is the one status transition Cloud may not make
+// on a Git-backed row: putting back on the shelf something Git currently says is
+// gone. Taking a row DOWN stays allowed, and clears Git's claim so the human's
+// decision survives the manifest coming back.
+const gitLifecycleActivationRefusal = "This capability was archived because its Git source is gone " +
+	"(manifest removed, default branch missing, or repository deleted). It becomes active again when " +
+	"the repository is restored; a deleted repository requires adopting a replacement binding."
+
+// gitLifecycleStatusRefusal reports whether a requested status is the refused
+// activation, using the row already loaded by the caller.
+//
+// An empty status is "leave it alone", not an activation — a PUT that only edits
+// unrelated fields must not be blocked. Anything that is not one of the
+// off-the-shelf statuses IS an activation for this purpose: `status` is a free
+// string on this endpoint, and treating an unrecognised value as harmless is how
+// a future status would quietly re-open the hole.
+func gitLifecycleStatusRefusal(item *models.CapabilityItem, status string) (string, bool) {
+	if item == nil || !isGitBacked(item) || status == "" {
+		return "", false
 	}
-	c.JSON(http.StatusConflict, gin.H{
-		"error":      gitBackedContentUpdateRefusal,
-		"error_code": "GIT_BACKED_ITEM",
-	})
-	return true
+	if item.GitLifecycleReason == nil || strings.TrimSpace(*item.GitLifecycleReason) == "" {
+		return "", false
+	}
+	if models.IsCapabilityHiddenStatus(status) {
+		return "", false
+	}
+	return gitLifecycleActivationRefusal, true
+}
+
+// respondGitOwnedFieldConflict maps the models-layer default-deny guards onto
+// the same 409 shape the explicit pre-checks use. They are backstops for writers
+// that never learned about Git backing, so without this mapping a blocked write
+// would surface as an opaque 500.
+func respondGitOwnedFieldConflict(c *gin.Context, err error) bool {
+	switch {
+	case errors.Is(err, models.ErrGitOwnedField):
+		c.JSON(http.StatusConflict, gin.H{
+			"error":      gitBackedContentUpdateRefusal,
+			"error_code": "GIT_BACKED_ITEM",
+		})
+		return true
+	case errors.Is(err, models.ErrGitLifecycleArchived):
+		c.JSON(http.StatusConflict, gin.H{
+			"error":      gitLifecycleActivationRefusal,
+			"error_code": "GIT_LIFECYCLE_ARCHIVED",
+		})
+		return true
+	case errors.Is(err, models.ErrGitLifecycleClaimUnclearable):
+		// A hidden-status write the guard could not make atomic. Reported rather
+		// than applied: applying it would hide the row while leaving Git free to
+		// republish it, which is the exact outcome the guard exists to prevent.
+		c.JSON(http.StatusConflict, gin.H{
+			"error":      "This capability's status cannot be changed through this path while Git holds an archive claim on it",
+			"error_code": "GIT_LIFECYCLE_CLAIM",
+		})
+		return true
+	}
+	return false
 }
 
 // gitBackedUnbindHint is appended to every refusal whose real remedy is the

@@ -14,6 +14,27 @@ import (
 
 const systemHookTypeGitea = "gitea"
 
+// systemHookEvents is the subscription surface the capability sync ingress
+// needs, and it is the reason this file changed in V4.
+//
+// The production hook was created subscribed to `push` alone, which made
+// repository DELETION structurally invisible: on the deployed Gitea 1.24.6
+// `repository`/`deleted` is the only lifecycle event emitted at all, and it
+// reaches system webhooks only. Everything else an operator can do to a
+// repository — rename, transfer, visibility change, default-branch change,
+// archive — emits nothing whatsoever, so reconcile remains the correctness path
+// for those and this list cannot be extended to cover them.
+//
+//   - push:       content changes on the default branch.
+//   - repository: `deleted` (terminal lifecycle) and `created`.
+//   - create:     branch creation — evidence the default branch exists again.
+//   - delete:     branch deletion — evidence our stored default branch is stale,
+//     since deleting the CURRENT default is refused by Gitea.
+//
+// Order is fixed so systemHookIsDesired's comparison is stable, and the set is
+// compared as a SET: Gitea may return the events in any order.
+var systemHookEvents = []string{"push", "repository", "create", "delete"}
+
 const managedSystemHookNamePrefix = "costrict-capability-sync-"
 
 const (
@@ -46,11 +67,17 @@ type giteaSystemHookUpdateRequest struct {
 	Name   *string           `json:"name,omitempty"`
 }
 
-// EnsureSystemPushWebhook converges Gitea's system hooks to exactly one
-// active push hook for gitServerID. A system hook covers existing repositories
-// and repositories created or forked later, so callers do not need to mutate
-// each repository lifecycle.
-func (c *Client) EnsureSystemPushWebhook(ctx context.Context, gitServerID, targetURL, secret string) error {
+// EnsureSystemCapabilityWebhook converges Gitea's system hooks to exactly one
+// active capability-sync hook for gitServerID, subscribed to systemHookEvents.
+// A system hook covers existing repositories and repositories created or forked
+// later, so callers do not need to mutate each repository lifecycle.
+//
+// It must remain a SYSTEM hook (POST /api/v1/admin/hooks with
+// is_system_webhook=true), not a "default" one. A default hook is a template
+// Gitea copies onto newly created repositories, and a repository-level copy is
+// deleted together with its repository — so it observes nothing for
+// `repository`/`deleted`, which is the one lifecycle event that exists.
+func (c *Client) EnsureSystemCapabilityWebhook(ctx context.Context, gitServerID, targetURL, secret string) error {
 	if c == nil {
 		return ErrGiteaUnreachable
 	}
@@ -81,7 +108,7 @@ func (c *Client) EnsureSystemPushWebhook(ctx context.Context, gitServerID, targe
 			"secret":            secret,
 			"is_system_webhook": "true",
 		},
-		Events: []string{"push"},
+		Events: append([]string(nil), systemHookEvents...),
 		Active: true,
 	}
 	if len(managed) == 0 {
@@ -231,7 +258,31 @@ func systemHookIsDesired(current giteaSystemHook, desired giteaSystemHookRequest
 		current.Active == desired.Active &&
 		current.Config["url"] == desired.Config["url"] &&
 		current.Config["content_type"] == desired.Config["content_type"] &&
-		len(current.Events) == 1 && current.Events[0] == "push"
+		sameEventSet(current.Events, desired.Events)
+}
+
+// sameEventSet compares subscriptions as sets.
+//
+// This is what makes widening the surface an idempotent PATCH of the EXISTING
+// hook rather than a delete-and-recreate: the reconciler finds the managed hook
+// by name/URL marker, sees a subscription that no longer matches, and updates it
+// in place — the hook keeps its id, its delivery history and its secret. A hook
+// that already carries the desired set is left completely untouched, so the
+// steady state is zero writes rather than one PATCH every five minutes.
+func sameEventSet(current, desired []string) bool {
+	if len(current) != len(desired) {
+		return false
+	}
+	have := make(map[string]struct{}, len(current))
+	for _, event := range current {
+		have[event] = struct{}{}
+	}
+	for _, event := range desired {
+		if _, ok := have[event]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 const systemHookMarkerQuery = "costrict_hook"

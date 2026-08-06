@@ -130,7 +130,14 @@ func IsGitOwnedCapabilityColumn(column string) bool {
 //     (finisher_api.go), so the create callback chain runs instead. Guarded by
 //     BeforeCreate below.
 func (item *CapabilityItem) BeforeUpdate(tx *gorm.DB) error {
-	return guardGitOwnedCapabilityUpdate(item, tx)
+	if err := guardGitOwnedCapabilityUpdate(item, tx); err != nil {
+		return err
+	}
+	// `status` is deliberately NOT a Git-owned column (moderation must stay
+	// possible on a Git-backed row), so the guard above lets every status write
+	// through. The lifecycle rule — a human may hide, but may not un-hide what
+	// Git says is gone — is applied here, on the same statement.
+	return guardGitLifecycleStatusWrite(item, tx)
 }
 
 // BeforeCreate refuses upserts that would rewrite Git-owned columns.

@@ -19,7 +19,7 @@ import (
 const defaultGitSystemHookReconcileInterval = 5 * time.Minute
 
 type GitSystemHookEnsurer interface {
-	EnsureSystemPushWebhook(ctx context.Context, gitServerID, targetURL, secret string) error
+	EnsureSystemCapabilityWebhook(ctx context.Context, gitServerID, targetURL, secret string) error
 }
 
 type GitSystemHookReconciler struct {
@@ -195,7 +195,7 @@ func (r *GitSystemHookReconciler) ReconcileOnce(ctx context.Context) error {
 			}()
 			requestCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
-			return client.EnsureSystemPushWebhook(requestCtx, server.ServerID, targetURL, cfg.WebhookSecret)
+			return client.EnsureSystemCapabilityWebhook(requestCtx, server.ServerID, targetURL, cfg.WebhookSecret)
 		}()
 		if err != nil {
 			logger.Error("Git system webhook reconcile failed serverID=%s err=%v", server.ServerID, err)

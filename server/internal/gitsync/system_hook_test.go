@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -147,23 +148,23 @@ func hookFromRequest(id int64, req giteaSystemHookRequest) giteaSystemHook {
 
 func desiredSystemHook(id int64, gitServerID, target, secret string) giteaSystemHook {
 	return giteaSystemHook{
-		ID: id, Name: managedSystemHookName(gitServerID, secret), Type: systemHookTypeGitea, Active: true, Events: []string{"push"}, IsSystemWebhook: true,
+		ID: id, Name: managedSystemHookName(gitServerID, secret), Type: systemHookTypeGitea, Active: true, Events: systemHookEvents, IsSystemWebhook: true,
 		Config: map[string]string{"url": managedSystemHookURL(target, managedSystemHookName(gitServerID, secret)), "content_type": "json", "secret": secret, "is_system_webhook": "true"},
 	}
 }
 
-func TestEnsureSystemPushWebhook_CreatesMissingHook(t *testing.T) {
+func TestEnsureSystemCapabilityWebhook_CreatesMissingHook(t *testing.T) {
 	fake := &fakeSystemHookGitea{}
 	server := httptest.NewServer(fake)
 	defer server.Close()
 
 	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
 	target := "https://cloud.example/api/internal/git-sync/gs-1"
-	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "secret-1"); err != nil {
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, "secret-1"); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	if len(fake.hooks) != 1 || !systemHookIsDesired(fake.hooks[0], giteaSystemHookRequest{
-		Type: systemHookTypeGitea, Name: managedSystemHookName("gs-1", "secret-1"), Active: true, Events: []string{"push"},
+		Type: systemHookTypeGitea, Name: managedSystemHookName("gs-1", "secret-1"), Active: true, Events: systemHookEvents,
 		Config: map[string]string{"url": managedSystemHookURL(target, managedSystemHookName("gs-1", "secret-1")), "content_type": "json", "secret": "secret-1", "is_system_webhook": "true"},
 	}) {
 		t.Fatalf("created hooks = %+v", fake.hooks)
@@ -171,7 +172,7 @@ func TestEnsureSystemPushWebhook_CreatesMissingHook(t *testing.T) {
 	if !fake.hooks[0].IsSystemWebhook || fake.hooks[0].Config["is_system_webhook"] != "true" {
 		t.Fatalf("created hook is not a system webhook: %+v", fake.hooks[0])
 	}
-	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "secret-1"); err != nil {
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, "secret-1"); err != nil {
 		t.Fatalf("second ensure: %v", err)
 	}
 	if len(fake.hooks) != 1 || len(fake.mutations) != 1 || fake.mutations[0] != "create" {
@@ -179,7 +180,7 @@ func TestEnsureSystemPushWebhook_CreatesMissingHook(t *testing.T) {
 	}
 }
 
-func TestEnsureSystemPushWebhook_UpdatesDriftedHook(t *testing.T) {
+func TestEnsureSystemCapabilityWebhook_UpdatesDriftedHook(t *testing.T) {
 	target := "https://cloud.example/api/internal/git-sync/gs-1"
 	fake := &fakeSystemHookGitea{hooks: []giteaSystemHook{{
 		ID: 7, Name: managedSystemHookName("gs-1", "new-secret"), Type: systemHookTypeGitea, Active: false, Events: []string{"issues"}, IsSystemWebhook: true,
@@ -189,21 +190,21 @@ func TestEnsureSystemPushWebhook_UpdatesDriftedHook(t *testing.T) {
 	defer server.Close()
 
 	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
-	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "new-secret"); err != nil {
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, "new-secret"); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	if len(fake.mutations) != 1 || fake.mutations[0] != "update" {
 		t.Fatalf("mutations = %v, want update", fake.mutations)
 	}
 	if got := fake.hooks[0]; !systemHookIsDesired(got, giteaSystemHookRequest{
-		Type: systemHookTypeGitea, Name: managedSystemHookName("gs-1", "new-secret"), Active: true, Events: []string{"push"},
+		Type: systemHookTypeGitea, Name: managedSystemHookName("gs-1", "new-secret"), Active: true, Events: systemHookEvents,
 		Config: map[string]string{"url": managedSystemHookURL(target, managedSystemHookName("gs-1", "new-secret")), "content_type": "json", "secret": "new-secret", "is_system_webhook": "true"},
 	}) {
 		t.Fatalf("updated hook = %+v", got)
 	}
 }
 
-func TestEnsureSystemPushWebhook_ReplacesWrongHookType(t *testing.T) {
+func TestEnsureSystemCapabilityWebhook_ReplacesWrongHookType(t *testing.T) {
 	target := "https://cloud.example/api/internal/git-sync/gs-1"
 	fake := &fakeSystemHookGitea{hooks: []giteaSystemHook{{
 		ID: 7, Name: managedSystemHookName("gs-1", "secret"), Type: "slack", Active: true, Events: []string{"push"}, IsSystemWebhook: true,
@@ -213,7 +214,7 @@ func TestEnsureSystemPushWebhook_ReplacesWrongHookType(t *testing.T) {
 	defer server.Close()
 
 	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
-	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "secret"); err != nil {
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, "secret"); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	if len(fake.mutations) != 2 || fake.mutations[0] != "create" || fake.mutations[1] != "delete" {
@@ -224,14 +225,14 @@ func TestEnsureSystemPushWebhook_ReplacesWrongHookType(t *testing.T) {
 	}
 }
 
-func TestEnsureSystemPushWebhook_ReplacesHookWhenSecretFingerprintChanges(t *testing.T) {
+func TestEnsureSystemCapabilityWebhook_ReplacesHookWhenSecretFingerprintChanges(t *testing.T) {
 	target := "https://cloud.example/api/internal/git-sync/gs-1"
 	fake := &fakeSystemHookGitea{hooks: []giteaSystemHook{desiredSystemHook(4, "gs-1", target, "old-secret")}}
 	server := httptest.NewServer(fake)
 	defer server.Close()
 
 	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
-	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "new-secret"); err != nil {
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, "new-secret"); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	if len(fake.mutations) != 2 || fake.mutations[0] != "create" || fake.mutations[1] != "delete" {
@@ -242,14 +243,14 @@ func TestEnsureSystemPushWebhook_ReplacesHookWhenSecretFingerprintChanges(t *tes
 	}
 }
 
-func TestEnsureSystemPushWebhook_NoopsWhenDesired(t *testing.T) {
+func TestEnsureSystemCapabilityWebhook_NoopsWhenDesired(t *testing.T) {
 	target := "https://cloud.example/api/internal/git-sync/gs-1"
 	fake := &fakeSystemHookGitea{hooks: []giteaSystemHook{desiredSystemHook(3, "gs-1", target, "secret")}}
 	server := httptest.NewServer(fake)
 	defer server.Close()
 
 	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
-	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "secret"); err != nil {
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, "secret"); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	if len(fake.mutations) != 0 {
@@ -257,7 +258,7 @@ func TestEnsureSystemPushWebhook_NoopsWhenDesired(t *testing.T) {
 	}
 }
 
-func TestEnsureSystemPushWebhook_UpdatesURLForSameManagedIdentity(t *testing.T) {
+func TestEnsureSystemCapabilityWebhook_UpdatesURLForSameManagedIdentity(t *testing.T) {
 	oldTarget := "https://old.example/cloud-api/api/internal/git-sync/gs-1"
 	newTarget := "https://new.example/api/internal/git-sync/gs-1"
 	fake := &fakeSystemHookGitea{hooks: []giteaSystemHook{desiredSystemHook(3, "gs-1", oldTarget, "secret")}}
@@ -265,7 +266,7 @@ func TestEnsureSystemPushWebhook_UpdatesURLForSameManagedIdentity(t *testing.T) 
 	defer server.Close()
 
 	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
-	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", newTarget, "secret"); err != nil {
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", newTarget, "secret"); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	if len(fake.mutations) != 1 || fake.mutations[0] != "update" {
@@ -276,7 +277,7 @@ func TestEnsureSystemPushWebhook_UpdatesURLForSameManagedIdentity(t *testing.T) 
 	}
 }
 
-func TestEnsureSystemPushWebhook_PreservesOtherServerAndUnmanagedHooks(t *testing.T) {
+func TestEnsureSystemCapabilityWebhook_PreservesOtherServerAndUnmanagedHooks(t *testing.T) {
 	target := "https://cloud.example/api/internal/git-sync/gs-1"
 	unmanaged := giteaSystemHook{
 		ID: 8, Name: managedSystemHookServerPrefix("gs-1") + "operator-owned", Type: systemHookTypeGitea, Active: true, Events: []string{"push"}, IsSystemWebhook: true,
@@ -288,7 +289,7 @@ func TestEnsureSystemPushWebhook_PreservesOtherServerAndUnmanagedHooks(t *testin
 	defer server.Close()
 
 	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
-	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "secret"); err != nil {
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, "secret"); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	if len(fake.mutations) != 1 || fake.mutations[0] != "create" {
@@ -299,7 +300,7 @@ func TestEnsureSystemPushWebhook_PreservesOtherServerAndUnmanagedHooks(t *testin
 	}
 }
 
-func TestEnsureSystemPushWebhook_RemovesDuplicateManagedHooksOnly(t *testing.T) {
+func TestEnsureSystemCapabilityWebhook_RemovesDuplicateManagedHooksOnly(t *testing.T) {
 	target := "https://cloud.example/api/internal/git-sync/gs-1"
 	fake := &fakeSystemHookGitea{nullNames: true, hooks: []giteaSystemHook{
 		desiredSystemHook(2, "gs-1", target, "secret"),
@@ -310,7 +311,7 @@ func TestEnsureSystemPushWebhook_RemovesDuplicateManagedHooksOnly(t *testing.T) 
 	defer server.Close()
 
 	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
-	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "secret"); err != nil {
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, "secret"); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	if len(fake.mutations) != 2 || fake.mutations[0] != "update" || fake.mutations[1] != "delete" {
@@ -321,7 +322,7 @@ func TestEnsureSystemPushWebhook_RemovesDuplicateManagedHooksOnly(t *testing.T) 
 	}
 }
 
-func TestEnsureSystemPushWebhook_AdoptsGitea124NamelessDuplicates(t *testing.T) {
+func TestEnsureSystemCapabilityWebhook_AdoptsGitea124NamelessDuplicates(t *testing.T) {
 	target := "https://cloud.example/api/internal/git-sync/gs-1"
 	markedTarget := managedSystemHookURL(target, managedSystemHookName("gs-1", "new"))
 	fake := &fakeSystemHookGitea{nullNames: true, hooks: []giteaSystemHook{
@@ -332,7 +333,7 @@ func TestEnsureSystemPushWebhook_AdoptsGitea124NamelessDuplicates(t *testing.T) 
 	server := httptest.NewServer(fake)
 	defer server.Close()
 	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
-	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "new"); err != nil {
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, "new"); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.hooks) != 2 || fake.hooks[0].Name != managedSystemHookName("gs-1", "new") {
@@ -342,7 +343,7 @@ func TestEnsureSystemPushWebhook_AdoptsGitea124NamelessDuplicates(t *testing.T) 
 		t.Fatalf("mutations=%v", fake.mutations)
 	}
 	fake.mutations = nil
-	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "new"); err != nil {
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, "new"); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.mutations) != 1 || fake.mutations[0] != "update" {
@@ -350,7 +351,7 @@ func TestEnsureSystemPushWebhook_AdoptsGitea124NamelessDuplicates(t *testing.T) 
 	}
 }
 
-func TestEnsureSystemPushWebhook_HandlesServerSidePageCapBelowRequestedLimit(t *testing.T) {
+func TestEnsureSystemCapabilityWebhook_HandlesServerSidePageCapBelowRequestedLimit(t *testing.T) {
 	target := "https://cloud.example/cloud-api/api/internal/git-sync/gs-1"
 	secret := "secret"
 	getCount := 0
@@ -380,7 +381,7 @@ func TestEnsureSystemPushWebhook_HandlesServerSidePageCapBelowRequestedLimit(t *
 	defer server.Close()
 
 	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
-	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, secret); err != nil {
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, secret); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	if getCount != 2 || mutationCount != 0 {
@@ -388,7 +389,7 @@ func TestEnsureSystemPushWebhook_HandlesServerSidePageCapBelowRequestedLimit(t *
 	}
 }
 
-func TestEnsureSystemPushWebhook_RefusesIncompleteListAtPageLimit(t *testing.T) {
+func TestEnsureSystemCapabilityWebhook_RefusesIncompleteListAtPageLimit(t *testing.T) {
 	getCount := 0
 	mutationCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -407,7 +408,7 @@ func TestEnsureSystemPushWebhook_RefusesIncompleteListAtPageLimit(t *testing.T) 
 	defer server.Close()
 
 	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
-	err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", "https://target.example/hook", "secret")
+	err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", "https://target.example/hook", "secret")
 	if err == nil || !strings.Contains(err.Error(), "incomplete") {
 		t.Fatalf("ensure error = %v, want explicit pagination safety error", err)
 	}
@@ -416,7 +417,7 @@ func TestEnsureSystemPushWebhook_RefusesIncompleteListAtPageLimit(t *testing.T) 
 	}
 }
 
-func TestEnsureSystemPushWebhook_StopsWhenServerIgnoresPagination(t *testing.T) {
+func TestEnsureSystemCapabilityWebhook_StopsWhenServerIgnoresPagination(t *testing.T) {
 	target := "https://cloud.example/api/internal/git-sync/gs-1"
 	hook := desiredSystemHook(2, "gs-1", target, "secret")
 	getCount := 0
@@ -437,7 +438,7 @@ func TestEnsureSystemPushWebhook_StopsWhenServerIgnoresPagination(t *testing.T) 
 	defer server.Close()
 
 	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
-	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "secret"); err != nil {
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, "secret"); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	if getCount != 1 || deleteCount != 0 {
@@ -445,7 +446,7 @@ func TestEnsureSystemPushWebhook_StopsWhenServerIgnoresPagination(t *testing.T) 
 	}
 }
 
-func TestEnsureSystemPushWebhook_ContinuesAfterOverlapOnlyPage(t *testing.T) {
+func TestEnsureSystemCapabilityWebhook_ContinuesAfterOverlapOnlyPage(t *testing.T) {
 	target := "https://cloud.example/api/internal/git-sync/gs-1"
 	secret := "secret"
 	getCount := 0
@@ -471,7 +472,7 @@ func TestEnsureSystemPushWebhook_ContinuesAfterOverlapOnlyPage(t *testing.T) {
 	defer server.Close()
 
 	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
-	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, secret); err != nil {
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, secret); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	if getCount != 3 {
@@ -479,7 +480,7 @@ func TestEnsureSystemPushWebhook_ContinuesAfterOverlapOnlyPage(t *testing.T) {
 	}
 }
 
-func TestEnsureSystemPushWebhook_RefusesHooksWhenTotalCountIsZero(t *testing.T) {
+func TestEnsureSystemCapabilityWebhook_RefusesHooksWhenTotalCountIsZero(t *testing.T) {
 	getCount := 0
 	mutationCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -497,7 +498,7 @@ func TestEnsureSystemPushWebhook_RefusesHooksWhenTotalCountIsZero(t *testing.T) 
 	defer server.Close()
 
 	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
-	err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", "https://target.example/hook", "secret")
+	err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", "https://target.example/hook", "secret")
 	if err == nil || !strings.Contains(err.Error(), "inconsistent") {
 		t.Fatalf("ensure error = %v, want explicit inconsistent listing error", err)
 	}
@@ -506,7 +507,7 @@ func TestEnsureSystemPushWebhook_RefusesHooksWhenTotalCountIsZero(t *testing.T) 
 	}
 }
 
-func TestEnsureSystemPushWebhook_UnmarkedExactURLIsPreserved(t *testing.T) {
+func TestEnsureSystemCapabilityWebhook_UnmarkedExactURLIsPreserved(t *testing.T) {
 	target := "https://cloud.example/api/internal/git-sync/gs-1"
 	fake := &fakeSystemHookGitea{hooks: []giteaSystemHook{{
 		ID: 11, Name: managedSystemHookServerPrefix("gs-1") + "operator-owned", Type: systemHookTypeGitea,
@@ -516,7 +517,7 @@ func TestEnsureSystemPushWebhook_UnmarkedExactURLIsPreserved(t *testing.T) {
 	server := httptest.NewServer(fake)
 	defer server.Close()
 	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
-	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "secret"); err != nil {
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, "secret"); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.hooks) != 2 || fake.hooks[0].ID != 11 {
@@ -524,16 +525,16 @@ func TestEnsureSystemPushWebhook_UnmarkedExactURLIsPreserved(t *testing.T) {
 	}
 }
 
-func TestEnsureSystemPushWebhook_RetryAfterDeleteFailure(t *testing.T) {
+func TestEnsureSystemCapabilityWebhook_RetryAfterDeleteFailure(t *testing.T) {
 	target := "https://cloud.example/api/internal/git-sync/gs-1"
 	fake := &fakeSystemHookGitea{deleteFailures: 1, hooks: []giteaSystemHook{desiredSystemHook(2, "gs-1", target, "old")}}
 	server := httptest.NewServer(fake)
 	defer server.Close()
 	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
-	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "new"); err == nil {
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, "new"); err == nil {
 		t.Fatal("expected delete failure")
 	}
-	if err := client.EnsureSystemPushWebhook(context.Background(), "gs-1", target, "new"); err != nil {
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, "new"); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.hooks) != 1 || fake.hooks[0].Name != managedSystemHookName("gs-1", "new") {
@@ -559,5 +560,187 @@ func TestManagedSystemHookMarkerFailClosed(t *testing.T) {
 	}
 	if got := managedSystemHookMarker("/relative?costrict_hook=secret"); got != "" {
 		t.Fatalf("marker=%q", got)
+	}
+}
+
+// The production hook (Gitea id 4) was created subscribed to `push` alone, so
+// repository/deleted — the only lifecycle event 1.24.6 emits — never arrived.
+// Widening the surface must be an in-place PATCH: the hook keeps its id, its
+// secret and its delivery history. A delete-and-recreate would drop deliveries
+// in the gap and change the id operators have in their runbooks.
+func TestEnsureSystemCapabilityWebhook_WidensPushOnlySubscriptionInPlace(t *testing.T) {
+	target := "https://cloud.example/api/internal/git-sync/gs-1"
+	const secret = "secret"
+	pushOnly := desiredSystemHook(4, "gs-1", target, secret)
+	pushOnly.Events = []string{"push"}
+	fake := &fakeSystemHookGitea{hooks: []giteaSystemHook{pushOnly}}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+
+	client := newClientWithHTTPC(server.URL, "admin-token", server.Client())
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, secret); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if len(fake.mutations) != 1 || fake.mutations[0] != "update" {
+		t.Fatalf("mutations = %v, want exactly one update (never delete+create)", fake.mutations)
+	}
+	if len(fake.hooks) != 1 || fake.hooks[0].ID != 4 {
+		t.Fatalf("hook identity changed: %+v", fake.hooks)
+	}
+	if !sameEventSet(fake.hooks[0].Events, systemHookEvents) {
+		t.Fatalf("events = %v, want %v", fake.hooks[0].Events, systemHookEvents)
+	}
+	if fake.hooks[0].Config["secret"] != secret || fake.hooks[0].Config["is_system_webhook"] != "true" {
+		t.Fatalf("PATCH lost the hook's identity: %+v", fake.hooks[0].Config)
+	}
+
+	// And a second pass writes nothing: the steady state is zero mutations, so
+	// the five-minute repair task does not PATCH the hook forever.
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), "gs-1", target, secret); err != nil {
+		t.Fatalf("second ensure: %v", err)
+	}
+	if len(fake.mutations) != 1 {
+		t.Fatalf("mutations = %v after a converged second pass, want still one", fake.mutations)
+	}
+}
+
+// repository/deleted is the whole reason the surface widened; create/delete are
+// what make an otherwise silent default-branch change observable at push time.
+func TestSystemHookEventsCoverTheFixtureProvenLifecycleSurface(t *testing.T) {
+	for _, required := range []string{"push", "repository", "create", "delete"} {
+		if !sameEventSet(append([]string(nil), systemHookEvents...), systemHookEvents) {
+			t.Fatal("event set comparison is not reflexive")
+		}
+		found := false
+		for _, event := range systemHookEvents {
+			if event == required {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("system hook does not subscribe to %q", required)
+		}
+	}
+}
+
+// Gitea returns the subscription in its own order, so a set that matches must
+// not be rewritten just because the order differs.
+func TestSystemHookIsDesiredComparesEventsAsASet(t *testing.T) {
+	target := "https://cloud.example/api/internal/git-sync/gs-1"
+	current := desiredSystemHook(1, "gs-1", target, "secret")
+	current.Events = []string{"delete", "push", "create", "repository"}
+	desired := giteaSystemHookRequest{
+		Type: systemHookTypeGitea, Name: current.Name, Active: true, Events: systemHookEvents,
+		Config: current.Config,
+	}
+	if !systemHookIsDesired(current, desired) {
+		t.Fatal("reordered but identical subscription was treated as drift")
+	}
+	current.Events = []string{"push", "repository", "create"}
+	if systemHookIsDesired(current, desired) {
+		t.Fatal("a missing event was treated as converged")
+	}
+}
+
+// Converging the subscription of the LIVE system webhook, against a real Gitea.
+//
+// This is the one change in Phase C that touches shared, long-lived state
+// outside the database: the production hook was created subscribed to `push`
+// alone, so `repository`/`deleted` — the only lifecycle event Gitea 1.24.6 emits
+// — never arrived. Widening it has to be an in-place PATCH; a delete-and-create
+// would drop every delivery in the gap and change the hook id operators refer to.
+//
+// Opt-in, because it mutates a shared instance:
+//
+//	GITEA_HOOK_E2E_ENDPOINT=http://127.0.0.1:3001 \
+//	GITEA_HOOK_E2E_TOKEN=<admin token> \
+//	GITEA_HOOK_E2E_SERVER_ID=e2e-gitea \
+//	GITEA_HOOK_E2E_SECRET=<webhook secret> \
+//	GITEA_HOOK_E2E_TARGET=http://127.0.0.1:8080/api/internal/git-sync/e2e-gitea \
+//	go test ./internal/gitsync -run TestEnsureSystemCapabilityWebhook_LiveGitea -v
+//
+// It asserts the properties an operator cares about and nothing else: the id is
+// stable, the delivery URL is untouched, the subscription is the desired set,
+// and a second pass writes nothing.
+func TestEnsureSystemCapabilityWebhook_LiveGiteaConvergesInPlace(t *testing.T) {
+	endpoint := strings.TrimRight(strings.TrimSpace(os.Getenv("GITEA_HOOK_E2E_ENDPOINT")), "/")
+	token := strings.TrimSpace(os.Getenv("GITEA_HOOK_E2E_TOKEN"))
+	serverID := strings.TrimSpace(os.Getenv("GITEA_HOOK_E2E_SERVER_ID"))
+	secret := strings.TrimSpace(os.Getenv("GITEA_HOOK_E2E_SECRET"))
+	target := strings.TrimSpace(os.Getenv("GITEA_HOOK_E2E_TARGET"))
+	if endpoint == "" || token == "" || serverID == "" || secret == "" || target == "" {
+		t.Skip("GITEA_HOOK_E2E_* not fully set; skipping live system webhook convergence")
+	}
+
+	client := NewClient(endpoint, token)
+	before, err := client.listSystemHooks(context.Background())
+	if err != nil {
+		t.Fatalf("list system hooks: %v", err)
+	}
+	t.Logf("before: %d system hook(s)", len(before))
+	for _, hook := range before {
+		t.Logf("  id=%d events=%v url=%s", hook.ID, hook.Events, hook.Config["url"])
+	}
+
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), serverID, target, secret); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	after, err := client.listSystemHooks(context.Background())
+	if err != nil {
+		t.Fatalf("list system hooks after ensure: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("system hook count changed %d -> %d; convergence must not create or delete hooks here",
+			len(before), len(after))
+	}
+
+	managedPrefix := managedSystemHookServerPrefix(serverID)
+	var managed *giteaSystemHook
+	for i := range after {
+		if isManagedSystemHookMarkerForServer(after[i].Config["url"], managedPrefix) ||
+			isManagedSystemHookForServer(after[i].Name, managedPrefix) {
+			managed = &after[i]
+		}
+	}
+	if managed == nil {
+		t.Fatal("the managed hook disappeared")
+	}
+	t.Logf("after: id=%d events=%v url=%s", managed.ID, managed.Events, managed.Config["url"])
+
+	// Identity, by id: this is what proves it was a PATCH and not a recreate.
+	for _, hook := range before {
+		if isManagedSystemHookMarkerForServer(hook.Config["url"], managedPrefix) {
+			if hook.ID != managed.ID {
+				t.Fatalf("hook id changed %d -> %d; deliveries in the gap were lost", hook.ID, managed.ID)
+			}
+			if hook.Config["url"] != managed.Config["url"] {
+				t.Fatalf("delivery URL changed %q -> %q", hook.Config["url"], managed.Config["url"])
+			}
+		}
+	}
+	if !sameEventSet(managed.Events, systemHookEvents) {
+		t.Fatalf("events = %v, want %v", managed.Events, systemHookEvents)
+	}
+	if !managed.Active {
+		t.Fatal("the hook was left inactive")
+	}
+
+	// Second pass: converged state means zero writes, so the five-minute repair
+	// task does not PATCH the hook forever (which would also reset its
+	// last-delivery bookkeeping on every tick).
+	if err := client.EnsureSystemCapabilityWebhook(context.Background(), serverID, target, secret); err != nil {
+		t.Fatalf("second ensure: %v", err)
+	}
+	settled, err := client.listSystemHooks(context.Background())
+	if err != nil {
+		t.Fatalf("list system hooks after second ensure: %v", err)
+	}
+	if len(settled) != len(after) {
+		t.Fatalf("second ensure changed the hook count %d -> %d", len(after), len(settled))
+	}
+	for i := range settled {
+		if settled[i].ID == managed.ID && !sameEventSet(settled[i].Events, systemHookEvents) {
+			t.Fatalf("second ensure disturbed the subscription: %v", settled[i].Events)
+		}
 	}
 }

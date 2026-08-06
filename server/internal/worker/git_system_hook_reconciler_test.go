@@ -27,7 +27,7 @@ type gitSystemHookCall struct {
 	secret   string
 }
 
-func (f *fakeGitSystemHookEnsurer) EnsureSystemPushWebhook(_ context.Context, serverID, targetURL, secret string) error {
+func (f *fakeGitSystemHookEnsurer) EnsureSystemCapabilityWebhook(_ context.Context, serverID, targetURL, secret string) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, gitSystemHookCall{serverID: serverID, target: targetURL, secret: secret})
 	callNumber := len(f.calls)
@@ -89,7 +89,7 @@ func (l *channelGitSystemHookLock) Finish(success bool) error {
 
 type contextDeadlineGitSystemHookEnsurer struct{}
 
-func (contextDeadlineGitSystemHookEnsurer) EnsureSystemPushWebhook(ctx context.Context, _, _, _ string) error {
+func (contextDeadlineGitSystemHookEnsurer) EnsureSystemCapabilityWebhook(ctx context.Context, _, _, _ string) error {
 	<-ctx.Done()
 	return ctx.Err()
 }
@@ -100,7 +100,7 @@ type stopBlockingGitSystemHookEnsurer struct {
 	entered chan struct{}
 }
 
-func (e *stopBlockingGitSystemHookEnsurer) EnsureSystemPushWebhook(ctx context.Context, serverID, _, _ string) error {
+func (e *stopBlockingGitSystemHookEnsurer) EnsureSystemCapabilityWebhook(ctx context.Context, serverID, _, _ string) error {
 	e.mu.Lock()
 	e.calls = append(e.calls, serverID)
 	e.mu.Unlock()

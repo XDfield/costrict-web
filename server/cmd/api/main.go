@@ -1069,7 +1069,18 @@ func main() {
 	// the engine rather than internalAPI: its HMAC signature is its complete
 	// authentication contract, so InternalAuth must not run before it.
 	gitCapabilityWebhookAPI := handlers.NewGitCapabilityWebhookAPI(db, localGitResolver)
-	r.POST("/api/internal/git-sync/:git_server_id", gitCapabilityWebhookAPI.ReceiveGiteaPush)
+	r.POST("/api/internal/git-sync/:git_server_id", gitCapabilityWebhookAPI.ReceiveGiteaEvent)
+
+	// Gitea fork binding pre-check (FI-2). Registered on the engine for the
+	// same reason as the webhook above, and with even less choice in the
+	// matter: the fork's checkBinding issues a bare GET with no headers at
+	// all, so InternalAuth would reject every call. The endpoint is designed
+	// to be safe unauthenticated — opaque key in, one enum field out, no
+	// writes, no user-existence oracle. See internal/handlers/git_binding_status.go.
+	// The git_server_id segment comes from the fork's configured
+	// BINDING_CHECK_URL; the fork itself only appends the user id.
+	gitBindingStatusAPI := handlers.NewGitBindingStatusAPI(db)
+	r.GET("/api/internal/git-binding/status/:git_server_id/:user_subject_id", gitBindingStatusAPI.GetBindingStatus)
 
 	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL, cfg.Channels.WebhookEnabled, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, cfg.Channels.WeComBot.ProxyURL, cfg.Channels.WeComBot.AuthToken)
 	distSvc.SetNotificationService(notificationSvc)

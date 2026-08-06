@@ -153,6 +153,12 @@ func runWorker() {
 			gitCapabilityReconcileBatchSize = parsed
 		}
 	}
+	gitCapabilityReconcileDrainBudget := 30 * time.Second
+	if raw := strings.TrimSpace(os.Getenv("GIT_CAPABILITY_RECONCILE_DRAIN_BUDGET")); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
+			gitCapabilityReconcileDrainBudget = parsed
+		}
+	}
 	gitCapabilityPool := &worker.GitCapabilityWorkerPool{
 		DB:       db,
 		Resolver: gitserver.NewDBResolver(db),
@@ -160,10 +166,11 @@ func runWorker() {
 			DB:     db,
 			Parser: &services.ParserService{},
 		},
-		Concurrency:        gitCapabilityConcurrency,
-		PollInterval:       pollInterval,
-		ReconcileInterval:  gitCapabilityReconcileInterval,
-		ReconcileBatchSize: gitCapabilityReconcileBatchSize,
+		Concurrency:          gitCapabilityConcurrency,
+		PollInterval:         pollInterval,
+		ReconcileInterval:    gitCapabilityReconcileInterval,
+		ReconcileBatchSize:   gitCapabilityReconcileBatchSize,
+		ReconcileDrainBudget: gitCapabilityReconcileDrainBudget,
 	}
 	gitSystemHookReconciler := newGitSystemHookReconciler(db, cfg)
 

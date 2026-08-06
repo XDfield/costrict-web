@@ -39,48 +39,70 @@ const (
 // PUT /items/:id accepts any status from the author or a platform admin — it
 // deliberately leaves `status` outside gitBackedUpdateTouchesContentProjection
 // so those administrative actions stay possible on a Git-backed row (R1.6).
-// 'banned' has no writer of its own on capability_items today; it is the state
-// the original CASE already protected, kept here rather than dropped.
 //
 // That permission is only safe because a push never raises a row out of this
 // set — otherwise "PUT may set archived" plus "every push sets active" combine
 // into a resurrection hole: the moderator takes the capability down, the next
 // commit puts it back, and nothing reports the conflict.
-var gitCapabilityHiddenStatuses = []string{"banned", "archived", "inactive"}
+//
+// Read from models rather than redeclared: the same list decides which statuses
+// clear Git's archive claim (models.guardGitLifecycleStatusWrite) and which
+// statuses this sync must not overwrite. Two copies would eventually disagree,
+// and the symptom of disagreement is exactly the resurrection hole above.
+var gitCapabilityHiddenStatuses = models.CapabilityHiddenStatuses()
 
 func isGitCapabilityHiddenStatus(status string) bool {
-	for _, hidden := range gitCapabilityHiddenStatuses {
-		if status == hidden {
-			return true
-		}
-	}
-	return false
+	return models.IsCapabilityHiddenStatus(status)
 }
+
+// gitCapabilityRecoverableReasons are the git_lifecycle_reason values that
+// leave Git permission to raise a row it archived back to 'active'.
+// 'repository_deleted' is deliberately absent: a repository recreated with the
+// same owner/name gets a new numeric id, so it is a different identity and
+// cannot restore the old one.
+var gitCapabilityRecoverableReasons = []string{
+	models.GitLifecycleReasonManifestRemoved,
+	models.GitLifecycleReasonDefaultBranchMissing,
+}
+
+// gitCapabilityRecoverablePredicate is the SQL test for "Git took this row down
+// and is still allowed to put it back". Both halves are required:
+//
+//   - git_sync_status = 'orphaned' says THIS sync hid the row, so a human's
+//     archive is not undone;
+//   - git_lifecycle_reason says the cause is recoverable, and it is the half a
+//     human moderation write clears (models.guardGitLifecycleStatusWrite), which
+//     is how "I hid this deliberately" revokes Git's permission for good.
+//
+// COALESCE on both columns so a NULL never makes the predicate itself NULL: in
+// SQL `NOT (x AND NULL)` is NULL, and a CASE arm that is NULL falls through to
+// ELSE — which here is 'active'. Without the COALESCE, a row whose lifecycle
+// reason was never written would be silently republished by the ELSE branch.
+const gitCapabilityRecoverablePredicate = "(COALESCE(git_sync_status, '') = ? AND COALESCE(git_lifecycle_reason, '') IN (?))"
 
 // gitCapabilityActivateStatus is the status assignment for a manifest that is
 // present at HEAD.
 //
 // 'banned' is absolute. 'archived'/'inactive' are honoured too, unless this
-// sync is the one that hid the row (git_sync_status='orphaned'), in which case
-// the reappearing manifest republishes it — a deleted-then-restored file, or a
-// restored default branch, must not leave the capability dark forever.
+// sync is the one that hid the row AND still holds a recoverable claim on it,
+// in which case the reappearing manifest republishes it — a deleted-then-
+// restored file, or a restored default branch, must not leave the capability
+// dark forever.
 //
-// Residual case, stated rather than hidden: an admin who archives an
-// already-orphaned row does not clear the marker (git_sync_status is Git-owned,
-// so only this writer can write it), so a returning manifest still republishes
-// it. 'banned' is the moderation state that survives unconditionally.
-//
-// The COALESCE — here and in gitCapabilityArchiveSyncStatus — makes an unset
-// git_sync_status read as "not orphaned", so the guard fails closed. The schema
-// declares the column NOT NULL with an empty-string default, so this only
-// covers hand-built rows and older fixtures; but a NULL comparing false would
-// silently disarm the protection, which is not a failure worth risking.
+// The residual case this used to carry — an admin archiving an already-orphaned
+// row could not revoke the republish permission, because git_sync_status is
+// Git-owned and only this writer may move it — is closed by the second half of
+// the predicate. A manual hidden-status write clears git_lifecycle_reason in the
+// same statement (models.guardGitLifecycleStatusWrite), and without a
+// recoverable reason this CASE keeps the human's status however the orphan
+// marker reads.
 func gitCapabilityActivateStatus() clause.Expr {
 	return gorm.Expr(
 		"CASE WHEN status = ? THEN status "+
-			"WHEN status IN (?) AND COALESCE(git_sync_status, '') <> ? THEN status "+
+			"WHEN status IN (?) AND NOT "+gitCapabilityRecoverablePredicate+" THEN status "+
 			"ELSE ? END",
-		"banned", gitCapabilityHiddenStatuses, gitCapabilitySyncOrphaned, "active")
+		"banned", gitCapabilityHiddenStatuses,
+		gitCapabilitySyncOrphaned, gitCapabilityRecoverableReasons, "active")
 }
 
 // gitCapabilityArchiveStatus is the status assignment for a manifest that is
@@ -89,6 +111,39 @@ func gitCapabilityActivateStatus() clause.Expr {
 func gitCapabilityArchiveStatus() clause.Expr {
 	return gorm.Expr("CASE WHEN status IN (?) THEN status ELSE ? END",
 		gitCapabilityHiddenStatuses, "archived")
+}
+
+// gitCapabilityArchiveLifecycleReason records WHY Git took a row down.
+//
+// Written on every bound row the archive pass touches, including rows a human
+// had already hidden. That is deliberate and is the one place this column's
+// rule differs from the orphan marker's: the marker answers "who hid this row"
+// (and must stay with the human), while the reason answers "what does Git say
+// about this capability right now". A row whose repository is gone has no
+// reachable content whoever hid it, and recording that is what stops a later
+// Cloud-side activation from publishing an item that 404s on every read.
+//
+// Recovery still requires BOTH halves, so writing the reason onto a
+// human-hidden row grants Git nothing: gitCapabilityRecoverablePredicate also
+// demands the orphan marker, which that row does not carry.
+func gitCapabilityArchiveLifecycleReason(reason string) clause.Expr {
+	return gorm.Expr("?", reason)
+}
+
+// gitCapabilityArchiveLifecycleChangedAt stamps the transition, but only when
+// the reason actually moves. Re-archiving a row that is already archived for
+// the same cause is not a new transition, and rewriting the timestamp on every
+// reconcile would erase when the capability really disappeared.
+func gitCapabilityArchiveLifecycleChangedAt(reason string, now time.Time) clause.Expr {
+	return gorm.Expr("CASE WHEN COALESCE(git_lifecycle_reason, '') = ? THEN git_lifecycle_changed_at ELSE ? END",
+		reason, now)
+}
+
+// gitCapabilityClearedLifecycleChangedAt stamps the moment Git dropped its
+// archive claim, and leaves an already-clear row's timestamp alone so a healthy
+// repository does not rewrite the column on every reconcile.
+func gitCapabilityClearedLifecycleChangedAt(now time.Time) clause.Expr {
+	return gorm.Expr("CASE WHEN git_lifecycle_reason IS NULL THEN git_lifecycle_changed_at ELSE ? END", now)
 }
 
 // gitCapabilityArchiveSyncStatus claims the orphan marker only for rows this
@@ -346,6 +401,24 @@ func (s *GitCapabilitySyncService) SyncRepository(
 			return err
 		}
 		for _, entry := range prepared {
+			// Take the item's row lock and read its authoritative pre-update state
+			// BEFORE anything below decides what this pass is doing. The lock is
+			// what serializes revision numbering; the state answers whether this
+			// projection is a restore (this sync had orphaned the row), a provision
+			// (never projected), or — on the archiving side — whether the row was
+			// still on the shelf a moment ago, which is the compare-and-set the
+			// tombstone rotation contract requires. None of that can be read from
+			// `entry.item`: it was loaded outside this transaction and may already
+			// be stale.
+			//
+			// `prepared` preserves the boundItems `id ASC` order, so every writer of
+			// this repository acquires the item locks in the same order and two
+			// concurrent syncs queue rather than deadlock.
+			state, err := lockGitCapabilityItemForProjection(tx, entry.item.ID, cfg.ServerID, repoID)
+			if err != nil {
+				return err
+			}
+
 			// content / content_md5 are absent from this map by design, not by
 			// oversight — do not "fix" it by adding them.
 			//
@@ -367,42 +440,39 @@ func (s *GitCapabilitySyncService) SyncRepository(
 				"git_last_synced_at": now,
 				"git_sync_status":    gitCapabilitySyncSynced,
 				"git_sync_error":     "",
+				// This pass read the repository through the Git server, so its
+				// current visibility is verified as of `now` for every row bound to
+				// it. Public browse/search requires that verification to be fresh;
+				// see the column comment in 20260805000000.
+				"git_visibility_verified_at": now,
 			}
+			archivedNow := false
 			if entry.removed {
 				updates["status"] = gitCapabilityArchiveStatus()
 				updates["git_sync_status"] = gitCapabilityArchiveSyncStatus()
-				if !isGitCapabilityHiddenStatus(entry.item.Status) {
+				updates["git_lifecycle_reason"] = gitCapabilityArchiveLifecycleReason(models.GitLifecycleReasonManifestRemoved)
+				updates["git_lifecycle_changed_at"] = gitCapabilityArchiveLifecycleChangedAt(models.GitLifecycleReasonManifestRemoved, now)
+				archivedNow = !isGitCapabilityHiddenStatus(state.Status)
+				if archivedNow {
 					result.Archived++
 				}
 			} else {
 				updates["status"] = gitCapabilityActivateStatus()
+				// A manifest that is present at HEAD means Git makes no archive
+				// claim on this row, whatever status it ends up in. Clearing the
+				// reason unconditionally is what lets a moderator re-activate a row
+				// they had hidden while it was ALSO missing from Git: once the file
+				// is back, the refusal in models.guardGitLifecycleStatusWrite has to
+				// stop applying, or their own archive would become permanent.
+				updates["git_lifecycle_reason"] = nil
+				updates["git_lifecycle_changed_at"] = gitCapabilityClearedLifecycleChangedAt(now)
 				updates["name"] = entry.parsed.Name
 				updates["description"] = entry.parsed.Description
 				updates["category"] = entry.parsed.Category
 				updates["version"] = entry.parsed.Version
 				updates["metadata"] = entry.metadata
-				if entry.item.Status != "banned" {
+				if state.Status != "banned" {
 					result.Updated++
-				}
-			}
-
-			// Take the item's row lock and read its authoritative pre-update state
-			// BEFORE the UPDATE overwrites it. The lock is what serializes revision
-			// numbering; the state answers whether this projection is a restore
-			// (this sync had orphaned the row) or a provision (never projected),
-			// neither of which can be read from `entry.item` — that was loaded
-			// outside this transaction and may already be stale.
-			//
-			// An archiving entry needs neither, so it is not read for one — its own
-			// UPDATE below takes the same lock a moment later. `prepared` preserves
-			// the boundItems `id ASC` order, so every writer of this repository
-			// acquires the item locks in the same order and two concurrent syncs
-			// queue rather than deadlock.
-			var state *gitCapabilityProjectionState
-			if !entry.removed {
-				state, err = lockGitCapabilityItemForProjection(tx, entry.item.ID, cfg.ServerID, repoID)
-				if err != nil {
-					return err
 				}
 			}
 
@@ -421,15 +491,27 @@ func (s *GitCapabilitySyncService) SyncRepository(
 				return fmt.Errorf("Git-backed item %s changed identity during sync", entry.item.ID)
 			}
 
+			// The entitlement side of the archive, and the ONLY place a Git
+			// lifecycle tombstone is minted for a manifest that disappeared.
+			// Gated on the locked pre-update status, so a row that was already off
+			// the shelf does not rotate event ids for a transition that did not
+			// happen — see RecordEntitlementRemovalTx on why an unnecessary
+			// rotation is as harmful as a missing one.
+			if archivedNow {
+				if _, err := RecordGitArchiveTombstonesTx(tx, entry.item.ID, models.GitLifecycleReasonManifestRemoved, now); err != nil {
+					return err
+				}
+			}
+
 			// History records ACTIVE projections only, and only when THIS item's
 			// projected content digest moved. The head SHA above moved for every
 			// item in the repository — that is exactly why it cannot be the
 			// trigger — so a commit that only touched a sibling's manifest reaches
 			// here with an unchanged digest and appends nothing.
 			//
-			// An archiving pass still advances git_sha, deliberately, but never
-			// reaches this call: `state` is nil for a removed entry.
-			if state != nil {
+			// An archiving pass still advances git_sha, deliberately, but records
+			// no content revision: an archive is a lifecycle event, not a version.
+			if !entry.removed {
 				if err := projectGitCapabilityRevision(tx, gitCapabilityRevisionInput{
 					ItemID:        entry.item.ID,
 					GitServerID:   cfg.ServerID,
@@ -509,6 +591,10 @@ func (s *GitCapabilitySyncService) archiveGitCapabilitiesForMissingRepository(
 			return err
 		}
 		for _, item := range items {
+			state, err := lockGitCapabilityItemForProjection(tx, item.ID, serverID, repoID)
+			if err != nil {
+				return err
+			}
 			updated := tx.Set(models.GitSyncBypassSetting, true).
 				Model(&models.CapabilityItem{}).
 				Where("id = ? AND content_backend = ? AND source_git_server_id = ? AND source_git_repo_id = ?",
@@ -518,6 +604,15 @@ func (s *GitCapabilitySyncService) archiveGitCapabilitiesForMissingRepository(
 					"git_last_synced_at": now,
 					"git_sync_status":    gitCapabilityArchiveSyncStatus(),
 					"git_sync_error":     "",
+					// Terminal for automatic recovery. A repository recreated with the
+					// same owner/name receives a NEW numeric id, so it is a different
+					// identity and can never satisfy the recovery predicate for these
+					// rows; adopting a replacement is an explicit operator action.
+					"git_lifecycle_reason":     gitCapabilityArchiveLifecycleReason(models.GitLifecycleReasonRepositoryDeleted),
+					"git_lifecycle_changed_at": gitCapabilityArchiveLifecycleChangedAt(models.GitLifecycleReasonRepositoryDeleted, now),
+					// Deliberately NOT refreshed: the repository could not be read, so
+					// nothing about its visibility was verified. Letting the existing
+					// value go stale is the fail-closed direction.
 				})
 			if updated.Error != nil {
 				return updated.Error
@@ -525,8 +620,11 @@ func (s *GitCapabilitySyncService) archiveGitCapabilitiesForMissingRepository(
 			if updated.RowsAffected != 1 {
 				return fmt.Errorf("Git-backed item %s changed identity during repository archival", item.ID)
 			}
-			if !isGitCapabilityHiddenStatus(item.Status) {
+			if !isGitCapabilityHiddenStatus(state.Status) {
 				result.Archived++
+				if _, err := RecordGitArchiveTombstonesTx(tx, item.ID, models.GitLifecycleReasonRepositoryDeleted, now); err != nil {
+					return err
+				}
 			}
 		}
 		return tx.Where("git_server_id = ? AND git_repo_id = ?", serverID, repoID).
@@ -557,6 +655,10 @@ func (s *GitCapabilitySyncService) archiveGitCapabilitiesForMissingDefaultBranch
 			return err
 		}
 		for _, item := range items {
+			state, err := lockGitCapabilityItemForProjection(tx, item.ID, serverID, repoID)
+			if err != nil {
+				return err
+			}
 			// Authoritative Git writer — see the marker in SyncRepository.
 			updated := tx.Set(models.GitSyncBypassSetting, true).
 				Model(&models.CapabilityItem{}).
@@ -567,6 +669,13 @@ func (s *GitCapabilitySyncService) archiveGitCapabilitiesForMissingDefaultBranch
 					"git_last_synced_at": now,
 					"git_sync_status":    gitCapabilityArchiveSyncStatus(),
 					"git_sync_error":     "",
+					// Recoverable: the SAME numeric repository regaining a valid
+					// default branch restores these rows.
+					"git_lifecycle_reason":     gitCapabilityArchiveLifecycleReason(models.GitLifecycleReasonDefaultBranchMissing),
+					"git_lifecycle_changed_at": gitCapabilityArchiveLifecycleChangedAt(models.GitLifecycleReasonDefaultBranchMissing, now),
+					// The repository itself WAS read successfully to get here, so its
+					// visibility is verified as of now.
+					"git_visibility_verified_at": now,
 				})
 			if updated.Error != nil {
 				return updated.Error
@@ -574,8 +683,11 @@ func (s *GitCapabilitySyncService) archiveGitCapabilitiesForMissingDefaultBranch
 			if updated.RowsAffected != 1 {
 				return fmt.Errorf("Git-backed item %s changed identity during default-branch archival", item.ID)
 			}
-			if !isGitCapabilityHiddenStatus(item.Status) {
+			if !isGitCapabilityHiddenStatus(state.Status) {
 				result.Archived++
+				if _, err := RecordGitArchiveTombstonesTx(tx, item.ID, models.GitLifecycleReasonDefaultBranchMissing, now); err != nil {
+					return err
+				}
 			}
 		}
 		return nil

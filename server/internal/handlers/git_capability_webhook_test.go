@@ -10,6 +10,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -63,6 +66,12 @@ func setupGitCapabilityWebhookDB(t *testing.T, webhookSecret string) *gorm.DB {
 			CONSTRAINT uq_git_capability_sync_jobs_delivery
 					UNIQUE (git_server_id, delivery_id)
 			)`,
+		`CREATE TABLE git_capability_repositories (
+				id TEXT PRIMARY KEY,
+				git_server_id TEXT NOT NULL,
+				git_repo_id INTEGER NOT NULL,
+				default_branch TEXT NOT NULL DEFAULT ''
+			)`,
 		`CREATE TABLE capability_items (
 				id TEXT PRIMARY KEY,
 				content_backend TEXT NOT NULL DEFAULT 'db',
@@ -99,7 +108,7 @@ func newGitCapabilityWebhookRouterWithResolver(db *gorm.DB, resolver gitServerBy
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	api := NewGitCapabilityWebhookAPI(db, resolver)
-	r.POST("/api/internal/git-sync/:git_server_id", api.ReceiveGiteaPush)
+	r.POST("/api/internal/git-sync/:git_server_id", api.ReceiveGiteaEvent)
 	return r
 }
 
@@ -441,5 +450,312 @@ func TestGitCapabilityWebhookOversizedBodyDoesNotRevealServerConfiguration(t *te
 				t.Errorf("jobs = %d, want 0", count)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Lifecycle ingress, driven by the byte-exact fixtures captured from the
+// deployed Gitea 1.24.6 (testdata/gitea_lifecycle, README there).
+//
+// These are not synthesized payloads. They are the exact request bodies Gitea
+// sent, which is the only way to pin the three traps this ingress exists to
+// survive: the short-vs-full ref asymmetry, the misnamed `organization` field,
+// and the fact that the ONLY lifecycle event 1.24.6 emits is repository/deleted.
+// ---------------------------------------------------------------------------
+
+func giteaLifecycleFixture(t *testing.T, name string) string {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("testdata", "gitea_lifecycle", name))
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", name, err)
+	}
+	// Byte-exact: Gitea signs the bytes it sent, so any re-serialization here
+	// would silently make the signature tests vacuous.
+	return string(body)
+}
+
+func seedWebhookBinding(t *testing.T, db *gorm.DB, repoID int64, defaultBranch string) {
+	t.Helper()
+	if err := db.Exec(
+		`INSERT INTO git_capability_repositories (id, git_server_id, git_repo_id, default_branch) VALUES (?, 'gs-1', ?, ?)`,
+		"binding-"+strconv.FormatInt(repoID, 10), repoID, defaultBranch,
+	).Error; err != nil {
+		t.Fatalf("seed binding: %v", err)
+	}
+}
+
+func decodeWebhookResponse(t *testing.T, w *httptest.ResponseRecorder) (string, string) {
+	t.Helper()
+	var response struct {
+		Status string `json:"status"`
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response %s: %v", w.Body.String(), err)
+	}
+	return response.Status, response.Reason
+}
+
+// The load-bearing case. repository/deleted is the only lifecycle event that
+// exists on 1.24.6, and before this change the ingress dropped it on the floor
+// with "not a push", so a deleted repository's capabilities stayed live in the
+// marketplace until someone noticed.
+func TestGitCapabilityWebhookQueuesRepositoryDeletion(t *testing.T) {
+	const secret = "webhook-secret"
+	for _, fixture := range []string{"repository_deleted_user_owned.json", "repository_deleted_org_owned.json"} {
+		t.Run(fixture, func(t *testing.T) {
+			db := setupGitCapabilityWebhookDB(t, secret)
+			body := giteaLifecycleFixture(t, fixture)
+			w := signedGitCapabilityWebhook(t, newGitCapabilityWebhookRouter(db), "repository", "delivery-"+fixture, secret, body)
+			if w.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+			}
+			status, reason := decodeWebhookResponse(t, w)
+			if status != "queued" || reason != "repository_deleted" {
+				t.Fatalf("status=%q reason=%q, want queued/repository_deleted", status, reason)
+			}
+			var job models.GitCapabilitySyncJob
+			if err := db.First(&job).Error; err != nil {
+				t.Fatalf("load persisted job: %v", err)
+			}
+			if job.RepoID <= 0 {
+				t.Errorf("deletion job has no numeric repository identity: %+v", job)
+			}
+			// A lifecycle trigger carries no commit. A 40-zero AfterSHA here would
+			// be read by the worker as a default-branch deletion delivery and would
+			// archive for the wrong reason.
+			if job.AfterSHA != "" || job.BeforeSHA != "" {
+				t.Errorf("lifecycle job carries commit SHAs: %+v", job)
+			}
+		})
+	}
+}
+
+// Creation is fixture-proven but deliberately not actionable: the repository has
+// no commit on its default branch yet, so a convergence job could only fail and
+// retry, and onboarding binds repositories explicitly rather than discovering
+// them off an event.
+func TestGitCapabilityWebhookAcknowledgesRepositoryCreationWithoutQueueing(t *testing.T) {
+	const secret = "webhook-secret"
+	db := setupGitCapabilityWebhookDB(t, secret)
+	body := giteaLifecycleFixture(t, "repository_created.json")
+	w := signedGitCapabilityWebhook(t, newGitCapabilityWebhookRouter(db), "repository", "delivery-created", secret, body)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if status, reason := decodeWebhookResponse(t, w); status != "ignored" || reason != "repository_created" {
+		t.Fatalf("status=%q reason=%q, want ignored/repository_created", status, reason)
+	}
+	if count := countGitCapabilitySyncJobs(t, db); count != 0 {
+		t.Errorf("jobs = %d, want 0", count)
+	}
+}
+
+// Trap 1: create/delete carry a SHORT ref (`main`), push carries the full form
+// (`refs/heads/main`). validWebhookRef demands a refs/ prefix, so routing a
+// create/delete payload through it rejects every one of them with 400.
+func TestGitCapabilityWebhookAcceptsShortRefsOnCreateAndDelete(t *testing.T) {
+	const secret = "webhook-secret"
+	for _, tt := range []struct {
+		name          string
+		event         string
+		fixture       string
+		storedDefault string
+		wantStatus    string
+		wantReason    string
+	}{
+		{
+			// delete_branch.json deletes `main` while the repository already reports
+			// `probe-feature` as its default: exactly the two-step, partially silent
+			// sequence that is the only way a default branch can vanish on 1.24.6.
+			name: "delete of our believed default forces a re-read", event: "delete",
+			fixture: "delete_branch.json", storedDefault: "main",
+			wantStatus: "queued", wantReason: "stored_default_branch_deleted",
+		},
+		{
+			// Same payload, but our stored default already matches the repository's:
+			// a plain non-default branch deletion, nothing to converge.
+			name: "delete of an unrelated branch is ignored", event: "delete",
+			fixture: "delete_branch.json", storedDefault: "probe-feature",
+			wantStatus: "ignored", wantReason: "non_default_branch",
+		},
+		{
+			// The payload reports default_branch=main while we stored something else,
+			// which is the ONLY push-time evidence of an otherwise silent default
+			// branch change.
+			name: "create reveals a silent default-branch change", event: "create",
+			fixture: "create_branch.json", storedDefault: "old-default",
+			wantStatus: "queued", wantReason: "default_branch_changed",
+		},
+		{
+			name: "create of an unrelated branch is ignored", event: "create",
+			fixture: "create_branch.json", storedDefault: "main",
+			wantStatus: "ignored", wantReason: "non_default_branch",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			db := setupGitCapabilityWebhookDB(t, secret)
+			seedWebhookBinding(t, db, 1285, tt.storedDefault)
+			body := giteaLifecycleFixture(t, tt.fixture)
+			w := signedGitCapabilityWebhook(t, newGitCapabilityWebhookRouter(db), tt.event, "delivery-"+tt.name, secret, body)
+			if w.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+			}
+			status, reason := decodeWebhookResponse(t, w)
+			if status != tt.wantStatus || reason != tt.wantReason {
+				t.Fatalf("status=%q reason=%q, want %q/%q", status, reason, tt.wantStatus, tt.wantReason)
+			}
+			want := int64(0)
+			if tt.wantStatus == "queued" {
+				want = 1
+			}
+			if count := countGitCapabilitySyncJobs(t, db); count != want {
+				t.Errorf("jobs = %d, want %d", count, want)
+			}
+		})
+	}
+}
+
+// LH-4: an unbound repository is not discovered off a ref event.
+func TestGitCapabilityWebhookIgnoresRefChangeOnUnboundRepository(t *testing.T) {
+	const secret = "webhook-secret"
+	db := setupGitCapabilityWebhookDB(t, secret)
+	body := giteaLifecycleFixture(t, "delete_branch.json")
+	w := signedGitCapabilityWebhook(t, newGitCapabilityWebhookRouter(db), "delete", "delivery-unbound", secret, body)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if status, reason := decodeWebhookResponse(t, w); status != "ignored" || reason != "unbound_repository" {
+		t.Fatalf("status=%q reason=%q, want ignored/unbound_repository", status, reason)
+	}
+	if count := countGitCapabilitySyncJobs(t, db); count != 0 {
+		t.Errorf("jobs = %d, want 0", count)
+	}
+}
+
+// The real push fixture, so the widened router is proven not to have broken the
+// path that already worked.
+func TestGitCapabilityWebhookQueuesFixturePushAndIgnoresNonDefaultBranch(t *testing.T) {
+	const secret = "webhook-secret"
+	db := setupGitCapabilityWebhookDB(t, secret)
+	r := newGitCapabilityWebhookRouter(db)
+
+	w := signedGitCapabilityWebhook(t, r, "push", "delivery-fixture-push", secret, giteaLifecycleFixture(t, "push_default_branch.json"))
+	if status, _ := decodeWebhookResponse(t, w); w.Code != http.StatusAccepted || status != "queued" {
+		t.Fatalf("default-branch push status=%d body=%s", w.Code, w.Body.String())
+	}
+	w = signedGitCapabilityWebhook(t, r, "push", "delivery-fixture-new-branch", secret, giteaLifecycleFixture(t, "push_new_branch.json"))
+	if status, reason := decodeWebhookResponse(t, w); status != "ignored" || reason != "non_default_branch" {
+		t.Fatalf("new-branch push status=%q reason=%q", status, reason)
+	}
+	if count := countGitCapabilitySyncJobs(t, db); count != 1 {
+		t.Errorf("jobs = %d, want 1", count)
+	}
+}
+
+// Signature verification is unchanged by the widening, and this proves it
+// against real bytes rather than against a synthesized body: X-Gitea-Signature
+// is bare lowercase hex HMAC-SHA256 over the exact payload Gitea sent.
+func TestGitCapabilityWebhookVerifiesFixtureSignaturesAndRejectsTampering(t *testing.T) {
+	const secret = "webhook-secret"
+	for _, fixture := range []string{
+		"repository_deleted_user_owned.json", "create_branch.json", "delete_branch.json", "push_default_branch.json",
+	} {
+		t.Run(fixture, func(t *testing.T) {
+			db := setupGitCapabilityWebhookDB(t, secret)
+			seedWebhookBinding(t, db, 1285, "main")
+			body := giteaLifecycleFixture(t, fixture)
+			if w := signedGitCapabilityWebhook(t, newGitCapabilityWebhookRouter(db), eventForFixture(fixture), "d-"+fixture, "wrong-secret", body); w.Code != http.StatusUnauthorized {
+				t.Fatalf("tampered signature status = %d", w.Code)
+			}
+			if count := countGitCapabilitySyncJobs(t, db); count != 0 {
+				t.Fatalf("jobs = %d after a bad signature, want 0", count)
+			}
+		})
+	}
+}
+
+func eventForFixture(fixture string) string {
+	switch {
+	case strings.HasPrefix(fixture, "repository_"):
+		return "repository"
+	case strings.HasPrefix(fixture, "create_"):
+		return "create"
+	case strings.HasPrefix(fixture, "delete_"):
+		return "delete"
+	default:
+		return "push"
+	}
+}
+
+// A signed event outside the fixture-proven set is acknowledged (so Gitea stops
+// retrying) and audited, but changes nothing.
+func TestGitCapabilityWebhookIgnoresUnsupportedSignedEvents(t *testing.T) {
+	const secret = "webhook-secret"
+	for _, event := range []string{"pull_request", "issues", "fork", "release", "repository"} {
+		t.Run(event, func(t *testing.T) {
+			db := setupGitCapabilityWebhookDB(t, secret)
+			// The `repository` case is an unsupported ACTION, not an unsupported
+			// event: 1.24.6 has no `renamed`/`transferred`, but a future version
+			// might, and it must not be applied before a fixture proves its shape.
+			body := `{"action":"renamed","repository":{"id":42,"full_name":"alice/plugin-one","default_branch":"main","owner":{"login":"alice"}}}`
+			w := signedGitCapabilityWebhook(t, newGitCapabilityWebhookRouter(db), event, "delivery-"+event, secret, body)
+			if w.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+			}
+			if status, _ := decodeWebhookResponse(t, w); status != "ignored" {
+				t.Fatalf("status = %q, want ignored", status)
+			}
+			if count := countGitCapabilitySyncJobs(t, db); count != 0 {
+				t.Errorf("jobs = %d, want 0", count)
+			}
+		})
+	}
+}
+
+func TestGitCapabilityWebhookDeduplicatesLifecycleDelivery(t *testing.T) {
+	const secret = "webhook-secret"
+	db := setupGitCapabilityWebhookDB(t, secret)
+	r := newGitCapabilityWebhookRouter(db)
+	body := giteaLifecycleFixture(t, "repository_deleted_user_owned.json")
+	for i := 0; i < 3; i++ {
+		if w := signedGitCapabilityWebhook(t, r, "repository", "delivery-repeat", secret, body); w.Code != http.StatusAccepted {
+			t.Fatalf("attempt %d status = %d", i, w.Code)
+		}
+	}
+	if count := countGitCapabilitySyncJobs(t, db); count != 1 {
+		t.Fatalf("jobs = %d after 3 identical deliveries, want 1", count)
+	}
+}
+
+// Trap 2: `organization` on the repository event carries the OWNER even when
+// that owner is an ordinary user, and it is absent from push/create/delete.
+// repository.owner.login is the only path that works everywhere, and the owner
+// exclusion policy has to read it — otherwise a mirror-namespace repository
+// would be converged from an event.
+func TestGitCapabilityWebhookReadsOwnerFromRepositoryOwnerNotOrganization(t *testing.T) {
+	const secret = "webhook-secret"
+	t.Setenv("PLUGIN_GIT_MIRROR_OWNER", "fixture-probe-org")
+	db := setupGitCapabilityWebhookDB(t, secret)
+	// The org-owned deletion fixture has organization.login == repository.owner.login
+	// == fixture-probe-org, and no capability is bound to it.
+	body := giteaLifecycleFixture(t, "repository_deleted_org_owned.json")
+	w := signedGitCapabilityWebhook(t, newGitCapabilityWebhookRouter(db), "repository", "delivery-owner", secret, body)
+	if status, reason := decodeWebhookResponse(t, w); status != "ignored" || reason != "discovery_owner_excluded" {
+		t.Fatalf("status=%q reason=%q, want ignored/discovery_owner_excluded", status, reason)
+	}
+	if count := countGitCapabilitySyncJobs(t, db); count != 0 {
+		t.Fatalf("jobs = %d, want 0", count)
+	}
+
+	// Bound rows still converge: a mirror that something depends on must not be
+	// allowed to disappear silently.
+	if err := db.Exec(`INSERT INTO capability_items (id, content_backend, source_git_server_id, source_git_repo_id)
+		VALUES ('bound-item', 'git', 'gs-1', 1285)`).Error; err != nil {
+		t.Fatalf("seed bound item: %v", err)
+	}
+	w = signedGitCapabilityWebhook(t, newGitCapabilityWebhookRouter(db), "repository", "delivery-owner-bound", secret, body)
+	if status, _ := decodeWebhookResponse(t, w); status != "queued" {
+		t.Fatalf("bound mirror status = %q, want queued", status)
 	}
 }
