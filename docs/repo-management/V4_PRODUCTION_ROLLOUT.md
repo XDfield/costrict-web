@@ -127,13 +127,49 @@ bootstrap 之前跑冒烟必然假失败，理由见 §3）。
 反过来会看到一堆 undefined。
 
 ```
-1. 数据库 migration（见 §4；当前 14 个，以实际文件为准）
+1. 数据库 migration（见 §4；当前 20 个，以实际文件为准）
 2. api + worker（同批，它们共用 migration 结果）
 3. bootstrap（§6）：补 git_servers 的 web_url / webhook_secret + **建租户绑定** + 挂 system webhook
 4. 验证（§5 冒烟）—— 不通过就停在这里，不要继续
 5. 前端
 6. 再次验证（§5 完整）
+7. 数据清理（§4.1 `flatten-plugins`）—— **必须排在第 2 步之后**，理由见该节
 ```
+
+### ⚠️ migration 必须先于 api（顺序反了，症状会落在一个你没改的功能上）
+
+第 1 步和第 2 步的顺序**不是"建议"**。api 先上会让**管理员下架**这个上线了几个月的老功能直接 500，
+而且它坏的方式让人根本不会怀疑到"有个新 migration 没跑"。
+
+因果（本地实测复现，不是推演）：
+
+1. `adminitem.SetStatus`（以及 `PUT /items/:id`）在**一个事务**里先 CAS 把状态从
+   `active` 改成 `archived`，成功后在**同一个事务**里调
+   `services.RecordAdminArchiveTombstonesTx`（`internal/adminitem/service.go:354`）。
+2. 那次 INSERT 写的是 `reason='admin_archived', source='moderation', lifecycle_reason=NULL`。
+3. `20260806000300_extend_capability_sync_tombstone_causes` **没跑**时，
+   `chk_capability_sync_tombstones_cause` 只认三种三元组（`git_archived` / `unfavorited` /
+   `distribution_revoked`），这一行**违反 CHECK**，报 23514。
+4. 错误从事务闭包抛出 → GORM 回滚 → **第 1 步那次状态更新一起被回滚**。
+
+实测结果：
+
+```
+BEGIN
+UPDATE 1                                            ← 状态改成功了
+ERROR: new row for relation "capability_sync_tombstones"
+       violates check constraint "chk_capability_sync_tombstones_cause"
+(回滚后) SELECT status FROM capability_items;  →  active
+```
+
+⇒ 运维看到的是「下架按钮报 500，刷新后条目还在架上」。
+**症状 100% 落在下架功能上，而根因是设备同步 tombstone 的 migration 没跑** ——
+这两件事在人的脑子里毫无关联，所以排查会直奔 adminitem 而不是 `goose status`。
+
+⇒ **任何时候只要看到「下架 500 且条目没变」，第一件事是 `goose status`，不是读 adminitem 代码。**
+
+> 反过来（migration 先跑、api 还是旧的）是安全的：旧 api 不写这两种 reason，宽约束接受旧的三种三元组。
+> 这就是"migrate 先行"成立的原因，**不是**因为它更保险，而是因为反向有一个具体的、会静默误导人的失败。
 
 ### ⚠️ bootstrap 必须排在冒烟之前（顺序反了会 100% 假失败）
 
@@ -165,7 +201,7 @@ fork 侧接住它走 `unavailable("no git server is bound to this tenant")`
 
 ## 4. 数据库 migration
 
-本轮共 **14 个**，goose 按序执行：
+本轮共 **20 个**，goose 按序执行：
 
 ```
 20260802000000  add_capability_items_git_backing
@@ -182,6 +218,12 @@ fork 侧接住它走 `unavailable("no git server is bound to this tenant")`
 20260805000500  add_capability_item_git_revision_content_digest
 20260805000600  constrain_capability_item_git_revision_sha
 20260805000700  constrain_capability_sync_tombstone_triples
+20260805000800  materialize_capability_sync_snapshots
+20260806000000  backfill_git_lifecycle_reason_for_orphans
+20260806000100  freeze_capability_sync_snapshot_identity
+20260806000200  create_git_quota_rules
+20260806000300  extend_capability_sync_tombstone_causes   ← 见 §3「migration 必须先于 api」
+20260806000400  create_plugin_flatten_migration_runs      ← 只建工具表，见 §4.1
 ```
 
 > 这个清单会随开发继续增长。**发布前以 `server/migrations/` 下 `2026080[2-9]*` 的实际文件为准**，
@@ -190,13 +232,33 @@ fork 侧接住它走 `unavailable("no git server is bound to this tenant")`
 > ls server/migrations/2026080[2-9]*.sql | wc -l
 > ```
 
-**前 11 个里有 10 个是纯新增列/新建表，不删不改存量数据**；最后三个是给 V4 自己新建的表加列与约束
-（`capability_item_git_revisions` / `capability_sync_tombstones`），同样不触碰存量。
+**绝大多数是纯新增列/新建表，不删不改存量数据**；给 V4 自己新建的表加列与约束那几个
+（`capability_item_git_revisions` / `capability_sync_tombstones`）同样不触碰存量。
 
 **唯一一个动了既有对象的是第 6 个** `20260804010000_add_item_tags_source`：它 `DROP CONSTRAINT
 IF EXISTS uq_item_tag`，再建宽键 `uq_item_tag_source (item_id, tag_id, source)`，
 并给 `item_tags` 加 `source` 列（存量行回填 `'legacy'`）。**不动任何数据行**，只换约束；
 目的是让 git 域与用户域的同名 tag 不再互相顶掉。
+
+**`20260806000300` 是唯一一个"跑晚了会弄坏一个老功能"的**，理由见 §3 那一节。
+
+---
+
+### 4.1 `flatten-plugins`：唯一顺序相反的一步
+
+`20260806000400_create_plugin_flatten_migration_runs` 本身只建两张工具表，不碰任何业务行，
+放在第 1 步随 goose 跑掉即可。**真正改数据的是 `migrate flatten-plugins apply`，
+它必须排在 api 部署之后**，与本文档其它所有"migrate 先行"的步骤方向相反。
+
+原因是它清理的对象正由 api 产生：旧 api 的 catalog ingest / archive 上传 / fork 三条路径
+都会写 `capability_items.parent_plugin_id`。**先清理再部署 api，就是边清边生**——
+清理跑完那一刻数据是对的，下一次 catalog ingest 又把子项建回来，
+而且新建的行不在任何一次 run 的计划里，审计上无迹可寻。
+
+⇒ **顺序写死：goose（含 20260806000400）→ api+worker（写者已停）→ 观察一轮 ingest 无新增 → 才 apply。**
+
+完整的执行步骤、判据、校验与回滚条件在 **`PLUGIN_FLATTEN_RUNBOOK.md`**（与本文件同目录）。
+**这是该迁移第一次碰真实数据，照着走，不要临场判断。**
 
 ---
 
@@ -366,7 +428,8 @@ plugin 是特例：它需要先把上游镜像导进自建 Gitea（`BUNDLE_TO_GI
 - [ ] **`CS_BOT_TOKEN_KEY` 已注入 api 与 worker**（推荐 k8s `env:`；envFile/ConfigMap 挂 `/app/.env` 同样有效，见 §1）
 - [ ] `GIT_SERVER_TEMPLATE_ENDPOINT` + `_ADMIN_TOKEN` 已配
 - [ ] `GIT_CAPABILITY_WORKER_CONCURRENCY=8`
-- [ ] `server/migrations/2026080[2-9]*` 下的 migration **全部**执行成功（当前 14 个，以实际文件为准）
+- [ ] `server/migrations/2026080[2-9]*` 下的 migration **全部**执行成功（当前 20 个，以实际文件为准）
+- [ ] **migration 在 api 之前跑完** —— 反了会让管理员下架 500 且条目不变（§3；`20260806000300`）
 - [ ] api 与 worker **同批**上线
 - [ ] git_servers 的 `endpoint` 与 `config.web_url` 取值不同
 - [ ] **`git_servers.config.webhook_secret` 已手工写入**（种子不会写）
@@ -380,5 +443,7 @@ plugin 是特例：它需要先把上游镜像导进自建 Gitea（`BUNDLE_TO_GI
 - [ ] 存量 DB-backed 项零回归
 - [ ] 前端已部署
 - [ ] 明确本期**不迁移存量**（或已定分批计划）
+- [ ] **`flatten-plugins apply` 排在 api 之后**，且已观察到一轮 catalog ingest 不再新建子项
+      （§4.1；顺序反了就是边清边生。执行按 runbook，不要临场判断）
 
 上线后把 `V4_OPERATIONS.md` §1 的例行体检加进值班动作。
