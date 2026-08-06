@@ -22,7 +22,31 @@ import (
 // run/row tables. None of those exist on SQLite, so a green SQLite suite would
 // certify nothing about the engine this runs on.
 
+// pluginFlattenTombstoneMigrations is capability_sync_tombstones' whole
+// constraint history, in order. The table comes from the real migrations rather
+// than a hand-written copy: the point of the tombstone tests is that this
+// command writes a row the PRODUCTION cause CHECK accepts, and a copied
+// constraint proves that only until somebody widens one of the two texts and not
+// the other — which is exactly what R6-9 caught in this file's own bootstrap DDL.
+//
+// It is a slice so a test can build a database that stopped at an earlier point
+// in that history, which is the only honest way to exercise the migrate-run
+// precondition gate: the state it refuses is "20260806000500 has not run".
+var pluginFlattenTombstoneMigrations = []string{
+	"20260805000200_create_capability_sync_tombstones.sql",
+	"20260805000700_constrain_capability_sync_tombstone_triples.sql",
+	"20260806000300_extend_capability_sync_tombstone_causes.sql",
+	"20260806000500_add_capability_sync_tombstone_flatten_cause.sql",
+}
+
 func newPluginFlattenPostgresDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	return newPluginFlattenPostgresDBAt(t, pluginFlattenTombstoneMigrations)
+}
+
+// newPluginFlattenPostgresDBAt builds the fixture schema with the tombstone
+// table migrated only as far as the given files.
+func newPluginFlattenPostgresDBAt(t *testing.T, tombstoneMigrations []string) *gorm.DB {
 	t.Helper()
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -112,20 +136,9 @@ func newPluginFlattenPostgresDB(t *testing.T) *gorm.DB {
 			t.Fatalf("create fixture table: %v", err)
 		}
 	}
-	// capability_sync_tombstones comes from the real migrations rather than a
-	// hand-written copy. The point of the tombstone tests below is that this
-	// command writes a row the PRODUCTION cause CHECK accepts, and a copied
-	// constraint proves that only until somebody widens one of the two texts and
-	// not the other — which is exactly what R6-9 caught in this file's own
-	// bootstrap DDL. The list is the table's whole constraint history, in order.
-	for _, file := range []string{
-		"20260805000200_create_capability_sync_tombstones.sql",
-		"20260805000700_constrain_capability_sync_tombstone_triples.sql",
-		"20260806000300_extend_capability_sync_tombstone_causes.sql",
-		"20260806000500_add_capability_sync_tombstone_flatten_cause.sql",
-	} {
+	for _, file := range tombstoneMigrations {
 		if err := applyMigrationUpBlock(db, file); err != nil {
-			t.Fatalf("apply tombstone migration: %v", err)
+			t.Fatalf("apply tombstone migration %s: %v", file, err)
 		}
 	}
 	if err := ensurePluginFlattenTables(db); err != nil {

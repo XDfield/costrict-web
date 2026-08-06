@@ -56,7 +56,13 @@
 
 > `20260806000500` 是**硬前置**，不是可选项：apply 会在归档行的同一个事务里为每个
 > 持有者写 tombstone（见 §4.5），少了它 CHECK 会拒绝，整批事务回滚。
-> 工具表能靠 `ensurePluginFlattenTables` 自建，这条 CHECK **不能**。
+> 工具表能靠 `ensurePluginFlattenTables` 自建，这条 CHECK **不能**——
+> 改一条活表上的约束是有自己 review 和 Down 块的结构变更，不该由一个数据迁移子命令偷偷做。
+>
+> 所以 apply **自己会在写任何数据之前拒绝**跑在缺这条迁移的库上（§2.1）。
+> 这道闸的意义不是"多一层保险"，而是把失败从**半途**挪到**开始之前**：
+> 撞上 CHECK 的那一批会回滚，但**之前已经提交的批次不会**，run 停在 `partial`，
+> 要收拾就得再走一轮 rollback——比干脆没开始糟糕得多。
 
 > 与本文档其它步骤方向相反：V4 其它所有 migration 都是"migrate 先行"，
 > 只有这个**数据清理**必须在 api 之后。别把两件事混成一条规则。
@@ -76,15 +82,28 @@ psql -c "\dt plugin_flatten_migration_*"
 > 不在也能跑 —— 命令启动时会跑迁移文件自己的 Up 块自建（`ensurePluginFlattenTables`）。
 > 但如果这里是空的，说明 goose 没跑完，**先去查 goose，别绕过去**。
 
-还要确认 tombstone 的 CHECK 已经放行本命令要写的三元组（这条没有自建兜底）：
+tombstone 的 CHECK 必须已经放行本命令要写的三元组（这条**没有自建兜底**，见 §1）。
+
+**这一条工具会自己拦**：`apply`（含空跑）在写任何数据之前先探测这条约束，
+不满足就直接拒绝执行、一行不写，并在错误里点名 `20260806000500` 和怎么补。
+所以你不需要靠记性——**忘了跑迁移不会变成一个 `partial` 的半成品 run**。
+
+`plan` 不受这道闸限制（它不写 tombstone），`rollback-apply` 也不受
+（回滚是把行恢复成 active，恢复不产生移除指令）。
+
+想提前自己确认、或者想核对工具的判断对不对，用这条（工具用的就是同一个判据）：
 
 ```sql
-SELECT pg_get_constraintdef(oid) LIKE '%package_flattened%' AS ready
-FROM pg_constraint WHERE conname = 'chk_capability_sync_tombstones_cause';
+SELECT pg_get_constraintdef(c.oid) LIKE '%package_flattened%' AS ready
+FROM pg_constraint c
+WHERE c.conrelid = to_regclass('capability_sync_tombstones')
+  AND c.conname = 'chk_capability_sync_tombstones_cause';
 ```
 
-判据：`t`。是 `f` 就说明 `20260806000500` 没跑，**apply 会在第一个有持有者的
-归档行上整批失败**（run 停在 `partial`，可按 run id 续跑，但先去补迁移）。
+判据：`t`。是 `f`（或零行）就说明 `20260806000500` 没跑，回到 §1 第 1 步补迁移。
+
+> 注意用 `conrelid = to_regclass(...)` 限定表，不要只按 `conname` 查：
+> 同名约束在别的 schema 里也可能存在，只按名字查会查到不是你要写的那张表的那一条。
 
 ### 2.2 api 确实是新的 —— **必须逐 pod 问，不能只问一次**
 

@@ -367,6 +367,113 @@ func persistPluginFlattenRun(db *gorm.DB, run pluginFlattenRunRecord, rows []plu
 
 var errPluginFlattenDigestMismatch = errors.New("plan digest does not match the stored run")
 
+// The tombstone cause CHECK apply's removal instructions have to satisfy, and
+// the migration that widens it to accept them.
+//
+// Unlike the two tool tables, apply may NOT bootstrap this one. Rewriting a
+// constraint on a live table that every removal path writes to is a schema
+// change with its own review, its own Down block and its own failure mode (the
+// Down block refuses while any package_flattened row exists, on purpose); a data
+// migration subcommand doing it behind the operator's back would be a second,
+// unreviewed definition of the same constraint — the drift R6-9 already caught
+// once in this command's own bootstrap DDL.
+const (
+	pluginFlattenTombstoneTable          = "capability_sync_tombstones"
+	pluginFlattenTombstoneCauseCheck     = "chk_capability_sync_tombstones_cause"
+	pluginFlattenTombstoneCauseMigration = "20260806000500_add_capability_sync_tombstone_flatten_cause"
+)
+
+// requirePluginFlattenTombstoneCause refuses a migrate run whose removal
+// instructions this database would reject, before the run writes anything.
+//
+// # Why this is a gate and not a runbook step
+//
+// recordPluginFlattenRemovalTx writes one tombstone per holder INSIDE the
+// transaction that archives the row, so a database still carrying the
+// five-triple CHECK does not fail politely at the door: the first archived row
+// that anybody favorited or received violates the constraint, its whole batch
+// rolls back, applyPluginFlatten marks the run `partial` with the earlier
+// batches committed, and finishing up now needs a rollback run. That is strictly
+// worse than never having started, and until now the only thing standing between
+// the two was whether the operator remembered to run one SQL query out of
+// runbook §2.1. A hard precondition of a 6738-row migration cannot live only in
+// prose.
+//
+// # Why apply and not plan or rollback
+//
+// `plan` writes no capability_items row and therefore no tombstone. A rollback
+// run restores rows (archived -> active), and restoring removes nothing, so
+// recordPluginFlattenRemovalTx deliberately writes nothing for it — gating the
+// undo path on a migration would also be backwards, since the rollback is what
+// an operator reaches for when the forward step has already gone wrong. (The
+// state is unreachable anyway: 20260806000500's Down block refuses while any
+// package_flattened row exists, so a database that has applied cannot un-apply
+// the constraint under a pending rollback.)
+//
+// # Why it is not narrowed to runs that actually archive something
+//
+// A run whose every actionable row is `unlink_only` writes no tombstone and
+// would technically survive a stale constraint. Deriving the gate from plan
+// contents would let that run pass on a broken database and hand the failure to
+// the next run — the one that archives. The migration is a prerequisite of the
+// command, not of one plan's contents.
+//
+// # Why the probe resolves through search_path
+//
+// to_regclass answers about the table an unqualified INSERT would reach, which
+// is exactly what RecordEntitlementRemovalTx performs. Matching pg_constraint by
+// name alone would accept a same-named constraint in any other schema, and
+// resolving through current_schema() alone would answer about a table the write
+// may not even use — the failure countByItem's comment records, where a
+// non-default search_path silently reported zero for the whole fleet.
+func requirePluginFlattenTombstoneCause(db *gorm.DB) error {
+	var probe struct {
+		TableFound bool
+		Definition string
+	}
+	res := db.Raw(`
+		SELECT to_regclass(?) IS NOT NULL AS table_found,
+		       COALESCE((
+		           SELECT pg_get_constraintdef(c.oid)
+		             FROM pg_constraint c
+		            WHERE c.conrelid = to_regclass(?)
+		              AND c.conname = ?
+		       ), '') AS definition`,
+		pluginFlattenTombstoneTable, pluginFlattenTombstoneTable, pluginFlattenTombstoneCauseCheck).
+		Scan(&probe)
+	if res.Error != nil {
+		return fmt.Errorf("probe %s on %s: %w",
+			pluginFlattenTombstoneCauseCheck, pluginFlattenTombstoneTable, res.Error)
+	}
+
+	if !probe.TableFound {
+		return fmt.Errorf(
+			"apply refused: table %s does not exist in this database's search_path, so the capability sync tombstone migrations (%s and the ones before it) have not run\n"+
+				"  why it matters: apply must record a removal instruction for every holder of every row it archives; against a schema without that table it would archive silently and every holder would keep the capability installed forever\n"+
+				"  fix: run the schema migrations against this database (`DATABASE_URL=... go run ./cmd/migrate`, or your deployment's migrate job), then re-run apply\n"+
+				"  nothing has been written",
+			pluginFlattenTombstoneTable, pluginFlattenTombstoneCauseMigration)
+	}
+	if strings.Contains(probe.Definition, models.SyncTombstoneReasonPackageFlattened) &&
+		strings.Contains(probe.Definition, models.SyncTombstoneSourceDataMigration) {
+		return nil
+	}
+
+	observed := probe.Definition
+	if observed == "" {
+		observed = "constraint " + pluginFlattenTombstoneCauseCheck + " is absent from " + pluginFlattenTombstoneTable
+	}
+	return fmt.Errorf(
+		"apply refused: migration %s has not run on this database, so %s does not accept the %s/%s tombstones apply must write\n"+
+			"  observed: %s\n"+
+			"  why it matters: the tombstone is written in the SAME transaction that archives the row, so the first archived row that anybody favorited or received fails the CHECK, rolls its whole batch back, and leaves the run `partial` with earlier batches already committed\n"+
+			"  fix: run the schema migrations against this database (`DATABASE_URL=... go run ./cmd/migrate`, or your deployment's migrate job), re-check with the query in PLUGIN_FLATTEN_RUNBOOK.md §2.1, then re-run apply\n"+
+			"  nothing has been written",
+		pluginFlattenTombstoneCauseMigration, pluginFlattenTombstoneCauseCheck,
+		models.SyncTombstoneReasonPackageFlattened, models.SyncTombstoneSourceDataMigration,
+		observed)
+}
+
 // applyPluginFlatten executes a planned run. Every write is a compare-and-set on
 // the before-state the plan recorded, in bounded transactions, resumable by run
 // id.
@@ -375,7 +482,9 @@ var errPluginFlattenDigestMismatch = errors.New("plan digest does not match the 
 // the plan as it exists in the database (and, when an artifact is supplied,
 // against that file too). An operator who edited the artifact, or who is
 // pointing at a plan that was regenerated under them, is stopped before the
-// first row moves rather than halfway through.
+// first row moves rather than halfway through. The schema prerequisite that
+// makes the run's tombstone writes legal is checked in the same place and for
+// the same reason.
 func applyPluginFlatten(db *gorm.DB, opts pluginFlattenOptions, expectedMode string, out io.Writer) error {
 	if err := ensurePluginFlattenTables(db); err != nil {
 		return err
@@ -422,6 +531,18 @@ func applyPluginFlatten(db *gorm.DB, opts pluginFlattenOptions, expectedMode str
 		if artifact.RunID != run.ID || artifact.PlanDigest != run.PlanDigest {
 			return fmt.Errorf("%w: artifact %s describes run=%s digest=%s",
 				errPluginFlattenDigestMismatch, opts.ArtifactPath, artifact.RunID, artifact.PlanDigest)
+		}
+	}
+
+	// The schema this run's writes depend on. Checked on the dry run too: the dry
+	// run exists to tell an operator what --confirm will do, and "it will fail on
+	// the first archived row anybody holds, halfway through" is the single most
+	// useful thing it can say. Neither path has written data at this point — only
+	// ensurePluginFlattenTables' idempotent tool-table DDL has run, which `plan`
+	// and `status` do anyway.
+	if run.Mode == flattenModeMigrate {
+		if err := requirePluginFlattenTombstoneCause(db); err != nil {
+			return err
 		}
 	}
 

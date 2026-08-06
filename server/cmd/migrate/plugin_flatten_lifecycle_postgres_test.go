@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -126,6 +127,151 @@ func TestPluginFlatten_ApplyTombstonesEveryHolderOfARowItArchived(t *testing.T) 
 	if favorites != 2 || receipts != 2 {
 		t.Errorf("relationships were removed: favorites=%d receipts=%d", favorites, receipts)
 	}
+}
+
+// The tombstone cause migration is a HARD precondition of apply, and it was
+// enforced only by two paragraphs of runbook prose. Without it, apply discovers
+// the problem in the worst available way: the tombstone is written in the same
+// transaction that archives the row, so the first archived row with a holder
+// fails the CHECK, its batch rolls back, and the run is left `partial` with
+// earlier batches committed — an outcome that needs a rollback run to clean up
+// and is strictly worse than never having started.
+//
+// This pins both halves of the gate on ONE database, so it also proves the gate
+// is a precondition and not a permanent refusal: refused while the migration is
+// missing, and the identical command succeeds once it has run.
+func TestPluginFlatten_ApplyRefusesADatabaseMissingTheTombstoneCauseMigration(t *testing.T) {
+	stale := pluginFlattenTombstoneMigrations[:len(pluginFlattenTombstoneMigrations)-1]
+	db := newPluginFlattenPostgresDBAt(t, stale)
+	seedFlattenWorld(t, db)
+	seedFavorite(t, db, fxCatalog1, fxHolderFavorite)
+	seedLiveDistribution(t, db, fxCatalog2, fxHolderReceipt)
+
+	// `plan` is deliberately NOT gated: it writes no capability_items row and so
+	// no tombstone, and an operator may legitimately build a plan before the
+	// schema catches up. If this ever starts failing, the gate has been put in
+	// the wrong place.
+	runID, _ := planFor(t, db, "")
+
+	before := flattenItemStates(t, db)
+
+	// The dry run is refused too. Its whole job is to say what --confirm will do.
+	dryRunErr := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, ReportLimit: 0},
+		flattenModeMigrate, io.Discard)
+	assertFlattenCausePreconditionError(t, "dry run", dryRunErr)
+
+	confirmErr := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, Confirm: true, ReportLimit: 0},
+		flattenModeMigrate, io.Discard)
+	assertFlattenCausePreconditionError(t, "confirmed apply", confirmErr)
+
+	// Zero data written: not one capability_items row moved, and not one
+	// tombstone exists. A gate that refuses after the first batch would be no
+	// better than the CHECK it is standing in front of.
+	if after := flattenItemStates(t, db); !reflect.DeepEqual(before, after) {
+		t.Fatalf("a refused apply changed capability_items:\n before %v\n after  %v", before, after)
+	}
+	var tombstones int64
+	if err := db.Table("capability_sync_tombstones").Count(&tombstones).Error; err != nil {
+		t.Fatalf("count tombstones: %v", err)
+	}
+	if tombstones != 0 {
+		t.Fatalf("a refused apply wrote %d tombstone(s)", tombstones)
+	}
+	// And the run is untouched, so it is not left looking half-executed.
+	run, err := loadPluginFlattenRun(db, runID)
+	if err != nil {
+		t.Fatalf("load run: %v", err)
+	}
+	if run.Status != flattenRunPlanned {
+		t.Fatalf("refused run status = %s, want %s", run.Status, flattenRunPlanned)
+	}
+	for _, r := range mustLoadFlattenRows(t, db, runID) {
+		if r.Action != flattenActionSkip && r.RowState != flattenRowPending {
+			t.Errorf("row %s is %s after a refused apply, want pending", r.ItemID, r.RowState)
+		}
+	}
+
+	// Now run the missing migration on the same database — the fix the error
+	// message tells the operator to apply — and re-run the identical command.
+	missing := pluginFlattenTombstoneMigrations[len(pluginFlattenTombstoneMigrations)-1]
+	if err := applyMigrationUpBlock(db, missing); err != nil {
+		t.Fatalf("apply %s: %v", missing, err)
+	}
+	if err := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, Confirm: true, ReportLimit: 0},
+		flattenModeMigrate, io.Discard); err != nil {
+		t.Fatalf("apply after the migration landed: %v", err)
+	}
+	for _, id := range []string{fxCatalog1, fxCatalog2, fxArchive, fxForkSource, fxFork} {
+		if status, parent := liveItem(t, db, id); status != "archived" || parent != nil {
+			t.Errorf("row %s did not converge: status=%s parent=%v", id, status, parent)
+		}
+	}
+	for _, tc := range []struct{ item, holder string }{
+		{fxCatalog1, fxHolderFavorite},
+		{fxCatalog2, fxHolderReceipt},
+	} {
+		got, ok := tombstonesFor(t, db, tc.item)[tc.holder]
+		if !ok {
+			t.Fatalf("holder %s of %s received no removal instruction", tc.holder, tc.item)
+		}
+		if got[0] != models.SyncTombstoneReasonPackageFlattened ||
+			got[1] != models.SyncTombstoneSourceDataMigration {
+			t.Errorf("holder %s tombstoned as %s/%s", tc.holder, got[0], got[1])
+		}
+	}
+}
+
+// assertFlattenCausePreconditionError pins what the refusal has to TELL the
+// operator, not merely that it refused. The message is the whole point of the
+// gate: it has to name the migration by id and say how to run it, or the
+// operator is back to reading a handbook to decode an error.
+func assertFlattenCausePreconditionError(t *testing.T, what string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s ran against a database missing %s", what, pluginFlattenTombstoneCauseMigration)
+	}
+	for _, want := range []string{
+		pluginFlattenTombstoneCauseMigration,
+		pluginFlattenTombstoneCauseCheck,
+		models.SyncTombstoneReasonPackageFlattened,
+		models.SyncTombstoneSourceDataMigration,
+		"go run ./cmd/migrate",
+		"nothing has been written",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("%s refusal does not mention %q:\n%v", what, want, err)
+		}
+	}
+}
+
+// flattenItemStates is every capability_items row's mutable state, for
+// before/after comparison.
+func flattenItemStates(t *testing.T, db *gorm.DB) map[string]string {
+	t.Helper()
+	var rows []struct {
+		ID             string
+		Status         string
+		ParentPluginID *string
+	}
+	if err := db.Table("capability_items").
+		Select("id::text AS id, status, parent_plugin_id::text AS parent_plugin_id").
+		Scan(&rows).Error; err != nil {
+		t.Fatalf("snapshot capability_items: %v", err)
+	}
+	out := make(map[string]string, len(rows))
+	for _, r := range rows {
+		out[r.ID] = r.Status + "/" + derefOr(r.ParentPluginID, "<nil>")
+	}
+	return out
+}
+
+func mustLoadFlattenRows(t *testing.T, db *gorm.DB, runID string) []pluginFlattenPlanRow {
+	t.Helper()
+	rows, err := loadPluginFlattenRows(db, runID)
+	if err != nil {
+		t.Fatalf("load rows: %v", err)
+	}
+	return rows
 }
 
 // The event id is the client's dedup key: it must rotate on a real removal and

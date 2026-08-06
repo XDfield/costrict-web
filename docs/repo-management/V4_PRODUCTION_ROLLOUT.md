@@ -254,6 +254,10 @@ tombstone 三元组（`package_flattened` / `data_migration`）。后者是**硬
 apply 在归档行的同一个事务里给每个持有者写移除指令，少了它 CHECK 会拒绝、整批回滚
 （工具表还能被命令自建，这条 CHECK 不能）。
 
+**不必靠人记得**：`apply` 会在写任何数据之前探测这条约束，缺了就拒绝执行、一行不写，
+并在错误里点名要跑哪个迁移。它拦的不是"会不会失败"，而是"在哪儿失败"——
+撞上 CHECK 时**先前已提交的批次不会回滚**，run 停在 `partial`，收拾要再走一轮 rollback。
+
 **真正改数据的是 `migrate flatten-plugins apply`，它必须排在 api 部署之后**，
 与本文档其它所有"migrate 先行"的步骤方向相反。
 
