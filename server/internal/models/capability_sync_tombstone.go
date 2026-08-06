@@ -3,17 +3,33 @@ package models
 import "time"
 
 // Reasons a user's entitlement to a capability ended.
+//
+// The set is OPEN by contract: a tombstone's presence is the removal
+// instruction and the reason only explains it, so csc removes on a reason it
+// does not recognise (reporting the string verbatim) rather than ignoring the
+// row. Adding one therefore needs no client release — but it does need a
+// truthful name. Reusing an existing reason for a different kind of event is
+// the failure mode this set exists to prevent, not a shortcut around it.
 const (
 	SyncTombstoneReasonGitArchived         = "git_archived"
 	SyncTombstoneReasonUnfavorited         = "unfavorited"
 	SyncTombstoneReasonDistributionRevoked = "distribution_revoked"
+	// SyncTombstoneReasonAdminArchived is a moderation take-down: an operator
+	// moved the item off the shelf (adminitem.SetStatus / PUT /items/:id).
+	SyncTombstoneReasonAdminArchived = "admin_archived"
+	// SyncTombstoneReasonItemDeleted is a catalog hard delete: the item row and
+	// its dependents were removed outright.
+	SyncTombstoneReasonItemDeleted = "item_deleted"
 )
 
-// Which subsystem produced the tombstone.
+// Which subsystem produced the tombstone. Determined by Reason; the pairing is
+// enforced as a triple by chk_capability_sync_tombstones_cause.
 const (
 	SyncTombstoneSourceGitLifecycle = "git_lifecycle"
 	SyncTombstoneSourceFavorite     = "favorite"
 	SyncTombstoneSourceDistribution = "distribution"
+	SyncTombstoneSourceModeration   = "moderation"
+	SyncTombstoneSourceCatalog      = "catalog"
 )
 
 // CapabilitySyncTombstone is the durable, explicit "this user no longer has

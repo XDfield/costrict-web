@@ -1487,6 +1487,7 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 	originalDescription := item.Description
 	originalCategory := item.Category
 	originalVersion := item.Version
+	originalStatus := item.Status
 
 	if req.Name != "" {
 		item.Name = req.Name
@@ -1598,6 +1599,42 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		newRevision = item.CurrentRevision
 	}
 
+	// F-27 — this endpoint is the second way an item is taken off the shelf, and
+	// it wrote no tombstone either. Under snapshot v2 an item's absence never
+	// authorizes a client to unload it, so an archive here left the capability
+	// installed on every holder's device permanently.
+	//
+	// The trigger is any active -> off-the-shelf move, not `archived` alone:
+	// models.IsCapabilityHiddenStatus is the single definition (archived |
+	// banned | inactive) and the snapshot's active set is exactly
+	// `status = 'active'`, so banning ends entitlements just as archiving does.
+	// Naming only `archived` here would leave the identical hole one status
+	// string to the side.
+	archiveRequested := originalStatus == "active" && models.IsCapabilityHiddenStatus(item.Status)
+	recordArchiveTransition := func(tx *gorm.DB) error {
+		if !archiveRequested {
+			return nil
+		}
+		// Compare-and-set, not the read at the top of this handler: the
+		// tombstone's event id must rotate on a real removal and must not
+		// rotate otherwise, and only the statement that actually moved the row
+		// knows which happened. Two concurrent archives would otherwise both
+		// observe `active` and both mint a fresh id for one transition.
+		claim := tx.Model(&models.CapabilityItem{}).
+			Where("id = ? AND status = ?", item.ID, "active").
+			Update("status", item.Status)
+		if claim.Error != nil {
+			return claim.Error
+		}
+		if claim.RowsAffected != 1 {
+			// Lost the race — whoever won wrote the tombstones. The Save below
+			// still writes the requested status, exactly as before.
+			return nil
+		}
+		_, err := services.RecordAdminArchiveTombstonesTx(tx, item.ID, time.Now())
+		return err
+	}
+
 	if versionedChanged {
 		createdBy := item.UpdatedBy
 		if createdBy == "" {
@@ -1607,6 +1644,9 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 		itemID := item.ID
 		itemContent := item.Content
 		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := recordArchiveTransition(tx); err != nil {
+				return err
+			}
 			if err := tx.Save(&item).Error; err != nil {
 				return err
 			}
@@ -1656,8 +1696,17 @@ func (h *ItemHandler) updateItemFromJSON(c *gin.Context) {
 			enqueueScanAsync(itemID, newRevision, "update")
 		}
 	} else {
-		if result := db.Save(&item); result.Error != nil {
-			if respondGitOwnedFieldConflict(c, result.Error) {
+		// The status write and its tombstones share one transaction for the same
+		// reason the versioned path above does: committing the take-down without
+		// the removal instruction is the defect, and committing the instruction
+		// without the take-down would unload a capability still on sale.
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := recordArchiveTransition(tx); err != nil {
+				return err
+			}
+			return tx.Save(&item).Error
+		}); err != nil {
+			if respondGitOwnedFieldConflict(c, err) {
 				return
 			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update item"})

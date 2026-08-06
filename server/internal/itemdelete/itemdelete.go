@@ -8,6 +8,11 @@
 // both callers — plus the admin batch-delete endpoint — share it.
 //
 // Cascade semantics (within the caller-provided transaction):
+//   - every current holder is tombstoned FIRST, before any relationship row is
+//     removed. The holder set is derived from item_favorites and the live
+//     distribution receipts, so once the cascade below has deleted those the
+//     question "who had this?" is unanswerable — a tombstone written afterwards
+//     silently tombstones nobody.
 //   - bundled sub-skills (parent_plugin_id = id) are HARD-deleted recursively,
 //     each carrying its own dependent rows. This replaces the previous
 //     soft-archive ("status='archived'") behavior: a deleted plugin must not
@@ -28,8 +33,10 @@ package itemdelete
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/services"
 	"gorm.io/gorm"
 )
 
@@ -60,7 +67,27 @@ func cascadeDelete(tx *gorm.DB, id string, visited map[string]bool) error {
 		return err
 	}
 
-	// 1) Recurse into bundled sub-skills first so each child clears its own
+	// 1) Tombstone every current holder — BEFORE anything below removes the
+	//    rows that identify them.
+	//
+	//    A hard delete ends the entitlement of everyone who favorited the item
+	//    or holds a live distribution receipt for it, and under snapshot v2 an
+	//    item's absence never authorizes a client to unload it. Without this the
+	//    capability stays installed on every one of those devices permanently,
+	//    and nothing reports a fault: the server has no row left to notice is
+	//    missing, and the client was never told anything.
+	//
+	//    The ordering is the whole point and it is not recoverable afterwards.
+	//    Step 3 deletes item_favorites and step 4 deletes the distribution
+	//    receipts; run this after either of them and the holder query returns
+	//    an empty set, writes nothing, and returns success. Unlike an archive —
+	//    where the row survives and the answer can be recomputed — the evidence
+	//    here is gone for good.
+	if err := recordDeletionTombstones(tx, id); err != nil {
+		return err
+	}
+
+	// 2) Recurse into bundled sub-skills first so each child clears its own
 	//    dependent rows before the parent row goes away.
 	if tx.Migrator().HasTable(&models.CapabilityItem{}) {
 		var subIDs []string
@@ -79,7 +106,7 @@ func cascadeDelete(tx *gorm.DB, id string, visited map[string]bool) error {
 		}
 	}
 
-	// 2) Dependent rows keyed by item_id. Best-effort across schemas: older
+	// 3) Dependent rows keyed by item_id. Best-effort across schemas: older
 	//    deployments / SQLite unit fixtures may lack some tables, so skip any
 	//    table that does not exist rather than failing the whole delete.
 	deletions := []struct {
@@ -118,7 +145,7 @@ func cascadeDelete(tx *gorm.DB, id string, visited map[string]bool) error {
 		}
 	}
 
-	// 3) Distribution receipts reference distributions, which reference the item.
+	// 4) Distribution receipts reference distributions, which reference the item.
 	//    Delete receipts first, then the distributions themselves. (Receipts may
 	//    carry a forked_item_id pointing at a fork copy — that fork is another
 	//    user's item and is NOT touched here, only the receipt row is removed.)
@@ -135,9 +162,21 @@ func cascadeDelete(tx *gorm.DB, id string, visited map[string]bool) error {
 		}
 	}
 
-	// 4) The item row itself, last.
+	// 5) The item row itself, last.
 	if err := tx.Delete(&models.CapabilityItem{}, "id = ?", id).Error; err != nil {
 		return fmt.Errorf("failed to delete item %s: %w", id, err)
+	}
+	return nil
+}
+
+// recordDeletionTombstones writes the catalog tombstones for one item.
+//
+// The tombstone table carries no foreign key to capability_items precisely so
+// these rows outlive the item — the instruction to remove a capability must not
+// disappear together with the capability.
+func recordDeletionTombstones(tx *gorm.DB, id string) error {
+	if _, err := services.RecordItemDeleteTombstonesTx(tx, id, time.Now()); err != nil {
+		return fmt.Errorf("failed to record removal tombstones for %s: %w", id, err)
 	}
 	return nil
 }

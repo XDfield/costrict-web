@@ -66,6 +66,11 @@ var ErrInvalidTombstoneCause = errors.New("invalid capability sync tombstone cau
 //   - unfavoriteItemTx calls this only when the DELETE affected a row.
 //   - the Git lifecycle writer (Phase C) calls RecordGitArchiveTombstonesTx
 //     only inside the transaction that actually flipped the item to archived.
+//   - the moderation paths (adminitem.SetStatus / BatchSetStatus and
+//     PUT /items/:id) call RecordAdminArchiveTombstonesTx only when their own
+//     `WHERE status = 'active'` predicate claimed the transition.
+//   - the cascade delete calls RecordItemDeleteTombstonesTx once per item, and
+//     before it removes the favorites and receipts the holder set is read from.
 //
 // Over-rotation is chosen where the two are genuinely ambiguous (a user
 // unfavoriting an item that a Git archive already tombstoned): csc re-applying
@@ -128,8 +133,59 @@ func RecordEntitlementRemovalTx(tx *gorm.DB, removal EntitlementRemoval) error {
 // contract preserves the relationship (so a restore reactivates the same item
 // for the same people) and expresses the removal through the tombstone.
 func RecordGitArchiveTombstonesTx(tx *gorm.DB, itemID, lifecycleReason string, archivedAt time.Time) (int, error) {
+	return recordHolderTombstonesTx(tx, itemID, models.SyncTombstoneReasonGitArchived, lifecycleReason, archivedAt)
+}
+
+// RecordAdminArchiveTombstonesTx is the moderation entry point: an operator
+// moved the item off the shelf through adminitem.SetStatus / BatchSetStatus or
+// PUT /items/:id.
+//
+// Same calling contract as the Git writer, for the same reason: call it ONLY
+// from inside the transaction whose compare-and-set proved the row went
+// active -> archived. Archiving an already-archived row rotates event ids for a
+// transition that did not happen, and a client that has already applied the
+// removal would re-run removal work on every poll.
+//
+// Favorites and distribution receipts are deliberately left in place. The
+// relationship survives the take-down, so restoring the item makes it active
+// again for the same people — the snapshot supersedes the tombstone on its own
+// (a currently active item wins), with no tombstone deletion and therefore no
+// loss of the record an offline device still needs.
+func RecordAdminArchiveTombstonesTx(tx *gorm.DB, itemID string, archivedAt time.Time) (int, error) {
+	return recordHolderTombstonesTx(tx, itemID, models.SyncTombstoneReasonAdminArchived, "", archivedAt)
+}
+
+// RecordItemDeleteTombstonesTx is the catalog entry point: the item row and its
+// dependents are being hard-deleted.
+//
+// # Call it BEFORE the cascade removes favorites and receipts
+//
+// The holder set is derived from exactly those rows. Once they are gone the
+// database can no longer answer "who had this?", so a tombstone written after
+// the cascade tombstones nobody — silently, and with a success return. This is
+// the one ordering constraint in this file that cannot be recovered from later:
+// unlike an archive, there is no row left to re-derive the answer from.
+//
+// There is no compare-and-set to gate on here. A delete happens once (the
+// caller has already established the row exists, and the cascade's visited set
+// makes re-entry a no-op), so every call is a real transition.
+func RecordItemDeleteTombstonesTx(tx *gorm.DB, itemID string, deletedAt time.Time) (int, error) {
+	return recordHolderTombstonesTx(tx, itemID, models.SyncTombstoneReasonItemDeleted, "", deletedAt)
+}
+
+// recordHolderTombstonesTx tombstones every current holder of an item with one
+// cause. Shared by all three entry points so "who held this" has exactly one
+// definition.
+func recordHolderTombstonesTx(tx *gorm.DB, itemID, reason, lifecycleReason string, removedAt time.Time) (int, error) {
 	if itemID == "" {
 		return 0, fmt.Errorf("%w: item is required", ErrInvalidTombstoneCause)
+	}
+	// A schema with no tombstone table has no snapshot-v2 contract to satisfy.
+	// Production always has it (goose owns the DDL); the check exists for the
+	// partial in-memory fixtures several packages hand-build, which is the same
+	// reason itemdelete's cascade probes for each table it touches.
+	if !tx.Migrator().HasTable(&models.CapabilitySyncTombstone{}) {
+		return 0, nil
 	}
 	userIDs, err := entitledUserIDsTx(tx, itemID)
 	if err != nil {
@@ -139,9 +195,9 @@ func RecordGitArchiveTombstonesTx(tx *gorm.DB, itemID, lifecycleReason string, a
 		if err := RecordEntitlementRemovalTx(tx, EntitlementRemoval{
 			UserID:          userID,
 			ItemID:          itemID,
-			Reason:          models.SyncTombstoneReasonGitArchived,
+			Reason:          reason,
 			LifecycleReason: lifecycleReason,
-			RemovedAt:       archivedAt,
+			RemovedAt:       removedAt,
 		}); err != nil {
 			return 0, err
 		}
@@ -152,6 +208,10 @@ func RecordGitArchiveTombstonesTx(tx *gorm.DB, itemID, lifecycleReason string, a
 // entitledUserIDsTx lists every principal currently entitled to an item, by the
 // same definition the snapshot's active set uses: a favorite, or a live
 // distribution receipt.
+//
+// A principal holding BOTH is returned once, so the caller writes one tombstone
+// for them — matching the table's one-row-per-(user,item) shape, which records
+// the end of the entitlement rather than the removal of each relationship row.
 func entitledUserIDsTx(tx *gorm.DB, itemID string) ([]string, error) {
 	seen := make(map[string]struct{})
 	ordered := make([]string, 0, 8)
@@ -168,23 +228,27 @@ func entitledUserIDsTx(tx *gorm.DB, itemID string) ([]string, error) {
 		}
 	}
 
-	var favoriteUserIDs []string
-	if err := tx.Model(&models.ItemFavorite{}).
-		Where("item_id = ?", itemID).
-		Pluck("user_id", &favoriteUserIDs).Error; err != nil {
-		return nil, fmt.Errorf("load favorite holders of %s: %w", itemID, err)
+	if tx.Migrator().HasTable(&models.ItemFavorite{}) {
+		var favoriteUserIDs []string
+		if err := tx.Model(&models.ItemFavorite{}).
+			Where("item_id = ?", itemID).
+			Pluck("user_id", &favoriteUserIDs).Error; err != nil {
+			return nil, fmt.Errorf("load favorite holders of %s: %w", itemID, err)
+		}
+		add(favoriteUserIDs)
 	}
-	add(favoriteUserIDs)
 
-	var distributedUserIDs []string
-	if err := tx.Model(&models.ItemDistributionReceipt{}).
-		Joins("JOIN item_distributions ON item_distributions.id = item_distribution_receipts.distribution_id").
-		Where("item_distributions.item_id = ? AND item_distributions.status = ? AND item_distribution_receipts.receipt_status != ?",
-			itemID, "active", "dismissed").
-		Pluck("item_distribution_receipts.user_id", &distributedUserIDs).Error; err != nil {
-		return nil, fmt.Errorf("load distribution holders of %s: %w", itemID, err)
+	if tx.Migrator().HasTable(&models.ItemDistribution{}) && tx.Migrator().HasTable(&models.ItemDistributionReceipt{}) {
+		var distributedUserIDs []string
+		if err := tx.Model(&models.ItemDistributionReceipt{}).
+			Joins("JOIN item_distributions ON item_distributions.id = item_distribution_receipts.distribution_id").
+			Where("item_distributions.item_id = ? AND item_distributions.status = ? AND item_distribution_receipts.receipt_status != ?",
+				itemID, "active", "dismissed").
+			Pluck("item_distribution_receipts.user_id", &distributedUserIDs).Error; err != nil {
+			return nil, fmt.Errorf("load distribution holders of %s: %w", itemID, err)
+		}
+		add(distributedUserIDs)
 	}
-	add(distributedUserIDs)
 
 	return ordered, nil
 }
@@ -219,6 +283,16 @@ func tombstoneSourceFor(reason, lifecycleReason string) (string, error) {
 			return "", fmt.Errorf("%w: distribution_revoked carries no lifecycle reason, got %q", ErrInvalidTombstoneCause, lifecycleReason)
 		}
 		return models.SyncTombstoneSourceDistribution, nil
+	case models.SyncTombstoneReasonAdminArchived:
+		if lifecycleReason != "" {
+			return "", fmt.Errorf("%w: admin_archived carries no lifecycle reason, got %q", ErrInvalidTombstoneCause, lifecycleReason)
+		}
+		return models.SyncTombstoneSourceModeration, nil
+	case models.SyncTombstoneReasonItemDeleted:
+		if lifecycleReason != "" {
+			return "", fmt.Errorf("%w: item_deleted carries no lifecycle reason, got %q", ErrInvalidTombstoneCause, lifecycleReason)
+		}
+		return models.SyncTombstoneSourceCatalog, nil
 	default:
 		return "", fmt.Errorf("%w: unknown reason %q", ErrInvalidTombstoneCause, reason)
 	}

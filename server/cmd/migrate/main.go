@@ -120,6 +120,11 @@ func main() {
 				log.Fatalf("backfill-git-revisions: %v", err)
 			}
 			return
+		case "backfill-moderation-tombstones":
+			if err := runModerationTombstoneBackfillCommand(db, os.Args[2:]); err != nil {
+				log.Fatalf("backfill-moderation-tombstones: %v", err)
+			}
+			return
 		case "backfill-provider-aware-external-keys":
 			dryRun := len(os.Args) > 2 && os.Args[2] == "--dry-run"
 			if err := backfillProviderAwareExternalKeys(db, dryRun); err != nil {
@@ -283,6 +288,14 @@ func printMigrateHelp() {
 	fmt.Println("                                                currently synced Git-backed items that have none,")
 	fmt.Println("                                                using their existing git_sha/version/last-synced time.")
 	fmt.Println("                                                Dry-run by default; --confirm executes.")
+	fmt.Println("  go run ./cmd/migrate backfill-moderation-tombstones [--limit=N] [--report-limit=N] [--confirm]")
+	fmt.Println("                                                Issue the csc removal instruction for items an")
+	fmt.Println("                                                operator took off the shelf before the moderation")
+	fmt.Println("                                                paths wrote tombstones. Without it those devices")
+	fmt.Println("                                                keep the capability installed forever.")
+	fmt.Println("                                                Reports two gaps it does NOT cover: Git-archived")
+	fmt.Println("                                                rows, and historical hard deletes (unrecoverable).")
+	fmt.Println("                                                Dry-run by default; --confirm executes.")
 	fmt.Println("")
 	fmt.Println("Examples:")
 	fmt.Println("  go run ./cmd/migrate")
@@ -295,6 +308,8 @@ func printMigrateHelp() {
 	fmt.Println("  go run ./cmd/migrate capability-to-git --ids=2fc7fdcb-c640-42b1-a6df-2751b145b132 --confirm")
 	fmt.Println("  go run ./cmd/migrate backfill-git-revisions")
 	fmt.Println("  go run ./cmd/migrate backfill-git-revisions --confirm")
+	fmt.Println("  go run ./cmd/migrate backfill-moderation-tombstones")
+	fmt.Println("  go run ./cmd/migrate backfill-moderation-tombstones --confirm")
 }
 
 // ingestUpstreamCatalog is the new entry point that replaces the

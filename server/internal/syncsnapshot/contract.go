@@ -15,14 +15,26 @@ const ContractVersion = 2
 // Tombstone reasons and sources, mirrored from
 // models.SyncTombstoneReason*/Source* so the wire vocabulary is defined in one
 // place that both the serializer and its fixture can reference.
+//
+// These constants are NOT an allowlist, and nothing in this package validates a
+// tombstone's reason against them. The contract keeps the reason set open on
+// purpose: a client that closes it welds the two enumerations together, and
+// every future reason then needs a client release, a legacy-drain window and a
+// minimum-version gate before the server may emit it. Removal safety comes from
+// completeness, digest, generation, item id, event id and local-ownership
+// checks — none of which consult the reason.
 const (
 	ReasonGitArchived         = "git_archived"
 	ReasonUnfavorited         = "unfavorited"
 	ReasonDistributionRevoked = "distribution_revoked"
+	ReasonAdminArchived       = "admin_archived"
+	ReasonItemDeleted         = "item_deleted"
 
 	SourceGitLifecycle = "git_lifecycle"
 	SourceFavorite     = "favorite"
 	SourceDistribution = "distribution"
+	SourceModeration   = "moderation"
+	SourceCatalog      = "catalog"
 )
 
 // Entitlement sources reported on an active item.

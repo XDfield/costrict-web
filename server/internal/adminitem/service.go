@@ -17,9 +17,11 @@ package adminitem
 import (
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/costrict/costrict-web/server/internal/itemdelete"
 	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/services"
 	"gorm.io/gorm"
 )
 
@@ -275,21 +277,82 @@ func (s *Service) GetItem(id string) (*models.CapabilityItem, string, error) {
 
 // SetStatus flips an item's lifecycle status (上下架). status must be one of
 // active|archived. No author check — platform admins moderate any author.
+//
+// Runs in a transaction because taking an item off the shelf is now two writes
+// that must land together: the status flip and the moderation tombstones that
+// tell every holder's device to unload it (F-27). Committing the flip without
+// the tombstones is the exact defect this fixes; committing tombstones without
+// the flip would unload a capability that is still on sale.
 func (s *Service) SetStatus(id, status string) error {
 	if status != StatusActive && status != StatusArchived {
 		return ErrInvalidStatus
 	}
-	var item models.CapabilityItem
-	if err := s.db.Select("id").First(&item, "id = ?", id).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrItemNotFound
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		return setItemStatusTx(tx, id, status)
+	})
+}
+
+// setItemStatusTx applies one status write inside tx and, when it is a genuine
+// active -> archived transition, records the moderation tombstones.
+//
+// # Why the transition is claimed by a predicate rather than read first
+//
+// The tombstone's EventID is the client's dedup key and MUST rotate on a new
+// removal, and must NOT rotate otherwise (RecordEntitlementRemovalTx explains
+// what each mistake costs). "Was this a removal?" therefore has to be answered
+// by the write itself: a read-then-write, which is what this function replaced,
+// lets two concurrent archives both observe `active` and both mint a fresh
+// event id for one transition, and lets an archive that lost the race mint one
+// for no transition at all.
+//
+// The predicate is `status = 'active'` specifically, not `status <> 'archived'`.
+// The snapshot's active set is exactly `status = 'active'`, so a row in any
+// other status is ALREADY absent from every holder's entitlements — moving it
+// to archived ends nothing and must not be reported as a removal.
+//
+// A row that the claim does not match still gets its requested status through
+// the unconditional write below, which is byte-for-byte the statement this
+// endpoint always issued. That matters beyond preserving behaviour: writing a
+// hidden status is what releases a Git lifecycle claim (models'
+// guardGitLifecycleStatusWrite), so skipping the write on an already-archived
+// row would quietly change who owns that row's recovery.
+func setItemStatusTx(tx *gorm.DB, id, status string) error {
+	var exists int64
+	if err := tx.Model(&models.CapabilityItem{}).Where("id = ?", id).Count(&exists).Error; err != nil {
+		return err
+	}
+	if exists == 0 {
+		return ErrItemNotFound
+	}
+
+	transitioned := false
+	// models.IsCapabilityHiddenStatus rather than `== StatusArchived`: it is the
+	// single definition of "off the shelf" (archived | banned | inactive), and
+	// the same predicate gates the PUT /items/:id path, which accepts all three.
+	// Two entry points asking the same question two ways is how one of them ends
+	// up not asking it.
+	if models.IsCapabilityHiddenStatus(status) {
+		claim := tx.Model(&models.CapabilityItem{}).
+			Where("id = ? AND status = ?", id, StatusActive).
+			Update("status", status)
+		if claim.Error != nil {
+			return claim.Error
 		}
-		return err
+		transitioned = claim.RowsAffected == 1
 	}
-	if err := s.db.Model(&models.CapabilityItem{}).Where("id = ?", id).Update("status", status).Error; err != nil {
-		return err
+	if !transitioned {
+		if err := tx.Model(&models.CapabilityItem{}).Where("id = ?", id).Update("status", status).Error; err != nil {
+			return err
+		}
+		// Restoring to active deliberately deletes NO tombstone: an active item
+		// supersedes its own older tombstone when the snapshot is built, so the
+		// record an offline device still needs survives while the item comes
+		// back under the same id.
+		return nil
 	}
-	return nil
+
+	_, err := services.RecordAdminArchiveTombstonesTx(tx, id, time.Now())
+	return err
 }
 
 // GetItemStatuses returns the current status keyed by id for the given ids,
@@ -320,16 +383,19 @@ func (s *Service) BatchSetStatus(ids []string, status string) (updated, skipped 
 		return nil, nil, ErrInvalidStatus
 	}
 	txErr := s.db.Transaction(func(tx *gorm.DB) error {
+		// Reset per attempt: the closure may be re-entered on retry, and
+		// appending to the previous attempt's slices would report ids twice.
+		updated, skipped = nil, nil
 		for _, id := range ids {
-			var count int64
-			if e := tx.Model(&models.CapabilityItem{}).Where("id = ?", id).Count(&count).Error; e != nil {
-				return e
-			}
-			if count == 0 {
+			// Same per-id path as SetStatus, so a batch take-down produces the
+			// same moderation tombstones a single one does. Nothing about a
+			// batch changes what a removal is.
+			e := setItemStatusTx(tx, id, status)
+			if errors.Is(e, ErrItemNotFound) {
 				skipped = append(skipped, id)
 				continue
 			}
-			if e := tx.Model(&models.CapabilityItem{}).Where("id = ?", id).Update("status", status).Error; e != nil {
+			if e != nil {
 				return e
 			}
 			updated = append(updated, id)
