@@ -76,6 +76,17 @@ type CasdoorConfig struct {
 	// background refresh. Default 15m. Unknown `kid` triggers an
 	// immediate refresh regardless of TTL (handled in the verifier).
 	JWKSRefreshTTL time.Duration
+	// VerifyFallbackDisabled is the kill switch for VerifyToken's Casdoor
+	// fallback branch. Defaults to false (fallback ENABLED) — this is the
+	// long-term trust model: VerifyToken accepts BOTH cs-user JWTs (fast
+	// path) AND Casdoor JWTs (fallback, reissues token for known users).
+	// Operators set CS_USER_CASDOOR_VERIFY_FALLBACK_DISABLED=true to
+	// suppress the fallback — every non-cs-user JWT then gets a plain 401,
+	// reverting to the pre-fallback contract. Useful for staged rollouts
+	// and emergency rollback if the fallback misbehaves. Note: this only
+	// governs VerifyToken; ReissueToken (the OAuth callback path) always
+	// verifies Casdoor JWTs since that's its sole purpose.
+	VerifyFallbackDisabled bool
 }
 
 // EventBusConfig drives the Git Ownership Refactor Phase 2 outbox worker.
@@ -378,11 +389,12 @@ func loadCasdoorConfig() CasdoorConfig {
 		jwksURL = strings.TrimRight(endpoint, "/") + "/.well-known/jwks"
 	}
 	cfg := CasdoorConfig{
-		Endpoint:        endpoint,
-		JWKSURL:         jwksURL,
-		Issuer:          strings.TrimSpace(os.Getenv("CS_USER_CASDOOR_ISSUER")),
-		JWKSHTTPTimeout: envDuration("CS_USER_CASDOOR_JWKS_HTTP_TIMEOUT", defaultCasdoorJWKSHTTPTimeout),
-		JWKSRefreshTTL:  envDuration("CS_USER_CASDOOR_JWKS_REFRESH_TTL", defaultCasdoorJWKSRefreshTTL),
+		Endpoint:              endpoint,
+		JWKSURL:               jwksURL,
+		Issuer:                strings.TrimSpace(os.Getenv("CS_USER_CASDOOR_ISSUER")),
+		JWKSHTTPTimeout:       envDuration("CS_USER_CASDOOR_JWKS_HTTP_TIMEOUT", defaultCasdoorJWKSHTTPTimeout),
+		JWKSRefreshTTL:        envDuration("CS_USER_CASDOOR_JWKS_REFRESH_TTL", defaultCasdoorJWKSRefreshTTL),
+		VerifyFallbackDisabled: envBool("CS_USER_CASDOOR_VERIFY_FALLBACK_DISABLED", false),
 	}
 	if audRaw := strings.TrimSpace(os.Getenv("CS_USER_CASDOOR_AUDIENCE")); audRaw != "" {
 		for _, aud := range strings.Split(audRaw, ",") {

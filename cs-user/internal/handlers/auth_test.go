@@ -1382,35 +1382,209 @@ func TestVerifyToken_CSUserToken(t *testing.T) {
 	if resp.Email != "alice@example.com" {
 		t.Errorf("email = %q", resp.Email)
 	}
+	// Fast path MUST NOT populate the reissued fields — the gateway only
+	// overwrites the browser cookie when these are present, so a false
+	// positive here would pointlessly churn cookies on every request.
+	if resp.ReissuedToken != "" {
+		t.Errorf("reissued_token = %q, want empty on cs-user JWT fast path", resp.ReissuedToken)
+	}
+	if !resp.ReissuedExpiresAt.IsZero() {
+		t.Errorf("reissued_expires_at = %v, want zero on cs-user JWT fast path", resp.ReissuedExpiresAt)
+	}
 }
 
-// TestVerifyToken_CasdoorTokenRejectedAfterPhase51 is the regression guard:
-// a legacy Casdoor-issued JWT (which Path 2 used to accept via JWKS
-// fallback) MUST now be rejected with 401. cs-user is the sole identity
-// authority — gateway introspection only honors cs-user signatures. If this
-// test fails, someone reintroduced the Casdoor fallback path and broke the
-// single-trust-boundary contract.
-func TestVerifyToken_CasdoorTokenRejectedAfterPhase51(t *testing.T) {
+// TestVerifyToken_CasdoorJWT_KnownUser_Reissues pins the fallback happy
+// path: a Casdoor-signed JWT (not a cs-user JWT) is accepted by the
+// CasdoorVerifier, the external_key resolves to an existing user row, and
+// cs-user reissues a fresh cs-user JWT. The reissued token surfaces in
+// `reissued_token` / `reissued_expires_at` so the gateway knows to overwrite
+// the browser cookie. The primary token field on the response is also set
+// to the cs-user-signed value (so callers reading `sub` / `tenant_id` /
+// `exp` see the reissued token's claims, not the upstream Casdoor claims).
+func TestVerifyToken_CasdoorJWT_KnownUser_Reissues(t *testing.T) {
+	signer, pk := newTestSigner(t)
+	v, casdoorKey, kid, cleanup := newVerifiedCasdoorBundle(t)
+	defer cleanup()
+
+	const subjectID = "usr_bob"
+	const tenantID = "default"
+	svc, tenantR := defaultHappyStubs(t, "casdoor:idtrust:uuid-bob", subjectID, tenantID)
+	api := &AuthAPI{Svc: svc, Signer: signer, JWT: defaultJWTCfg(), CasdoorVerifier: v, TenantResolver: tenantR}
+	r := newVerifyEngine(api)
+
+	raw := signCasdoorJWTForHandler(t, casdoorKey, kid, jwt.MapClaims{
+		"sub":          "uni-bob",
+		"universal_id": "uuid-bob",
+		"name":         "Bob",
+		"email":        "bob@idp.example",
+		"provider":     "idtrust",
+		"exp":          time.Now().Add(5 * time.Minute).Unix(),
+	})
+
+	w := doJSON(t, r, http.MethodPost, "/api/internal/auth/verify", verifyTokenRequest{Token: raw})
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var resp verifyTokenResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v (body=%s)", err, w.Body.String())
+	}
+	if !resp.Active {
+		t.Errorf("active = false, want true")
+	}
+	if resp.TokenSource != "cs-user" {
+		t.Errorf("token_source = %q, want cs-user (post-reissue canonical source)", resp.TokenSource)
+	}
+	if resp.Subject != subjectID {
+		t.Errorf("sub = %q, want %q (cs-user subject_id, not Casdoor sub)", resp.Subject, subjectID)
+	}
+	if resp.TenantID != tenantID {
+		t.Errorf("tenant_id = %q, want %q", resp.TenantID, tenantID)
+	}
+	if resp.ReissuedToken == "" {
+		t.Fatal("reissued_token empty — gateway cannot overwrite the browser cookie")
+	}
+	if resp.ReissuedToken == raw {
+		t.Fatal("reissued_token equals the input Casdoor JWT — takeover did not happen")
+	}
+	if resp.ReissuedExpiresAt.IsZero() {
+		t.Fatal("reissued_expires_at zero — gateway cannot compute cookie MaxAge")
+	}
+
+	// The reissued token MUST be a cs-user-signed JWT verifiable by the
+	// cs-user signer's public key. Confirms the takeover produced a real
+	// cs-user token, not just a different string.
+	parsed, err := jwt.ParseWithClaims(resp.ReissuedToken, &auth.EnterpriseClaims{}, func(tok *jwt.Token) (any, error) {
+		return &pk.PublicKey, nil
+	})
+	if err != nil {
+		t.Fatalf("reissued_token did not verify as cs-user JWT: %v", err)
+	}
+	got, _ := parsed.Claims.(*auth.EnterpriseClaims)
+	if got.Subject != subjectID {
+		t.Errorf("reissued_token sub = %q, want %q", got.Subject, subjectID)
+	}
+	if got.TenantID != tenantID {
+		t.Errorf("reissued_token tenant_id = %q, want %q", got.TenantID, tenantID)
+	}
+	// reissued_expires_at must match the JWT's exp claim 1:1.
+	if got.Expiry == nil || !got.Expiry.Equal(resp.ReissuedExpiresAt) {
+		t.Errorf("reissued_expires_at mismatch: response=%v claims=%v", resp.ReissuedExpiresAt, got.Expiry)
+	}
+}
+
+// TestVerifyToken_CasdoorJWT_UnknownUser_Rejected pins the load-bearing
+// contract: a Casdoor JWT that verifies but maps to NO existing user row
+// MUST be rejected with 401. VerifyToken never provisions inline —
+// provisioning belongs to ReissueToken (the OAuth callback path). Without
+// this rejection a stolen Casdoor token could bootstrap a cs-user account
+// on the very first authenticated request, bypassing the OAuth consent
+// screen; and every authenticated request would amplify DB write load.
+func TestVerifyToken_CasdoorJWT_UnknownUser_Rejected(t *testing.T) {
 	signer, _ := newTestSigner(t)
 	v, casdoorKey, kid, cleanup := newVerifiedCasdoorBundle(t)
 	defer cleanup()
 
+	// externalKeyFn returns "" → user not found. The handler MUST reject
+	// (401), not call GetOrCreateUser.
+	svc := stubEmploymentReader{
+		externalKeyFn: func(_ context.Context, _ string) (string, error) { return "", nil },
+	}
+	api := &AuthAPI{Svc: svc, Signer: signer, JWT: defaultJWTCfg(), CasdoorVerifier: v}
+	r := newVerifyEngine(api)
+
 	raw := signCasdoorJWTForHandler(t, casdoorKey, kid, jwt.MapClaims{
-		"sub":          "casdoor-sub-1",
-		"universal_id": "uni-casdoor-1",
-		"name":         "Bob",
-		"email":        "bob@idp.example",
+		"sub":          "uni-ghost",
+		"universal_id": "uuid-ghost",
+		"name":         "Ghost",
 		"exp":          time.Now().Add(5 * time.Minute).Unix(),
 	})
 
-	// CasdoorVerifier is still wired (it's used by ReissueToken / ParseIdentity),
-	// but VerifyToken must NOT consult it.
-	api := &AuthAPI{Signer: signer, JWT: defaultJWTCfg(), CasdoorVerifier: v}
+	w := doJSON(t, r, http.MethodPost, "/api/internal/auth/verify", verifyTokenRequest{Token: raw})
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (unknown user must not be provisioned)", w.Code)
+	}
+	var resp struct {
+		Active          bool   `json:"active"`
+		Error           string `json:"error"`
+		ReissuedToken   string `json:"reissued_token"`
+		ReissuedExpires time.Time `json:"reissued_expires_at"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Active {
+		t.Errorf("active = true, want false")
+	}
+	if resp.ReissuedToken != "" {
+		t.Errorf("reissued_token = %q, want empty on rejection", resp.ReissuedToken)
+	}
+}
+
+// TestVerifyToken_CasdoorJWT_VerifyFails_Rejected pins the rejection path
+// when the Casdoor fallback verifier itself rejects the JWT (bad signature,
+// expired, wrong issuer, malformed). Must surface as 401, NOT 200/active=false
+// — the gateway's standard auth-failure pipeline kicks in on 401.
+func TestVerifyToken_CasdoorJWT_VerifyFails_Rejected(t *testing.T) {
+	signer, _ := newTestSigner(t)
+	v, _, _, cleanup := newVerifiedCasdoorBundle(t)
+	defer cleanup()
+
+	// Sign with a DIFFERENT key than the JWKS serves. CasdoorVerifier.Verify
+	// will fail signature verification.
+	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	raw := signCasdoorJWTForHandler(t, otherKey, "wrong-kid", jwt.MapClaims{
+		"sub":          "uni-forged",
+		"universal_id": "uuid-forged",
+		"exp":          time.Now().Add(5 * time.Minute).Unix(),
+	})
+
+	// Svc intentionally has a panicking externalKeyFn — if the handler
+	// proceeds past the verifier failure, the test fails loudly instead of
+	// silently passing through the wrong branch.
+	svc := stubEmploymentReader{
+		externalKeyFn: func(context.Context, string) (string, error) {
+			t.Fatal("externalKeyFn must NOT be called when Casdoor verify fails")
+			return "", nil
+		},
+	}
+	api := &AuthAPI{Svc: svc, Signer: signer, JWT: defaultJWTCfg(), CasdoorVerifier: v}
 	r := newVerifyEngine(api)
 
 	w := doJSON(t, r, http.MethodPost, "/api/internal/auth/verify", verifyTokenRequest{Token: raw})
 	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401 (legacy Casdoor fallback has been removed)", w.Code)
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+}
+
+// TestVerifyToken_CasdoorVerifierDisabled_Rejected covers the deployment
+// that opted out of JWKS (CS_USER_CASDOOR_JWKS_URL unset → CasdoorVerifier
+// nil). A token that fails cs-user verification can't fall back, so the
+// handler returns plain 401 — no panic, no 500, no misleading
+// "active=false" 200.
+func TestVerifyToken_CasdoorVerifierDisabled_Rejected(t *testing.T) {
+	signer, _ := newTestSigner(t)
+	// No CasdoorVerifier on the API.
+	api := &AuthAPI{Signer: signer, JWT: defaultJWTCfg()}
+	r := newVerifyEngine(api)
+
+	// A self-signed cs-user token from a DIFFERENT issuer/key fails the
+	// fast path (signature mismatch) and there's no fallback to rescue it.
+	otherSigner, _ := newTestSigner(t)
+	claims, err := auth.NewEnterpriseClaims(auth.IssuanceParams{
+		Issuer: "test-issuer", Subject: "usr_x", TTL: time.Hour,
+	}, time.Now())
+	if err != nil {
+		t.Fatalf("NewEnterpriseClaims: %v", err)
+	}
+	raw := signEnterpriseJWT(t, otherSigner, claims)
+
+	w := doJSON(t, r, http.MethodPost, "/api/internal/auth/verify", verifyTokenRequest{Token: raw})
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (no fallback available)", w.Code)
 	}
 	var resp struct {
 		Active bool   `json:"active"`
@@ -1420,20 +1594,81 @@ func TestVerifyToken_CasdoorTokenRejectedAfterPhase51(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if resp.Active {
-		t.Errorf("active = true, want false for legacy Casdoor token")
+		t.Errorf("active = true, want false")
 	}
 	if resp.Error != "invalid token" {
 		t.Errorf("error = %q, want \"invalid token\"", resp.Error)
 	}
 }
 
+// TestVerifyToken_CasdoorFallbackDisabled_Rejected pins the kill-switch
+// contract: when CasdoorVerifyFallbackDisabled is true, the VerifyToken
+// handler MUST skip the Casdoor fallback entirely and return 401 — even
+// though CasdoorVerifier is configured and would otherwise accept the
+// token. Mirrors the verifier-disabled posture (same 401 + active=false
+// body) so the gateway's auth-failure pipeline kicks in identically.
+//
+// The Svc intentionally panics in externalKeyFn: if the handler ignores
+// the switch and proceeds into the fallback pipeline, the test fails
+// loudly instead of silently passing through.
+func TestVerifyToken_CasdoorFallbackDisabled_Rejected(t *testing.T) {
+	signer, _ := newTestSigner(t)
+	v, casdoorKey, kid, cleanup := newVerifiedCasdoorBundle(t)
+	defer cleanup()
+
+	// Svc would only be called if the switch is ignored — panic to fail
+	// loudly in that case.
+	svc := stubEmploymentReader{
+		externalKeyFn: func(context.Context, string) (string, error) {
+			t.Fatal("externalKeyFn must NOT be called when fallback is disabled")
+			return "", nil
+		},
+	}
+	api := &AuthAPI{
+		Svc:                           svc,
+		Signer:                        signer,
+		JWT:                           defaultJWTCfg(),
+		CasdoorVerifier:               v,
+		CasdoorVerifyFallbackDisabled: true,
+	}
+	r := newVerifyEngine(api)
+
+	raw := signCasdoorJWTForHandler(t, casdoorKey, kid, jwt.MapClaims{
+		"sub":          "uni-bob",
+		"universal_id": "uuid-bob",
+		"name":         "Bob",
+		"exp":          time.Now().Add(5 * time.Minute).Unix(),
+	})
+
+	w := doJSON(t, r, http.MethodPost, "/api/internal/auth/verify", verifyTokenRequest{Token: raw})
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (fallback suppressed by switch)", w.Code)
+	}
+	var resp struct {
+		Active        bool   `json:"active"`
+		Error         string `json:"error"`
+		ReissuedToken string `json:"reissued_token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Active {
+		t.Errorf("active = true, want false")
+	}
+	if resp.Error != "invalid token" {
+		t.Errorf("error = %q, want \"invalid token\"", resp.Error)
+	}
+	if resp.ReissuedToken != "" {
+		t.Errorf("reissued_token = %q, want empty when fallback is suppressed", resp.ReissuedToken)
+	}
+}
+
 // TestVerifyToken_InvalidTokenReturns401 verifies the rejection contract: a
-// token that fails cs-user verification returns 401 (not introspection-style
+// token that fails cs-user verification AND has no Casdoor fallback available
+// (no CasdoorVerifier wired) returns 401 (not introspection-style
 // 200 + active=false) so the gateway's standard auth-failure pipeline kicks
 // in. Body still carries active=false + error for callers that want
 // structured detail alongside the status.
-//
-// No CasdoorVerifier in setup — there's no Path 2 anymore.
 func TestVerifyToken_InvalidTokenReturns401(t *testing.T) {
 	signer, _ := newTestSigner(t)
 
@@ -1486,8 +1721,9 @@ func TestVerifyToken_MissingTokenBody(t *testing.T) {
 }
 
 // TestVerifyToken_ExpiredCSUserTokenReturns401 verifies that an expired
-// cs-user token is rejected with 401. The parser enforces `exp`; the legacy
-// Casdoor fallback has been removed, so there's no second-chance path.
+// cs-user token is rejected with 401 when no Casdoor fallback is wired. The
+// parser enforces `exp` past the 10s leeway window; this matches the
+// gateway's standard auth-failure contract.
 func TestVerifyToken_ExpiredCSUserTokenReturns401(t *testing.T) {
 	signer, _ := newTestSigner(t)
 

@@ -255,8 +255,9 @@ func registerAuthRoutes(rg *gin.RouterGroup, cfg *config.Config, deps Deps) {
 			cfg.Casdoor.JWKSHTTPTimeout,
 			cfg.Casdoor.JWKSRefreshTTL,
 		),
-		TenantResolver: deps.TenantResolver,
-		Permissions:    deps.PermissionReader,
+		CasdoorVerifyFallbackDisabled: cfg.Casdoor.VerifyFallbackDisabled,
+		TenantResolver:                deps.TenantResolver,
+		Permissions:                   deps.PermissionReader,
 	}
 	rg.POST("/users/reissue-token", authAPI.ReissueToken)
 	// Gateway-facing token introspection. Mounted under /auth/* (not

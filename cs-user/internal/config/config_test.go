@@ -36,6 +36,7 @@ func clearEnv(t *testing.T) {
 		"CS_USER_CASDOOR_AUDIENCE",
 		"CS_USER_CASDOOR_JWKS_HTTP_TIMEOUT",
 		"CS_USER_CASDOOR_JWKS_REFRESH_TTL",
+		"CS_USER_CASDOOR_VERIFY_FALLBACK_DISABLED",
 	} {
 		prev, had := os.LookupEnv(key)
 		os.Unsetenv(key)
@@ -413,6 +414,47 @@ func TestLoad_CasdoorJWKS_BothEmptyDisablesVerifier(t *testing.T) {
 	}
 	if cfg.Casdoor.JWKSURL != "" {
 		t.Errorf("Casdoor.JWKSURL = %q, want empty (verifier disabled)", cfg.Casdoor.JWKSURL)
+	}
+}
+
+// TestLoad_CasdoorVerifyFallback_DefaultEnabled verifies the kill switch is
+// OFF by default (env unset → fallback ENABLED). The fallback is the long-
+// term trust model, not a transitional hack — a fresh deployment must accept
+// Casdoor JWTs without extra config. Operators set
+// CS_USER_CASDOOR_VERIFY_FALLBACK_DISABLED=true to suppress.
+func TestLoad_CasdoorVerifyFallback_DefaultEnabled(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("CS_USER_INTERNAL_TOKEN", "secret")
+	t.Setenv("CS_USER_POSTGRES_USER", "u")
+	t.Setenv("CS_USER_POSTGRES_PASSWORD", "p")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Casdoor.VerifyFallbackDisabled {
+		t.Errorf("Casdoor.VerifyFallbackDisabled = true, want false (fallback enabled by default)")
+	}
+}
+
+// TestLoad_CasdoorVerifyFallback_DisabledViaEnv verifies the kill switch
+// engages on any truthy value. envBool accepts the same vocabulary as other
+// bool switches (1/true/yes/on, case-insensitive) — this test only pins one
+// representative value; the parsing vocabulary is exercised by envBool's own
+// tests.
+func TestLoad_CasdoorVerifyFallback_DisabledViaEnv(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("CS_USER_INTERNAL_TOKEN", "secret")
+	t.Setenv("CS_USER_POSTGRES_USER", "u")
+	t.Setenv("CS_USER_POSTGRES_PASSWORD", "p")
+	t.Setenv("CS_USER_CASDOOR_VERIFY_FALLBACK_DISABLED", "true")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Casdoor.VerifyFallbackDisabled {
+		t.Errorf("Casdoor.VerifyFallbackDisabled = false, want true")
 	}
 }
 

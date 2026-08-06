@@ -54,6 +54,14 @@ type AuthAPI struct {
 	// do anything useful — handler returns 503 if a caller hits a
 	// verifier-less deployment.
 	CasdoorVerifier *auth.CasdoorVerifier
+	// CasdoorVerifyFallbackDisabled is the kill switch for VerifyToken's
+	// Casdoor fallback branch. Default false (fallback ENABLED) — the
+	// long-term trust model accepts both cs-user and Casdoor JWTs. Wired
+	// from CS_USER_CASDOOR_VERIFY_FALLBACK_DISABLED. When true, the
+	// fallback branch is short-circuited and a non-cs-user JWT gets a
+	// plain 401 (same shape as if CasdoorVerifier were nil). Affects ONLY
+	// VerifyToken; ReissueToken always verifies Casdoor JWTs.
+	CasdoorVerifyFallbackDisabled bool
 	// TenantResolver looks up the tenants row (carrying slug) for the
 	// resolved user's tenant_id. *tenant.Resolver satisfies this.
 	TenantResolver TenantReader
@@ -306,25 +314,85 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 		logger.Info("[reissue-token] provisioned user inline subject_id=%s external_key=%s is_new=%t", subjectID, externalKey, isNew)
 	}
 
+	// Audience: request override wins; otherwise fall back to config default.
+	// Resolution lives here (not in the helper) because VerifyToken — the
+	// other caller of issueCsUserTokenForSubject — has no request-supplied
+	// audience and just wants the config default.
+	audience := req.Audience
+	if len(audience) == 0 {
+		audience = a.JWT.DefaultAudience
+	}
+
+	resp, _, err := a.issueCsUserTokenForSubject(c.Request.Context(), verified, subjectID, externalKey, audience, isNewUser)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
+// errIssueTokenInternal is the sentinel returned by issueCsUserTokenForSubject
+// for any failure inside the shared issuance pipeline. Callers map it to HTTP
+// 500 — every failure in that path is a server-side fault (DB, signing key,
+// tenant lookup), never a caller-input issue. The helper already logged the
+// specifics; this sentinel just signals "no token, give up".
+var errIssueTokenInternal = errors.New("internal error during cs-user token issuance")
+
+// issueCsUserTokenForSubject runs the cs-user JWT issuance pipeline for a
+// known subject_id. Shared between ReissueToken (OAuth callback) and
+// VerifyToken (Casdoor fallback) so the enterprise / tenant / permission
+// claim shape stays identical between the two entry points — a user reaching
+// the platform via either path lands in the same authorization state.
+//
+// Caller responsibilities:
+//   - verified has already been JWKS-verified by CasdoorVerifier
+//   - subjectID is non-empty and points at an existing user row
+//   - externalKey is the canonical casdoor:<...> string (echoed back in the
+//     response; not used for any lookup inside the helper)
+//   - audience falls back to a.JWT.DefaultAudience when nil/empty
+//
+// The helper does NOT call GetOrCreateUser. VerifyToken's contract is
+// "unknown user → 401, no inline provision" — callers must resolve subjectID
+// via GetSubjectIDByExternalKey BEFORE invoking this helper and reject on
+// miss. ReissueToken does inline provisioning in its own body before calling
+// the helper. This separation keeps the per-request VerifyToken path free of
+// write side-effects (per the platform trust model: provisioning happens
+// exactly once, on the OAuth callback).
+//
+// ctx flows through to every DB / tenant call so VerifyToken can wrap the
+// whole fallback in a context.WithTimeout without leaking a goroutine on a
+// stuck tenant lookup.
+//
+// Returns the wire response, the freshly-built EnterpriseClaims (VerifyToken
+// needs TenantID / TenantSlug / IssuedAt / Issuer to populate its own
+// introspection shape — reusing the claims avoids re-parsing the JWT we just
+// signed), and errIssueTokenInternal on any failure (handler maps it to 500).
+func (a *AuthAPI) issueCsUserTokenForSubject(
+	ctx context.Context,
+	verified *models.JWTClaims,
+	subjectID string,
+	externalKey string,
+	audience []string,
+	isNewUser bool,
+) (*reissueTokenResponse, *auth.EnterpriseClaims, error) {
 	// Load the authoritative user row — this is the source of truth for
 	// tenant_id (server no longer forwards it) and for the canonical profile
 	// fields NewEnterpriseClaims layers on top of Identity. When inline
-	// provisioning just ran, this is a single redundant read; correctness
-	// over micro-optimization.
-	userRow, err := a.Svc.GetUserByID(c.Request.Context(), subjectID)
+	// provisioning just ran on the ReissueToken path, this is a single
+	// redundant read; correctness over micro-optimization.
+	userRow, err := a.Svc.GetUserByID(ctx, subjectID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			// GetOrCreateUser just succeeded (or external_key pointed at an
-			// existing user) but the row vanished between the two calls —
-			// extremely unlikely (no cascade deletes); fail loud so the
-			// operator notices rather than silently returning 200.
-			logger.Warn("[reissue-token] GetUserByID returned not-found for subject_id=%s (vanished between lookups)", subjectID)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-			return
+			// GetOrCreateUser just succeeded (ReissueToken path) or
+			// external_key pointed at an existing user (VerifyToken path)
+			// but the row vanished between the two calls — extremely
+			// unlikely (no cascade deletes); fail loud so the operator
+			// notices rather than silently returning 200.
+			logger.Warn("[issue-token] GetUserByID returned not-found for subject_id=%s (vanished between lookups)", subjectID)
+			return nil, nil, errIssueTokenInternal
 		}
-		logger.Warn("[reissue-token] GetUserByID failed for subject_id=%s: %v", subjectID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-		return
+		logger.Warn("[issue-token] GetUserByID failed for subject_id=%s: %v", subjectID, err)
+		return nil, nil, errIssueTokenInternal
 	}
 
 	// Resolve the tenant from the user row. userRow.TenantID is the
@@ -338,23 +406,19 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 		// Empty here signals a backfill gap or schema drift — fail loud
 		// so the operator notices rather than silently signing a token
 		// with no tenant context.
-		logger.Warn("[reissue-token] user %s has empty tenant_id — schema/backfill issue", subjectID)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-		return
+		logger.Warn("[issue-token] user %s has empty tenant_id — schema/backfill issue", subjectID)
+		return nil, nil, errIssueTokenInternal
 	}
 	tenantSlug := ""
 	if a.TenantResolver != nil {
-		tenantRow, tenantErr := a.TenantResolver.ResolveBySlug(c.Request.Context(), tenantID)
+		tenantRow, tenantErr := a.TenantResolver.ResolveBySlug(ctx, tenantID)
 		if tenantErr != nil {
-			logger.Warn("[reissue-token] tenant lookup failed for tenant_id=%s: %v", tenantID, tenantErr)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-			return
+			logger.Warn("[issue-token] tenant lookup failed for tenant_id=%s: %v", tenantID, tenantErr)
+			return nil, nil, errIssueTokenInternal
 		}
 		tenantSlug = tenantRow.Slug
 	}
 
-	// Audience: request override wins; otherwise fall back to config default.
-	audience := req.Audience
 	if len(audience) == 0 {
 		audience = a.JWT.DefaultAudience
 	}
@@ -366,21 +430,20 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 	// error path is swallowed so a tenant with a malformed field_map can't
 	// block login.
 	if len(verified.ExternalClaims) > 0 {
-		if err := a.Svc.ApplyEnterpriseMapping(c.Request.Context(), user.EmploymentMappingParams{
+		if err := a.Svc.ApplyEnterpriseMapping(ctx, user.EmploymentMappingParams{
 			TenantID:       tenantID,
 			UserSubjectID:  subjectID,
 			Provider:       verified.Provider,
 			ExternalClaims: verified.ExternalClaims,
 		}); err != nil {
-			logger.Warn("[reissue-token] ApplyEnterpriseMapping returned error (login continues): %v", err)
+			logger.Warn("[issue-token] ApplyEnterpriseMapping returned error (login continues): %v", err)
 		}
 	}
 
-	employment, err := a.Svc.GetEmploymentIdentity(c.Request.Context(), subjectID)
+	employment, err := a.Svc.GetEmploymentIdentity(ctx, subjectID)
 	if err != nil {
-		logger.Warn("[reissue-token] GetEmploymentIdentity failed for subject_id=%s: %v", subjectID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-		return
+		logger.Warn("[issue-token] GetEmploymentIdentity failed for subject_id=%s: %v", subjectID, err)
+		return nil, nil, errIssueTokenInternal
 	}
 	// employment == nil is success — user has no enterprise snapshot yet.
 
@@ -415,20 +478,20 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 	var platformScope string
 	var tenantRoles []string
 	if a.Permissions != nil {
-		pa, paErr := a.Permissions.GetPlatformAdmin(c.Request.Context(), subjectID)
+		pa, paErr := a.Permissions.GetPlatformAdmin(ctx, subjectID)
 		if paErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-			return
+			logger.Warn("[issue-token] GetPlatformAdmin failed for subject_id=%s: %v", subjectID, paErr)
+			return nil, nil, errIssueTokenInternal
 		}
 		if pa != nil {
 			platformAdmin = true
 			platformScope = pa.Scope
 		}
 
-		roles, rolesErr := a.Permissions.ListActiveTenantRoles(c.Request.Context(), subjectID, tenantID)
+		roles, rolesErr := a.Permissions.ListActiveTenantRoles(ctx, subjectID, tenantID)
 		if rolesErr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-			return
+			logger.Warn("[issue-token] ListActiveTenantRoles failed for subject_id=%s tenant_id=%s: %v", subjectID, tenantID, rolesErr)
+			return nil, nil, errIssueTokenInternal
 		}
 		tenantRoles = roles
 	}
@@ -453,17 +516,17 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 		// NewEnterpriseClaims only fails on empty Subject (caught above by
 		// binding) or zero TTL (config bug, not caller bug). Either way
 		// surface as 500 — the caller did nothing wrong.
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-		return
+		logger.Warn("[issue-token] NewEnterpriseClaims failed for subject_id=%s: %v", subjectID, err)
+		return nil, nil, errIssueTokenInternal
 	}
 
 	signed, err := a.Signer.SignJWT(claims, now)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
-		return
+		logger.Warn("[issue-token] SignJWT failed for subject_id=%s: %v", subjectID, err)
+		return nil, nil, errIssueTokenInternal
 	}
 
-	c.JSON(http.StatusOK, reissueTokenResponse{
+	return &reissueTokenResponse{
 		Token:       signed,
 		ExpiresAt:   claims.Expiry.Time,
 		ExternalKey: externalKey,
@@ -482,13 +545,14 @@ func (a *AuthAPI) ReissueToken(c *gin.Context) {
 			Provider:          verified.Provider,
 			ProviderUserID:    verified.ProviderUserID,
 		},
-	})
+	}, claims, nil
 }
 
 // verifyTokenRequest is the body shape for POST /api/internal/auth/verify.
-// The gateway forwards whatever JWT the client carried — could be a cs-user
-// token (new) or a Casdoor token (legacy). cs-user tries the new format
-// first, falls back to Casdoor JWKS verification.
+// The gateway forwards whatever JWT the client carried — cs-user tries its
+// own signature first (fast path), and falls back to Casdoor JWKS verification
+// when that fails so legacy Casdoor cookies still resolve during the cutover
+// window (and for any long-lived client still holding a Casdoor token).
 type verifyTokenRequest struct {
 	// Token is the raw JWT carried by the client (typically in
 	// Authorization: Bearer <token>). Required.
@@ -500,12 +564,17 @@ type verifyTokenRequest struct {
 // signals validity, the rest are normalized claims the gateway can route on
 // without re-implementing two different JWT parsers.
 //
-// `token_source` is DEPRECATED — the Casdoor JWKS fallback path has been
-// removed, so the only emitted value is now "cs-user" and `iss` (Issuer)
-// is the canonical discriminator going forward. The field is retained for
-// backward compatibility with deployed gateway code that may still switch
-// on it, and will be removed in a subsequent release once all consumers
-// migrate to `iss`.
+// `token_source` is DEPRECATED — `iss` (Issuer) is the canonical discriminator
+// going forward. The field is retained for backward compatibility with
+// deployed gateway code that may still switch on it, and will be removed in a
+// subsequent release once all consumers migrate to `iss`.
+//
+// ReissuedToken / ReissuedExpiresAt are populated ONLY when VerifyToken took
+// the Casdoor fallback path AND the resolved user is known. The gateway, on
+// seeing these fields, MUST overwrite the browser's zgsmAdminToken cookie
+// with ReissuedToken so subsequent requests land on the fast path. cs-user
+// JWT inputs (the fast path) never carry these fields — the response omits
+// them entirely.
 type verifyTokenResponse struct {
 	Active      bool      `json:"active"`
 	TokenSource string    `json:"token_source,omitempty"` // Deprecated: use Issuer. "cs-user" | "casdoor"
@@ -520,12 +589,23 @@ type verifyTokenResponse struct {
 	ExpiresAt   time.Time `json:"exp,omitempty"`
 	IssuedAt    time.Time `json:"iat,omitempty"`
 	Issuer      string    `json:"iss,omitempty"`
+
+	// ReissuedToken carries the freshly-minted cs-user JWT when VerifyToken
+	// took the Casdoor fallback path for a known user. The gateway MUST
+	// overwrite the browser's zgsmAdminToken cookie with this value
+	// (MaxAge = ReissuedExpiresAt - now). Empty on the cs-user JWT fast path
+	// and on every rejection.
+	ReissuedToken string `json:"reissued_token,omitempty"`
+	// ReissuedExpiresAt is the exp claim of ReissuedToken — the gateway uses
+	// it to compute the cookie MaxAge without re-parsing the JWT. Always
+	// paired with ReissuedToken; never emitted alone.
+	ReissuedExpiresAt time.Time `json:"reissued_expires_at,omitempty"`
 }
 
 // VerifyToken godoc
 //
 //	@Summary		Verify a client JWT (gateway introspection)
-//	@Description	Gateway-facing token verification. Accepts only cs-user-signed JWTs (cs-user is the sole identity authority). The legacy Casdoor JWKS fallback has been removed — clients carrying pre-cutover Casdoor cookies now receive 401 and must re-authenticate. Returns normalized claims on success, 401 on any verification failure. Requires the X-Internal-Token shared secret — this endpoint is consumed by the gateway only, never exposed publicly. Returns 400 on missing token, 503 when the signer is not configured.
+//	@Description	Gateway-facing token verification. cs-user is the sole identity authority, but accepts BOTH cs-user-signed JWTs (fast path, in-process public-key verification) AND Casdoor-signed JWTs (fallback, JWKS-verified). Fast path: cs-user JWT verifies → 200 with normalized claims, no reissue. Fallback: cs-user verify fails AND CasdoorVerifier is configured AND the CS_USER_CASDOOR_VERIFY_FALLBACK_DISABLED kill switch is off → Casdoor JWKS verification; on success AND the external_key resolves to a known user, reissues a cs-user JWT and returns it in `reissued_token` (gateway MUST overwrite the browser cookie); on success but unknown user → 401 (no inline provision — provisioning belongs to the OAuth callback, not the per-request introspection path); on verify failure / verifier unavailable / fallback suppressed → 401. The fallback path is bounded by an 8s context timeout; CasdoorVerifier itself carries a 15-min JWKS cache + 5s HTTP timeout. Returns 400 on missing token, 503 when the signer is not configured. Requires the X-Internal-Token shared secret — consumed by the gateway only, never exposed publicly.
 //	@Tags			auth
 //	@Accept			json
 //	@Produce		json
@@ -543,46 +623,139 @@ func (a *AuthAPI) VerifyToken(c *gin.Context) {
 		return
 	}
 
-	// cs-user is the sole identity authority — VerifyToken only accepts
-	// cs-user-signed JWTs. The CasdoorVerifier field remains in use by
-	// ReissueToken and ParseIdentity (which verify freshly-exchanged
-	// Casdoor JWTs during the OAuth/login flow), but NOT by gateway
-	// introspection.
+	// Signer is the hard dependency — without it neither the fast path nor
+	// the reissue (fallback) path can mint a response. 503 mirrors
+	// reissue-token's stance on the same misconfig.
 	if a.Signer == nil {
-		// Operator misconfig — 503 to match reissue-token handler's stance.
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no token verifier configured"})
 		return
 	}
 
+	// Fast path: cs-user-signed JWT. The overwhelming majority of requests
+	// land here. In-process public-key verification, no network hop.
 	claims, err := a.Signer.VerifyJWT(req.Token, a.JWT.Issuer)
-	if err != nil {
-		if !errors.Is(err, auth.ErrSignerDisabled) {
-			logger.Warn("[verify-token] cs-user verification failed: %v", err)
+	if err == nil && claims != nil {
+		c.JSON(http.StatusOK, verifyTokenResponse{
+			Active:      true,
+			TokenSource: "cs-user",
+			Subject:     claims.Subject,
+			UniversalID: claims.UniversalID,
+			ShortID:     claims.ShortID,
+			Name:        claims.Name,
+			Email:       claims.Email,
+			Phone:       claims.Phone,
+			TenantID:    claims.TenantID,
+			TenantSlug:  claims.TenantSlug,
+			ExpiresAt:   claims.Expiry.Time,
+			IssuedAt:    claims.IssuedAt.Time,
+			Issuer:      claims.Issuer,
+			// ReissuedToken / ReissuedExpiresAt intentionally zero — the
+			// fast path never rewrites the browser cookie.
+		})
+		return
+	}
+	if err != nil && !errors.Is(err, auth.ErrSignerDisabled) {
+		// ErrSignerDisabled means the signer disappeared between the nil
+		// check above and the call — shouldn't happen, no value in logging.
+		// Any other error is real: expired, bad signature, wrong issuer.
+		// Logged at info because the fallback may still succeed — this is
+		// expected for Casdoor-cookie traffic, not a fault.
+		logger.Info("[verify-token] cs-user verify failed, trying casdoor fallback: %v", err)
+	}
+
+	// Fallback: Casdoor JWT. Only when CasdoorVerifier is configured. A nil
+	// verifier means the deployment explicitly opted out of JWKS, so a
+	// Casdoor token is just "not a cs-user token" → 401 (no panic, no 500).
+	//
+	// The fallback also has a config-driven kill switch
+	// (CS_USER_CASDOOR_VERIFY_FALLBACK_DISABLED) — useful for staged
+	// rollouts and emergency rollback. Suppression here has the same shape
+	// as a verifier-less deployment: 401, no log spam (operators who set
+	// the flag know they did; per-request logging would just be noise).
+	if a.CasdoorVerifier == nil || a.CasdoorVerifyFallbackDisabled {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token", "active": false})
+		return
+	}
+
+	// Bound the entire fallback — JWKS fetch (cold-start) + DB lookups +
+	// tenant resolve + signing — so a single verify call can't pin a
+	// gateway worker. CasdoorVerifier already enforces 5s per HTTP fetch
+	// and caches JWKS for 15min; this outer timeout is the safety net for
+	// the chained calls.
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 8*time.Second)
+	defer cancel()
+
+	verified, casErr := a.CasdoorVerifier.Verify(ctx, req.Token)
+	if casErr != nil {
+		if !errors.Is(casErr, auth.ErrCasdoorVerifierDisabled) {
+			logger.Info("[verify-token] casdoor fallback verify failed: %v", casErr)
 		}
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token", "active": false})
 		return
 	}
-	if claims == nil {
-		// Defensive — Signer contract says err==nil implies claims!=nil, but
-		// guard against silent regressions in the underlying jwt library.
+
+	externalKey := user.BuildExternalKey(verified)
+	if externalKey == "" {
+		// Casdoor JWT verified but carries no universal_id / sub / id —
+		// malformed IdP response. Nothing to look up; reject.
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token", "active": false})
+		return
+	}
+
+	subjectID, lookupErr := a.Svc.GetSubjectIDByExternalKey(ctx, externalKey)
+	if lookupErr != nil {
+		logger.Warn("[verify-token] subject_id lookup failed for external_key=%s: %v", externalKey, lookupErr)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	if subjectID == "" {
+		// THE KEY CONTRACT: unknown users get 401, NOT inline provision.
+		// Provisioning belongs to ReissueToken (the OAuth callback path,
+		// called once per login). VerifyToken runs on every authenticated
+		// request — a write side-effect here would (a) balloon DB write
+		// load to N×request and (b) let a stolen Casdoor token bootstrap
+		// an account without going through the OAuth consent screen.
+		logger.Info("[verify-token] casdoor jwt verified but no user row external_key=%s (rejected)", externalKey)
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token", "active": false})
+		return
+	}
+
+	// Known user — reissue a cs-user JWT via the shared pipeline. audience
+	// is the config default; VerifyToken carries no per-request audience
+	// override (unlike ReissueToken's reissueTokenRequest.Audience).
+	reissue, reissueClaims, issueErr := a.issueCsUserTokenForSubject(ctx, verified, subjectID, externalKey, a.JWT.DefaultAudience, false)
+	if issueErr != nil {
+		// issueCsUserTokenForSubject already logged the specifics.
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	if reissue == nil || reissueClaims == nil {
+		// Defensive — helper contract says err==nil implies both non-nil.
+		logger.Warn("[verify-token] issueCsUserTokenForSubject returned nil for subject_id=%s", subjectID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
 	}
 
 	c.JSON(http.StatusOK, verifyTokenResponse{
 		Active:      true,
-		TokenSource: "cs-user",
-		Subject:     claims.Subject,
-		UniversalID: claims.UniversalID,
-		ShortID:     claims.ShortID,
-		Name:        claims.Name,
-		Email:       claims.Email,
-		Phone:       claims.Phone,
-		TenantID:    claims.TenantID,
-		TenantSlug:  claims.TenantSlug,
-		ExpiresAt:   claims.Expiry.Time,
-		IssuedAt:    claims.IssuedAt.Time,
-		Issuer:      claims.Issuer,
+		TokenSource: "cs-user", // post-reissue the canonical source is cs-user
+		Subject:     reissueClaims.Subject,
+		UniversalID: reissueClaims.UniversalID,
+		ShortID:     reissueClaims.ShortID,
+		Name:        reissueClaims.Name,
+		Email:       reissueClaims.Email,
+		Phone:       reissueClaims.Phone,
+		TenantID:    reissueClaims.TenantID,
+		TenantSlug:  reissueClaims.TenantSlug,
+		ExpiresAt:   reissueClaims.Expiry.Time,
+		IssuedAt:    reissueClaims.IssuedAt.Time,
+		Issuer:      reissueClaims.Issuer,
+
+		// Cookie-takeover signal. The gateway, on seeing these populated,
+		// overwrites the browser's zgsmAdminToken with ReissuedToken so
+		// subsequent requests land on the fast path.
+		ReissuedToken:     reissue.Token,
+		ReissuedExpiresAt: reissue.ExpiresAt,
 	})
 }
 
