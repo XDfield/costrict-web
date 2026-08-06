@@ -54,9 +54,24 @@ const (
 	// would be told the snapshot is gone, restart on N+1, and on a busy account
 	// be interrupted again. A short grace lets an in-flight pass finish — the
 	// data it returns is slightly stale but internally consistent and complete,
-	// which is exactly what the contract requires. Cost is at most one extra
-	// stored payload per principal.
+	// which is exactly what the contract requires.
+	//
+	// The window bounds TIME only. The COUNT bound is snapshotSupersededKeep,
+	// enforced by retireSuperseded: without it, entitlement churn faster than
+	// the window could stack an unbounded pile of full payloads per principal
+	// inside five minutes (F-26).
 	snapshotSupersededGrace = 5 * time.Minute
+
+	// snapshotSupersededKeep caps how many snapshots one principal may hold at
+	// once: the current snapshot plus a single superseded grace copy. Anything
+	// older is deleted immediately, grace window or not — the moment a THIRD
+	// build lands, nobody can be paging the oldest on a reference the server
+	// still hands out (EnsureSnapshot only ever issues the newest id), so a
+	// client that deep only loses a snapshot it had already been told twice
+	// over is stale, and it restarts on the current one. That makes the cost
+	// of the grace window exactly one extra stored payload per principal,
+	// independent of how fast the account churns (F-26).
+	snapshotSupersededKeep = 2
 
 	// snapshotBuildMaxAttempts bounds the serialization-failure retry loop.
 	snapshotBuildMaxAttempts = 5
@@ -561,15 +576,36 @@ func (s *CapabilitySyncSnapshotService) extendExpiry(tx *gorm.DB, snapshot *mode
 	return nil
 }
 
-// retireSuperseded shortens the previous snapshots' lease instead of deleting
-// them, and drops whatever is already past its lease.
+// retireSuperseded bounds what a principal's older snapshots may cost: the
+// newest superseded snapshot keeps a shortened lease (the grace window), and
+// everything beyond the snapshotSupersededKeep cap — or past its lease — is
+// deleted outright.
 //
-// See snapshotSupersededGrace: an immediate delete would interrupt a client
-// mid-pagination and, on an account whose content changes often, could keep
-// interrupting it.
+// See snapshotSupersededGrace: deleting the IMMEDIATE predecessor would
+// interrupt a client mid-pagination and, on an account whose content changes
+// often, could keep interrupting it. Older generations than that are a
+// different case: the server has since issued two newer ids, so deleting them
+// cannot strand anyone the grace window was designed to protect (F-26).
 func (s *CapabilitySyncSnapshotService) retireSuperseded(tx *gorm.DB, principalID, keepID string) error {
 	now := s.now()
 	graceUntil := now.Add(snapshotSupersededGrace)
+	// F-26: count bound first. Keep the new snapshot plus the newest
+	// (snapshotSupersededKeep - 1) superseded ones; delete the rest NOW, not at
+	// lease expiry — under churn faster than the grace window, lease expiry
+	// alone lets full payloads accumulate without limit, and the global sweep
+	// is capped at snapshotSweepBatch rows per build. The payload row goes with
+	// the manifest via ON DELETE CASCADE.
+	if err := tx.Exec(`
+		DELETE FROM capability_sync_snapshots
+		WHERE principal_id = ? AND id <> ?
+		  AND id NOT IN (
+			SELECT id FROM capability_sync_snapshots
+			WHERE principal_id = ? AND id <> ?
+			ORDER BY generation DESC
+			LIMIT ?
+		  )`, principalID, keepID, principalID, keepID, snapshotSupersededKeep-1).Error; err != nil {
+		return fmt.Errorf("cap superseded snapshots for %s: %w", principalID, err)
+	}
 	if err := tx.Model(&models.CapabilitySyncSnapshot{}).
 		Where("principal_id = ? AND id <> ? AND expires_at > ?", principalID, keepID, graceUntil).
 		Update("expires_at", graceUntil).Error; err != nil {

@@ -86,6 +86,7 @@ var snapshotMigrations = []string{
 	"20260805000300_create_capability_sync_snapshot_generations.sql",
 	"20260805000700_constrain_capability_sync_tombstone_triples.sql",
 	"20260805000800_materialize_capability_sync_snapshots.sql",
+	"20260806000100_freeze_capability_sync_snapshot_identity.sql",
 }
 
 func newSnapshotPostgresDB(t *testing.T) *gorm.DB {
@@ -1383,5 +1384,75 @@ func TestSnapshot_PrincipalsDoNotSeeEachOther(t *testing.T) {
 	// Generations are per principal, so both legitimately start at 1.
 	if a.Generation != 1 || b.Generation != 1 {
 		t.Fatalf("generations are not per principal: A=%d B=%d", a.Generation, b.Generation)
+	}
+}
+
+// F-26. The grace window bounds how LONG a superseded snapshot stays servable,
+// but on its own it says nothing about how MANY may pile up: entitlement churn
+// faster than the window used to stack one full payload per build for five
+// minutes, per principal, with the global sweep capped at 100 rows per build.
+// retireSuperseded now keeps at most snapshotSupersededKeep snapshots per
+// principal — the current one plus the single newest superseded grace copy —
+// and deletes older generations immediately, grace window or not: once a THIRD
+// build exists, the server has twice stopped issuing the oldest id, so nothing
+// the window protects can still be paging it.
+func TestSnapshot_RapidChurnCannotAccumulateSupersededPayloads(t *testing.T) {
+	db := newSnapshotPostgresDB(t)
+	now := time.Now()
+	svc := newSnapshotService(db, true)
+	svc.Now = func() time.Time { return now }
+	ctx := context.Background()
+
+	// Five real builds, seconds apart — all comfortably inside one grace window.
+	var ids []string
+	for i := 1; i <= 5; i++ {
+		seedSnapshotItem(t, db, snapshotItemID(i), fmt.Sprintf("churn-%d", i), "active")
+		seedSnapshotFavorite(t, db, snapshotItemID(i), snapshotUserA)
+		now = now.Add(10 * time.Second)
+		snapshot, reused, err := svc.EnsureSnapshot(ctx, snapshotUserA)
+		if err != nil {
+			t.Fatalf("build %d: %v", i, err)
+		}
+		if reused {
+			t.Fatalf("build %d: content changed, must not reuse", i)
+		}
+		ids = append(ids, snapshot.ID)
+	}
+
+	var manifests, payloads int64
+	db.Table("capability_sync_snapshots").Where("principal_id = ?", snapshotUserA).Count(&manifests)
+	db.Table("capability_sync_snapshot_payloads").Count(&payloads)
+	if manifests > int64(snapshotSupersededKeep) || payloads > int64(snapshotSupersededKeep) {
+		t.Fatalf("five builds inside one grace window retained %d manifests / %d payloads; the cap is %d",
+			manifests, payloads, snapshotSupersededKeep)
+	}
+
+	// The survivors are exactly the newest two: the current snapshot and its
+	// immediate predecessor (the grace copy an in-flight pagination may still
+	// be reading).
+	if _, err := svc.GetSnapshotPage(ctx, snapshotUserA, ids[4], 0); err != nil {
+		t.Fatalf("the current snapshot must serve: %v", err)
+	}
+	if _, err := svc.GetSnapshotPage(ctx, snapshotUserA, ids[3], 0); err != nil {
+		t.Fatalf("the immediate predecessor must survive inside its grace window: %v", err)
+	}
+	// Generation N-2 is gone already, even though its grace window has not
+	// elapsed — the count bound, not the time bound, is what removed it.
+	if _, err := svc.GetSnapshotPage(ctx, snapshotUserA, ids[2], 0); err != ErrSnapshotNotFound {
+		t.Fatalf("err = %v, want ErrSnapshotNotFound for a snapshot beyond the keep cap", err)
+	}
+
+	// And the bound is per principal: another principal's snapshots are not
+	// collateral of this principal's churn.
+	seedSnapshotFavorite(t, db, snapshotItemID(1), snapshotUserB)
+	other, _, err := svc.EnsureSnapshot(ctx, snapshotUserB)
+	if err != nil {
+		t.Fatalf("other principal build: %v", err)
+	}
+	if _, err := svc.GetSnapshotPage(ctx, snapshotUserB, other.ID, 0); err != nil {
+		t.Fatalf("other principal's snapshot must serve: %v", err)
+	}
+	if _, err := svc.GetSnapshotPage(ctx, snapshotUserA, ids[4], 0); err != nil {
+		t.Fatalf("principal A's current snapshot was swept by B's build: %v", err)
 	}
 }

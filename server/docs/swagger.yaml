@@ -2836,6 +2836,11 @@ definitions:
       username:
         type: string
     type: object
+  internal_handlers.gitBindingStatusResponse:
+    properties:
+      sync_status:
+        type: string
+    type: object
   internal_handlers.gitServerCreateRequest:
     properties:
       config:
@@ -2891,13 +2896,22 @@ definitions:
       kind:
         type: string
     type: object
-  internal_handlers.giteaPushWebhookPayload:
+  internal_handlers.giteaWebhookPayload:
     properties:
+      action:
+        description: '`repository` only: created | deleted'
+        type: string
       after:
+        description: push
         type: string
       before:
+        description: push
         type: string
       ref:
+        description: 'push: refs/heads/x — create/delete: x'
+        type: string
+      ref_type:
+        description: 'create/delete: branch | tag'
         type: string
       repository:
         properties:
@@ -2907,6 +2921,11 @@ definitions:
             type: string
           id:
             type: integer
+          owner:
+            properties:
+              login:
+                type: string
+            type: object
         type: object
     type: object
   internal_handlers.itemAssetPayload:
@@ -9811,6 +9830,41 @@ paths:
       summary: Register gateway
       tags:
       - internal-gateway
+  /internal/git-binding/status/{git_server_id}/{user_subject_id}:
+    get:
+      parameters:
+      - description: Git server id (baked into the fork's BINDING_CHECK_URL)
+        in: path
+        name: git_server_id
+        required: true
+        type: string
+      - description: cs-user subject id (the JWT user_id claim)
+        in: path
+        name: user_subject_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.gitBindingStatusResponse'
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Report a user's Git account binding status
+      tags:
+      - internal
   /internal/git-sync/{git_server_id}:
     post:
       consumes:
@@ -9821,7 +9875,8 @@ paths:
         name: git_server_id
         required: true
         type: string
-      - description: Gitea event type; only push is queued
+      - description: Gitea event type; push, repository, create and delete are accepted,
+          anything else is acknowledged and ignored
         in: header
         name: X-Gitea-Event
         required: true
@@ -9836,12 +9891,12 @@ paths:
         name: X-Gitea-Signature
         required: true
         type: string
-      - description: Gitea push payload
+      - description: Gitea event payload
         in: body
         name: body
         required: true
         schema:
-          $ref: '#/definitions/internal_handlers.giteaPushWebhookPayload'
+          $ref: '#/definitions/internal_handlers.giteaWebhookPayload'
       produces:
       - application/json
       responses:
@@ -9895,7 +9950,7 @@ paths:
               error:
                 type: string
             type: object
-      summary: Receive a Gitea capability repository push webhook
+      summary: Receive a Gitea capability repository lifecycle webhook
       tags:
       - git-capability-sync
   /invitations:
@@ -11117,8 +11172,11 @@ paths:
         coordinate, not the commit that made the change, and it must not be presented
         as one. `version` is never empty: when the manifest declares no version the
         short commit SHA is returned instead. Paging uses the item-bound `before_revision`
-        cursor. Authorization is identical to item detail; a DB-backed item returns
-        an empty page with historyBackend=db.'
+        cursor. Authorization is identical to item detail: a caller who relies on
+        the repository being public has that visibility re-verified against the Git
+        server, so a repository that has gone private answers 404 and an unreachable
+        Git server answers 503 (error_code GIT_VISIBILITY_UNVERIFIED) rather than
+        serving the timeline. A DB-backed item returns an empty page with historyBackend=db.'
       parameters:
       - description: Item ID
         in: path
@@ -11166,6 +11224,24 @@ paths:
           schema:
             properties:
               error:
+                type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            properties:
+              error:
+                type: string
+              error_code:
+                type: string
+            type: object
+        "504":
+          description: Gateway Timeout
+          schema:
+            properties:
+              error:
+                type: string
+              error_code:
                 type: string
             type: object
       summary: List a Git-backed item's recent revisions
@@ -12000,6 +12076,15 @@ paths:
           schema:
             properties:
               error:
+                type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            properties:
+              error:
+                type: string
+              error_code:
                 type: string
             type: object
       summary: Get marketplace.json

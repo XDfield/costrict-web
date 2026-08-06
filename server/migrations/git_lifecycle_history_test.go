@@ -722,3 +722,84 @@ func TestSnapshotGenerationMigration_ConcurrentAllocationSerializesOrAborts(t *t
 		t.Fatalf("generations were not strictly increasing: %d then %d", rcWinner, rcLoser)
 	}
 }
+
+// The orphan backfill is the compensation for tightening the auto-reactivation
+// predicate. If it under-matches, a row Git archived before this deployment can
+// never come back; if it over-matches, it hands Git permission to republish a
+// row a human took down. Both failures are silent, so both are pinned here.
+func TestGitLifecycleOrphanBackfill_ClaimsOnlyRowsGitItselfHid(t *testing.T) {
+	tx := isolatedMigrationTx(t, "git_lifecycle_orphan_backfill_test",
+		[]string{`CREATE TABLE capability_items (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			content_backend VARCHAR(16) NOT NULL DEFAULT 'db',
+			git_sync_status VARCHAR(16) NOT NULL DEFAULT '',
+			git_last_synced_at TIMESTAMPTZ,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`},
+		"20260805000000_add_capability_items_git_lifecycle.sql")
+
+	seed := func(id, backend, syncStatus string, reason *string) {
+		t.Helper()
+		if err := tx.Exec(
+			`INSERT INTO capability_items (id, content_backend, git_sync_status, git_lifecycle_reason, git_lifecycle_changed_at)
+			 VALUES (?, ?, ?, ?, CASE WHEN ?::text IS NULL THEN NULL ELSE now() END)`,
+			id, backend, syncStatus, reason, reason,
+		).Error; err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	terminal := "repository_deleted"
+	const (
+		orphaned      = "11111111-0000-0000-0000-000000000001"
+		humanArchived = "11111111-0000-0000-0000-000000000002"
+		dbBacked      = "11111111-0000-0000-0000-000000000003"
+		alreadyKnown  = "11111111-0000-0000-0000-000000000004"
+	)
+	seed(orphaned, "git", "orphaned", nil)    // Git hid it, cause unrecorded
+	seed(humanArchived, "git", "synced", nil) // a human hid it; Git holds no claim
+	seed(dbBacked, "db", "orphaned", nil)     // not Git-backed at all
+	seed(alreadyKnown, "git", "orphaned", &terminal)
+
+	backfill, err := readGooseUp("20260806000000_backfill_git_lifecycle_reason_for_orphans.sql")
+	if err != nil {
+		t.Fatalf("read backfill: %v", err)
+	}
+	for attempt := 0; attempt < 2; attempt++ { // idempotent
+		if err := tx.Exec(backfill).Error; err != nil {
+			t.Fatalf("apply backfill (attempt %d): %v", attempt, err)
+		}
+	}
+
+	for _, want := range []struct {
+		id     string
+		reason string
+	}{
+		{orphaned, "manifest_removed"},
+		{humanArchived, ""},
+		{dbBacked, ""},
+		{alreadyKnown, terminal},
+	} {
+		var row struct {
+			Reason    *string
+			ChangedAt *time.Time
+		}
+		if err := tx.Raw(
+			`SELECT git_lifecycle_reason AS reason, git_lifecycle_changed_at AS changed_at
+			 FROM capability_items WHERE id = ?`, want.id).Scan(&row).Error; err != nil {
+			t.Fatalf("read %s: %v", want.id, err)
+		}
+		got := ""
+		if row.Reason != nil {
+			got = *row.Reason
+		}
+		if got != want.reason {
+			t.Errorf("item %s reason = %q, want %q", want.id, got, want.reason)
+		}
+		// The CHECK constraint pairs the two; a backfill that wrote one without
+		// the other could not have committed, so this asserts the pairing rather
+		// than re-testing the constraint.
+		if (got == "") != (row.ChangedAt == nil) {
+			t.Errorf("item %s reason=%q changedAt=%v are unpaired", want.id, got, row.ChangedAt)
+		}
+	}
+}

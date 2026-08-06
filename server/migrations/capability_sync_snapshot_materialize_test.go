@@ -1,11 +1,32 @@
 package migrations_test
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
 	"gorm.io/gorm"
 )
+
+// readGooseDown extracts the Down half of a goose migration, mirroring
+// readGooseUp. Used to prove a superseding migration's rollback restores the
+// exact previous behaviour rather than a broken third variant.
+func readGooseDown(path string) (string, error) {
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	const downMarker = "-- +goose Down"
+	downStart := strings.Index(string(contents), downMarker)
+	if downStart < 0 {
+		return "", fmt.Errorf("invalid Goose migration %s", path)
+	}
+	down := string(contents[downStart+len(downMarker):])
+	down = strings.ReplaceAll(down, "-- +goose StatementBegin", "")
+	down = strings.ReplaceAll(down, "-- +goose StatementEnd", "")
+	return down, nil
+}
 
 // snapshotMaterializeMigrations is the whole snapshot stack. The later
 // migration only makes sense against the earlier one — it adds the frozen
@@ -14,6 +35,7 @@ import (
 var snapshotMaterializeMigrations = []string{
 	"20260805000300_create_capability_sync_snapshot_generations.sql",
 	"20260805000800_materialize_capability_sync_snapshots.sql",
+	"20260806000100_freeze_capability_sync_snapshot_identity.sql",
 }
 
 const (
@@ -322,4 +344,125 @@ func TestSnapshotMaterializeMigration_PayloadIsFrozenAndSelfConsistent(t *testin
 	if remaining != 0 {
 		t.Fatalf("payloads after manifest delete = %d, want 0 (cascade)", remaining)
 	}
+}
+
+// F-25 (20260806000100). The two F-5 rules above validate generation on INSERT
+// and freeze a row only once complete = true. The path between them: insert a
+// perfectly legal INCOMPLETE manifest at the allocator's number, then UPDATE it
+// to an invented generation and mark it complete in the same statement — the
+// INSERT check never re-runs, the freeze compares OLD.complete (false), the
+// allocator is untouched. csc applies the invented number and permanently
+// rejects every honestly allocated one below it. Identity is therefore frozen
+// on UPDATE for every row, complete or not.
+func TestSnapshotIdentityFreezeMigration_IncompleteRowCannotInventItsGeneration(t *testing.T) {
+	tx := isolatedMigrationTx(t, "snapshot_identity_freeze", nil, snapshotMaterializeMigrations...)
+
+	const snapshotID = "22222222-2222-4222-8222-222222222222"
+	generation := allocateTestGeneration(t, tx, snapshotTestPrincipal)
+
+	// The foothold: a legal incomplete row at the number actually issued.
+	if err := tx.Exec(`INSERT INTO capability_sync_snapshots
+		(id, principal_id, generation, page_count, page_size, item_count, tombstone_count, complete, expires_at)
+		VALUES (?, ?, ?, 0, 0, 0, 0, false, now() + interval '1 hour')`,
+		snapshotID, snapshotTestPrincipal, generation).Error; err != nil {
+		t.Fatalf("insert incomplete manifest: %v", err)
+	}
+
+	rejected := []struct{ name, sql string }{
+		{
+			// The replayed attack, verbatim: invent the generation and complete
+			// the row in one statement.
+			"generation invented while completing",
+			`UPDATE capability_sync_snapshots
+				SET generation = 999999, complete = true, snapshot_digest = repeat('a', 64),
+				    content_digest = repeat('b', 64), page_count = 1, page_size = 200
+				WHERE id = ?`,
+		},
+		{
+			"generation moved on its own",
+			`UPDATE capability_sync_snapshots SET generation = generation + 1 WHERE id = ?`,
+		},
+		{
+			"principal reassigned",
+			`UPDATE capability_sync_snapshots SET principal_id = 'someone-else' WHERE id = ?`,
+		},
+		{
+			"id rewritten",
+			`UPDATE capability_sync_snapshots SET id = '33333333-3333-4333-8333-333333333333' WHERE id = ?`,
+		},
+	}
+	for _, tc := range rejected {
+		t.Run("frozen while incomplete: "+tc.name, func(t *testing.T) {
+			tx.Exec("SAVEPOINT probe")
+			if err := tx.Exec(tc.sql, snapshotID).Error; err == nil {
+				t.Fatalf("%s was accepted on an incomplete row; csc would apply the invented identity "+
+					"and permanently reject every honest generation below it", tc.name)
+			}
+			tx.Exec("ROLLBACK TO SAVEPOINT probe")
+			tx.Exec("RELEASE SAVEPOINT probe")
+		})
+	}
+
+	// Identity is what froze — not completion. Finishing the row under the
+	// number the allocator really issued stays legal (nothing in the
+	// application produces incomplete rows, but the guard must not make repair
+	// of externally-damaged data impossible under the honest number)...
+	if err := tx.Exec(`UPDATE capability_sync_snapshots
+		SET complete = true, snapshot_digest = ?, content_digest = ?, page_count = 1, page_size = 200
+		WHERE id = ?`, snapshotTestDigestA, snapshotTestDigestB, snapshotID).Error; err != nil {
+		t.Fatalf("completing a row without moving its identity must stay legal: %v", err)
+	}
+	// ...and the one deliberately mutable column stays mutable afterwards.
+	if err := tx.Exec(`UPDATE capability_sync_snapshots SET expires_at = now() + interval '2 hours' WHERE id = ?`,
+		snapshotID).Error; err != nil {
+		t.Fatalf("expires_at must remain extendable: %v", err)
+	}
+}
+
+// The Down of 20260806000100 must restore the 20260805000800 guard exactly:
+// still rejecting complete-row mutation, but once again blind to the
+// incomplete-row identity rewrite. Pinning the reopened hole sounds odd, but it
+// is what proves the Down is the old function and not a broken third variant.
+func TestSnapshotIdentityFreezeMigration_DownRestoresThePreviousGuard(t *testing.T) {
+	tx := isolatedMigrationTx(t, "snapshot_identity_freeze_down", nil, snapshotMaterializeMigrations...)
+
+	down, err := readGooseDown("20260806000100_freeze_capability_sync_snapshot_identity.sql")
+	if err != nil {
+		t.Fatalf("read down migration: %v", err)
+	}
+	if err := tx.Exec(down).Error; err != nil {
+		t.Fatalf("apply down migration: %v", err)
+	}
+
+	const snapshotID = "44444444-4444-4444-8444-444444444444"
+	generation := allocateTestGeneration(t, tx, snapshotTestPrincipal)
+	if err := tx.Exec(`INSERT INTO capability_sync_snapshots
+		(id, principal_id, generation, page_count, page_size, item_count, tombstone_count, complete, expires_at)
+		VALUES (?, ?, ?, 0, 0, 0, 0, false, now() + interval '1 hour')`,
+		snapshotID, snapshotTestPrincipal, generation).Error; err != nil {
+		t.Fatalf("insert incomplete manifest: %v", err)
+	}
+
+	// Old behaviour, reopened: the incomplete row's generation moves again.
+	if err := tx.Exec(`UPDATE capability_sync_snapshots SET generation = generation + 1 WHERE id = ?`,
+		snapshotID).Error; err != nil {
+		t.Fatalf("down must restore the old guard (incomplete identity mutable): %v", err)
+	}
+	if err := tx.Exec(`UPDATE capability_sync_snapshots SET generation = ? WHERE id = ?`,
+		generation, snapshotID).Error; err != nil {
+		t.Fatalf("restore generation: %v", err)
+	}
+
+	// Old behaviour, still enforced: a complete row stays frozen.
+	if err := tx.Exec(`UPDATE capability_sync_snapshots
+		SET complete = true, snapshot_digest = ?, content_digest = ?, page_count = 1, page_size = 200
+		WHERE id = ?`, snapshotTestDigestA, snapshotTestDigestB, snapshotID).Error; err != nil {
+		t.Fatalf("complete the row: %v", err)
+	}
+	tx.Exec("SAVEPOINT frozen")
+	if err := tx.Exec(`UPDATE capability_sync_snapshots SET generation = generation + 1 WHERE id = ?`,
+		snapshotID).Error; err == nil {
+		t.Fatal("down lost the complete-row freeze")
+	}
+	tx.Exec("ROLLBACK TO SAVEPOINT frozen")
 }

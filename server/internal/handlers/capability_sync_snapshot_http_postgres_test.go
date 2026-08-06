@@ -53,6 +53,7 @@ var snapshotHTTPMigrations = []string{
 	"20260805000300_create_capability_sync_snapshot_generations.sql",
 	"20260805000700_constrain_capability_sync_tombstone_triples.sql",
 	"20260805000800_materialize_capability_sync_snapshots.sql",
+	"20260806000100_freeze_capability_sync_snapshot_identity.sql",
 }
 
 func newSnapshotHTTPDB(t *testing.T) *gorm.DB {

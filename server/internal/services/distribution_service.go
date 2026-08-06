@@ -720,6 +720,20 @@ func (s *DistributionService) UpdateDistribution(ctx context.Context, distID, op
 	}
 
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// The dist loaded before this transaction can be stale under concurrent
+		// updates, and the F-22 tombstone write below must key off the status
+		// this transaction actually replaces — a re-revoke of an already
+		// revoked distribution is not a new removal and must not rotate event
+		// ids. Re-read it on this tx. (Two truly concurrent revokes can still
+		// both observe 'active' and both rotate; that is over-rotation, which
+		// the tombstone contract accepts — re-applying a removal is idempotent
+		// on the client — whereas under-rotating leaves a capability installed
+		// forever.)
+		var prior models.ItemDistribution
+		if err := tx.Select("status").First(&prior, "id = ?", dist.ID).Error; err != nil {
+			return err
+		}
+
 		if err := tx.Model(dist).Updates(updates).Error; err != nil {
 			return err
 		}
@@ -751,6 +765,44 @@ func (s *DistributionService) UpdateDistribution(ctx context.Context, distID, op
 					}
 				}
 			}
+
+			// F-22: the tombstone must not depend on the favorite path above.
+			// Auto-favorite at distribute time is best-effort; when it never
+			// succeeded, the recipient's entitlement exists ONLY as this
+			// distribution's receipt, UnfavoriteItemTx finds no row to delete,
+			// its compare-and-set never fires, and the device that installed
+			// the capability while the distribution was active keeps it
+			// forever. The removal event's source is the distribution itself —
+			// its status leaving 'active' — so the tombstone is written on
+			// exactly that transition, for every recipient whose receipt still
+			// conferred the entitlement at that instant (a receipt already
+			// dismissed stopped conferring it earlier, and that earlier
+			// transition is not this one).
+			//
+			// Where the favorite path above also recorded the removal, this
+			// upserts the same (user, item) row with the same reason inside the
+			// same transaction, so the two writes converge to one terminal
+			// tombstone; the double event-id rotation within one commit is
+			// unobservable, since only the committed final id is ever served.
+			// A recipient still entitled through another source (their own
+			// surviving favorite, another active distribution) is handled by
+			// snapshot supersession: an active item always wins over its own
+			// older tombstone.
+			if prior.Status == "active" {
+				for _, receipt := range receipts {
+					if receipt.ReceiptStatus == "dismissed" {
+						continue
+					}
+					if err := RecordEntitlementRemovalTx(tx, EntitlementRemoval{
+						UserID: receipt.UserID,
+						ItemID: dist.ItemID,
+						Reason: models.SyncTombstoneReasonDistributionRevoked,
+					}); err != nil {
+						return err
+					}
+				}
+			}
+
 			if *status == "revoked" {
 				if err := tx.Model(&models.ItemDistributionReceipt{}).Where("distribution_id = ?", dist.ID).Update("receipt_status", "dismissed").Error; err != nil {
 					return err
@@ -815,23 +867,60 @@ func (s *DistributionService) RevokeDistribution(ctx context.Context, distID, op
 }
 
 // DismissReceipt allows a recipient to dismiss a distribution from their view.
+//
+// F-23: the favorite removal runs on the SAME transaction as the receipt
+// update, via UnfavoriteItemTx. The previous code called UnfavoriteItem — which
+// opens its own transaction — from inside this one, so the two committed
+// independently: a dismissed receipt whose favorite survived (its error was
+// also swallowed), or, had the ordering been reversed, a removed favorite whose
+// receipt stayed live. Either half alone is a lie to the sync layer. Errors now
+// propagate, so a failed favorite removal rolls the dismissal back with it.
 func (s *DistributionService) DismissReceipt(ctx context.Context, distID, userID string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// The status predicate is this caller's compare-and-set for the
+		// tombstone event-id rotation rule (see RecordEntitlementRemovalTx):
+		// only a real not-dismissed -> dismissed transition may reach the
+		// unfavorite below. A repeated dismiss matches nothing, changes
+		// nothing, and rotates nothing.
 		result := tx.Model(&models.ItemDistributionReceipt{}).
-			Where("distribution_id = ? AND user_id = ?", distID, userID).
+			Where("distribution_id = ? AND user_id = ? AND receipt_status <> ?", distID, userID, "dismissed").
 			Update("receipt_status", "dismissed")
 		if result.Error != nil {
 			return result.Error
 		}
 		if result.RowsAffected == 0 {
-			return errors.New("receipt not found")
+			// Distinguish "already dismissed" (idempotent success, the
+			// behaviour a retrying client relies on) from "no such receipt".
+			var existing int64
+			if err := tx.Model(&models.ItemDistributionReceipt{}).
+				Where("distribution_id = ? AND user_id = ?", distID, userID).
+				Count(&existing).Error; err != nil {
+				return err
+			}
+			if existing == 0 {
+				return errors.New("receipt not found")
+			}
+			return nil
 		}
 
-		// Remove favorite
 		var dist models.ItemDistribution
-		if err := tx.Where("id = ?", distID).First(&dist).Error; err == nil {
-			if s.behaviorSvc != nil {
-				_, _, _ = s.behaviorSvc.UnfavoriteItem(ctx, dist.ItemID, userID)
+		if err := tx.Where("id = ?", distID).First(&dist).Error; err != nil {
+			// A receipt whose distribution cannot be loaded must not be
+			// half-dismissed; previously this error was silently skipped.
+			return err
+		}
+		if s.behaviorSvc != nil {
+			// unfavorited, not distribution_revoked: dismissal is the user
+			// letting the capability go, and "an administrator took it back"
+			// would be the wrong story on the device. ErrSkillRequired is the
+			// one expected outcome — another ACTIVE readonly distribution still
+			// needs the item, so the favorite stays while this receipt is
+			// dismissed (this distribution's own receipt no longer counts: the
+			// guard runs on this tx and already sees it dismissed). Any other
+			// error rolls the whole dismissal back.
+			if _, _, err := s.behaviorSvc.UnfavoriteItemTx(tx, dist.ItemID, userID,
+				models.SyncTombstoneReasonUnfavorited); err != nil && !errors.Is(err, ErrSkillRequired) {
+				return err
 			}
 		}
 		return nil

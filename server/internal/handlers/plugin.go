@@ -393,6 +393,7 @@ type marketplacePluginSource struct {
 // @Failure      403   {object}  object{error=string}
 // @Failure      404   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
+// @Failure      503   {object}  object{error=string,error_code=string}
 // @Router       /marketplace/{repo}/marketplace.json [get]
 func MarketplaceJSON(c *gin.Context) {
 	marketplaceName := c.Param("repo")
@@ -452,6 +453,37 @@ func MarketplaceJSON(c *gin.Context) {
 		}
 		if _, duplicate := seenNames[entry.Name]; duplicate {
 			continue
+		}
+		// F-20: every published entry hands out the plugin's repository URL,
+		// ref and pinned SHA — the exact coordinates the detail gate protects.
+		// A caller admitted above only because the LOCAL visibility column says
+		// "public" is relying on a value no webhook keeps current, so the claim
+		// is re-verified against the Git server before the coordinate is
+		// served, exactly like every other detail-scoped read. This endpoint is
+		// per-repo, so the aggregate-listing cost exemption does not apply: the
+		// probe is memoized per repository (verifyGitRepoIsPublic), and the
+		// items of one marketplace share their repositories, so a request costs
+		// at most one probe per distinct repository — usually zero, warm.
+		//
+		// Semantics match the read gate byte for byte via
+		// requireLivePublicGitRepository, including the owner/member/admin
+		// fallback: a repository verified NOT public simply has no place in a
+		// publicly-served manifest (omitted — the list equivalent of the
+		// not-found the detail gate answers), and an UNVERIFIABLE one fails the
+		// whole request closed with no coordinates in the body.
+		//
+		// Members of a private marketplace never reach this: their permission
+		// comes from membership, which the repository going private on Gitea
+		// cannot revoke, so no probe is owed for them.
+		if isPublic {
+			if herr := requireLivePublicGitRepository(c, &item,
+				"this marketplace's git server could not confirm who may read it; try again later"); herr != nil {
+				if herr.status == http.StatusNotFound {
+					continue
+				}
+				c.JSON(herr.status, herr.body)
+				return
+			}
 		}
 		seenNames[entry.Name] = struct{}{}
 		plugins = append(plugins, entry)

@@ -235,6 +235,19 @@ func authorizeItemRead(c *gin.Context, item *models.CapabilityItem) *httpErr {
 	userID := c.GetString(middleware.UserIDKey)
 	allowed, viaPublicVisibility := itemAccessDecision(item, userID)
 	if !allowed {
+		// F-24: itemAccessDecision knows only repositories.visibility and
+		// repo_members, but two local permissions live elsewhere — the item's
+		// creator (capability_items.created_by) and the platform-admin role.
+		// Refusing here without consulting them locked owners without a member
+		// row, and operators, out of their own locally-private items (LH-7:
+		// archived private items are visible to their owner and platform
+		// operators). None of these callers rely on the repository being
+		// public, so admitting them needs no live probe. A caller none of the
+		// checks admit still gets itemAccessRefusal's shape: not-found for a
+		// hidden Git-backed row, so existence is not confirmed to strangers.
+		if itemCallerIsPrivileged(c, database.GetDB(), item, userID) {
+			return nil
+		}
 		return itemAccessRefusal(item)
 	}
 	// Locally-private repository: permission came from membership, not from the

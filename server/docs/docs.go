@@ -9676,6 +9676,59 @@ const docTemplate = `{
                 }
             }
         },
+        "/internal/git-binding/status/{git_server_id}/{user_subject_id}": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal"
+                ],
+                "summary": "Report a user's Git account binding status",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Git server id (baked into the fork's BINDING_CHECK_URL)",
+                        "name": "git_server_id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "cs-user subject id (the JWT user_id claim)",
+                        "name": "user_subject_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.gitBindingStatusResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/internal/git-sync/{git_server_id}": {
             "post": {
                 "consumes": [
@@ -9687,7 +9740,7 @@ const docTemplate = `{
                 "tags": [
                     "git-capability-sync"
                 ],
-                "summary": "Receive a Gitea capability repository push webhook",
+                "summary": "Receive a Gitea capability repository lifecycle webhook",
                 "parameters": [
                     {
                         "type": "string",
@@ -9698,7 +9751,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Gitea event type; only push is queued",
+                        "description": "Gitea event type; push, repository, create and delete are accepted, anything else is acknowledged and ignored",
                         "name": "X-Gitea-Event",
                         "in": "header",
                         "required": true
@@ -9718,12 +9771,12 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "description": "Gitea push payload",
+                        "description": "Gitea event payload",
                         "name": "body",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/internal_handlers.giteaPushWebhookPayload"
+                            "$ref": "#/definitions/internal_handlers.giteaWebhookPayload"
                         }
                     }
                 ],
@@ -11939,7 +11992,7 @@ const docTemplate = `{
         },
         "/items/{id}/git-history": {
             "get": {
-                "description": "Returns the item's most recent successful Git projection transitions, newest first. A revision exists only where a successful projection changed THIS item's own projected content, so a duplicate webhook delivery, a same-content reconcile, and a commit that only touched another capability in the same repository all add nothing, while a revert back to earlier content adds a new revision. ` + "`" + `gitSha` + "`" + ` is the repository head observed when the change was detected — a coordinate, not the commit that made the change, and it must not be presented as one. ` + "`" + `version` + "`" + ` is never empty: when the manifest declares no version the short commit SHA is returned instead. Paging uses the item-bound ` + "`" + `before_revision` + "`" + ` cursor. Authorization is identical to item detail; a DB-backed item returns an empty page with historyBackend=db.",
+                "description": "Returns the item's most recent successful Git projection transitions, newest first. A revision exists only where a successful projection changed THIS item's own projected content, so a duplicate webhook delivery, a same-content reconcile, and a commit that only touched another capability in the same repository all add nothing, while a revert back to earlier content adds a new revision. ` + "`" + `gitSha` + "`" + ` is the repository head observed when the change was detected — a coordinate, not the commit that made the change, and it must not be presented as one. ` + "`" + `version` + "`" + ` is never empty: when the manifest declares no version the short commit SHA is returned instead. Paging uses the item-bound ` + "`" + `before_revision` + "`" + ` cursor. Authorization is identical to item detail: a caller who relies on the repository being public has that visibility re-verified against the Git server, so a repository that has gone private answers 404 and an unreachable Git server answers 503 (error_code GIT_VISIBILITY_UNVERIFIED) rather than serving the timeline. A DB-backed item returns an empty page with historyBackend=db.",
                 "produces": [
                     "application/json"
                 ],
@@ -12014,6 +12067,34 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "504": {
+                        "description": "Gateway Timeout",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
                                     "type": "string"
                                 }
                             }
@@ -13385,6 +13466,20 @@ const docTemplate = `{
                             "type": "object",
                             "properties": {
                                 "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
                                     "type": "string"
                                 }
                             }
@@ -25242,6 +25337,14 @@ const docTemplate = `{
                 }
             }
         },
+        "internal_handlers.gitBindingStatusResponse": {
+            "type": "object",
+            "properties": {
+                "sync_status": {
+                    "type": "string"
+                }
+            }
+        },
         "internal_handlers.gitServerCreateRequest": {
             "type": "object",
             "required": [
@@ -25325,16 +25428,27 @@ const docTemplate = `{
                 }
             }
         },
-        "internal_handlers.giteaPushWebhookPayload": {
+        "internal_handlers.giteaWebhookPayload": {
             "type": "object",
             "properties": {
+                "action": {
+                    "description": "` + "`" + `repository` + "`" + ` only: created | deleted",
+                    "type": "string"
+                },
                 "after": {
+                    "description": "push",
                     "type": "string"
                 },
                 "before": {
+                    "description": "push",
                     "type": "string"
                 },
                 "ref": {
+                    "description": "push: refs/heads/x — create/delete: x",
+                    "type": "string"
+                },
+                "ref_type": {
+                    "description": "create/delete: branch | tag",
                     "type": "string"
                 },
                 "repository": {
@@ -25348,6 +25462,14 @@ const docTemplate = `{
                         },
                         "id": {
                             "type": "integer"
+                        },
+                        "owner": {
+                            "type": "object",
+                            "properties": {
+                                "login": {
+                                    "type": "string"
+                                }
+                            }
                         }
                     }
                 }

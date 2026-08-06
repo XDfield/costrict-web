@@ -275,19 +275,77 @@ func TestItemHistory_ArchivedPrivateItemIsNotFoundNotForbidden(t *testing.T) {
 	// history — that is the point of archiving rather than deleting, and it is
 	// what makes the 404 above a disclosure decision rather than a deletion.
 	//
-	// Membership, not created_by, is what grants that: canAccessItem has always
-	// judged a private repository by repo_members alone, and widening it to the
-	// creator is a different change from this one.
+	// Membership is one of three permissions that grant it; since F-24 the
+	// item's creator and platform operators are admitted too, without a member
+	// row (see TestItemReads_OwnerWithoutMembershipAndAdminAreNotLockedOut).
+	// This case keeps a member row anyway so the original membership path
+	// stays pinned on its own.
 	if err := database.GetDB().Exec(`INSERT INTO repo_members (id, repo_id, user_id, role, created_at)
-		VALUES ('gv-arch-m1', ?, 'owner-1', 'owner', ?)`, historyRepoID, time.Now()).Error; err != nil {
+		VALUES ('gv-arch-m1', ?, 'member-9', 'member', ?)`, historyRepoID, time.Now()).Error; err != nil {
 		t.Fatalf("seed member: %v", err)
 	}
-	w := getHistory(newGitHistoryRouter("owner-1"), "/api/items/"+historyItemID+"/git-history")
+	w := getHistory(newGitHistoryRouter("member-9"), "/api/items/"+historyItemID+"/git-history")
 	if w.Code != http.StatusOK {
 		t.Fatalf("a repository member lost the archived item's history: %d (%s)", w.Code, w.Body.String())
 	}
 	if got := len(decodeGitHistory(t, w).Revisions); got != 1 {
 		t.Fatalf("archived history rows = %d, want 1", got)
+	}
+}
+
+// F-24. itemAccessDecision judges a private repository by repo_members alone,
+// and the guard used to return its refusal without ever consulting the two
+// permissions that live elsewhere: capability_items.created_by and the
+// platform-admin role. The item's own creator — who in the Git-backed world
+// routinely has no repo_members row, because the repository is theirs on Gitea
+// rather than shared through membership — and a platform operator were both
+// told their locally-private item does not exist (LH-7 violated).
+//
+// Neither permission depends on the repository being public, so neither caller
+// is probed: the git server is not contacted at all on this path.
+func TestItemReads_OwnerWithoutMembershipAndAdminAreNotLockedOut(t *testing.T) {
+	defer setupTestDB(t)()
+	gitea := setupGitContentFixture(t)
+	seedGitHistoryItem(t, "private", contentBackendGit) // created_by = owner-1; NO member rows
+	seedGitRevision(t, 1, sha40('a'), "1.0.0", models.GitRevisionSourcePush)
+
+	if err := database.GetDB().Exec(`INSERT INTO user_system_roles (id, user_id, role, created_at)
+		VALUES ('gv-admin-role', 'platform-op', 'platform_admin', CURRENT_TIMESTAMP)`).Error; err != nil {
+		t.Fatalf("seed platform admin: %v", err)
+	}
+
+	// Active: the creator (no member row) and the platform admin both read it.
+	for _, caller := range []string{"owner-1", "platform-op"} {
+		w := getHistory(newGitHistoryRouter(caller), "/api/items/"+historyItemID+"/git-history")
+		if w.Code != http.StatusOK {
+			t.Fatalf("caller %q is locked out of the locally-private item: %d (%s)", caller, w.Code, w.Body.String())
+		}
+		if got := len(decodeGitHistory(t, w).Revisions); got != 1 {
+			t.Fatalf("caller %q got %d revisions, want 1", caller, got)
+		}
+	}
+
+	// Archived: LH-7's actual sentence — visible to the owner and platform
+	// operators, not-found (not forbidden) to everyone else.
+	setItemStatus(t, historyItemID, "archived")
+	for _, caller := range []string{"owner-1", "platform-op"} {
+		w := getHistory(newGitHistoryRouter(caller), "/api/items/"+historyItemID+"/git-history")
+		if w.Code != http.StatusOK {
+			t.Fatalf("caller %q lost their own archived item: %d (%s)", caller, w.Code, w.Body.String())
+		}
+	}
+	for _, caller := range []string{"", "stranger"} {
+		w := getHistory(newGitHistoryRouter(caller), "/api/items/"+historyItemID+"/git-history")
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("caller %q on the archived private item: %d, want 404 — 403 confirms existence (%s)",
+				caller, w.Code, w.Body.String())
+		}
+	}
+
+	// None of the four callers above relied on public visibility, so none of
+	// them owed the git server a question.
+	if repoLookups, rawReads := gitea.counts(); repoLookups != 0 || rawReads != 0 {
+		t.Fatalf("locally-authorized reads contacted the git server: %d lookups, %d raw reads", repoLookups, rawReads)
 	}
 }
 
