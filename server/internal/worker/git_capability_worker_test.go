@@ -87,7 +87,7 @@ func setupGitCapabilityWorkerDB(t *testing.T) *gorm.DB {
 		repository_id TEXT NOT NULL, registry_id TEXT NOT NULL, full_name TEXT NOT NULL,
 		repo_kind TEXT NOT NULL, identification_status TEXT NOT NULL, visibility TEXT NOT NULL,
 		git_remote_url TEXT NOT NULL, default_branch TEXT NOT NULL, last_synced_commit TEXT NOT NULL DEFAULT '',
-		last_synced_at DATETIME, last_error TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL,
+		last_synced_at DATETIME, last_error TEXT NOT NULL DEFAULT '', next_due_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, reconcile_paused INTEGER NOT NULL DEFAULT 0, reconcile_failures INTEGER NOT NULL DEFAULT 0, created_by TEXT NOT NULL,
 		created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL
 	)`).Error; err != nil {
 		t.Fatalf("create repositories table: %v", err)

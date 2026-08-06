@@ -240,11 +240,11 @@ type Device struct {
 }
 
 type DeviceMigration struct {
-	ID           string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	OldDeviceID  string    `gorm:"not null;index:idx_migration_old_user"          json:"oldDeviceId"`
-	NewDeviceID  string    `gorm:"not null;index"                                 json:"newDeviceId"`
-	UserID       string    `gorm:"not null;index:idx_migration_old_user"          json:"userId"`
-	CreatedAt    time.Time `                                                      json:"createdAt"`
+	ID          string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	OldDeviceID string    `gorm:"not null;index:idx_migration_old_user"          json:"oldDeviceId"`
+	NewDeviceID string    `gorm:"not null;index"                                 json:"newDeviceId"`
+	UserID      string    `gorm:"not null;index:idx_migration_old_user"          json:"userId"`
+	CreatedAt   time.Time `                                                      json:"createdAt"`
 }
 
 type DeviceCommandResult struct {
@@ -443,23 +443,23 @@ type SyncLog struct {
 }
 
 type CapabilityItem struct {
-	ID                string               `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	RegistryID        string               `gorm:"not null;index:idx_item_registry_created;index" json:"registryId"`
-	RepoID            string               `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"repoId"`
-	Slug              string               `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"slug"`
-	ItemType          string               `gorm:"not null;index;uniqueIndex:idx_item_repo_type_slug" json:"itemType"`
-	Name              string               `gorm:"not null" json:"name"`
-	Description       string               `json:"description"`
-	Descriptions      datatypes.JSON       `gorm:"type:jsonb;not null;default:'{}'" json:"descriptions" swaggertype:"object"` // {"en":"...","zh":"..."} — locale → text map; flat `description` is the en/default resolution
-	Category          string               `json:"category"`
-	Version           string               `gorm:"default:'1.0.0'" json:"version"`
-	Content           string               `gorm:"type:text" json:"content"`
-	ContentMD5        string               `gorm:"size:64;default:''" json:"contentMd5"`
-	CurrentRevision   int                  `gorm:"not null;default:1" json:"currentRevision"`
-	Metadata          datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
-	Health            datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"health" swaggertype:"object"`
-	Evaluation        datatypes.JSON       `gorm:"type:jsonb;default:'{}'" json:"evaluation" swaggertype:"object"`
-	SourcePath        string               `json:"sourcePath"`
+	ID              string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	RegistryID      string         `gorm:"not null;index:idx_item_registry_created;index" json:"registryId"`
+	RepoID          string         `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"repoId"`
+	Slug            string         `gorm:"not null;uniqueIndex:idx_item_repo_type_slug" json:"slug"`
+	ItemType        string         `gorm:"not null;index;uniqueIndex:idx_item_repo_type_slug" json:"itemType"`
+	Name            string         `gorm:"not null" json:"name"`
+	Description     string         `json:"description"`
+	Descriptions    datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'" json:"descriptions" swaggertype:"object"` // {"en":"...","zh":"..."} — locale → text map; flat `description` is the en/default resolution
+	Category        string         `json:"category"`
+	Version         string         `gorm:"default:'1.0.0'" json:"version"`
+	Content         string         `gorm:"type:text" json:"content"`
+	ContentMD5      string         `gorm:"size:64;default:''" json:"contentMd5"`
+	CurrentRevision int            `gorm:"not null;default:1" json:"currentRevision"`
+	Metadata        datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
+	Health          datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"health" swaggertype:"object"`
+	Evaluation      datatypes.JSON `gorm:"type:jsonb;default:'{}'" json:"evaluation" swaggertype:"object"`
+	SourcePath      string         `json:"sourcePath"`
 	// CatalogEntryDir is the synthetic "<type-dir>/<entry-id>" key for catalog-
 	// ingested rows, used purely to match a DB row back to its upstream catalog
 	// entry across re-ingests. It is decoupled from SourcePath so SourcePath can
@@ -467,41 +467,51 @@ type CapabilityItem struct {
 	// plugin "work tree" mirrors, while matching stays stable. Empty for non-
 	// catalog rows and for legacy rows (which fall back to deriving the key from
 	// SourcePath). Not exposed in the API.
-	CatalogEntryDir   string               `gorm:"index:idx_item_catalog_entry_dir" json:"-"`
-	SourceSHA         string               `json:"sourceSha"`
-	SourceType        string               `gorm:"not null;default:'direct'" json:"sourceType"`                                  // direct | archive | fork
-	Source            string               `json:"source"`                                                                       // 导入来源，如 anthropic/claude-code, superpower, github
-	ForkedFromItemID  *string              `gorm:"type:uuid;index:idx_items_forked_from_item" json:"forkedFromItemId,omitempty"` // Fork provenance: 源 item ID（本 item 从另一个 item Fork 出来时填充）
-	ForkedFromOwnerID *string              `json:"forkedFromOwnerId,omitempty"`                                                  // 源 item 的 createdBy，用于展示原作者（源删除后仍可解析）
-	ParentPluginID    *string              `gorm:"type:uuid;index:idx_item_parent_plugin" json:"parentPluginId,omitempty"`       // Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的 sub-skill 填充）
+	CatalogEntryDir   string  `gorm:"index:idx_item_catalog_entry_dir" json:"-"`
+	SourceSHA         string  `json:"sourceSha"`
+	SourceType        string  `gorm:"not null;default:'direct'" json:"sourceType"`                                  // direct | archive | fork
+	Source            string  `json:"source"`                                                                       // 导入来源，如 anthropic/claude-code, superpower, github
+	ForkedFromItemID  *string `gorm:"type:uuid;index:idx_items_forked_from_item" json:"forkedFromItemId,omitempty"` // Fork provenance: 源 item ID（本 item 从另一个 item Fork 出来时填充）
+	ForkedFromOwnerID *string `json:"forkedFromOwnerId,omitempty"`                                                  // 源 item 的 createdBy，用于展示原作者（源删除后仍可解析）
+	ParentPluginID    *string `gorm:"type:uuid;index:idx_item_parent_plugin" json:"parentPluginId,omitempty"`       // Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的 sub-skill 填充）
 	// Git backing：fork 到用户 Gitea namespace 的 plugin 只存 metadata，内容真相在仓库里。
 	// ContentBackend 默认 db（content + capability_assets 为真相），存量行与非 git 路径行为不变。
-	SourceRepoURL     string               `gorm:"type:text;not null;default:''" json:"sourceRepoUrl,omitempty"`                 // 规范化仓库地址（git_server endpoint + owner/repo）；db-backed 为空
-	SourceRepoRef     string               `gorm:"type:varchar(64);not null;default:'main'" json:"sourceRepoRef,omitempty"`      // 仓库 ref（分支）
-	SourceRepoPath    string               `gorm:"type:text;not null;default:''" json:"sourceRepoPath,omitempty"`                // 主文件在仓库中的相对路径（fork 时探测）；空表示未探测到，跳转回落仓库首页
-	ContentBackend    string               `gorm:"type:varchar(16);not null;default:'db'" json:"contentBackend,omitempty"`       // db | git
-	SourceGitServerID string               `gorm:"type:varchar(64);not null;default:''" json:"-"`                               // 稳定 Git server 身份；仅 git-backed 使用
-	SourceGitRepoID   int64                `gorm:"not null;default:0" json:"-"`                                                 // Gitea repository.id；URL/owner 改名时保持不变
-	SourceGitEntryKey string               `gorm:"type:text;not null;default:''" json:"-"`                                       // 同一 manifest 内的稳定条目身份；单条文件为空，多 MCP 使用 mcpServers key
-	GitSHA            string               `gorm:"type:varchar(40);not null;default:''" json:"gitSha,omitempty"`                 // 最近成功写入索引的 default-branch commit
-	GitLastSyncedAt   *time.Time           `json:"gitLastSyncedAt,omitempty"`
-	GitSyncStatus     string               `gorm:"type:varchar(16);not null;default:''" json:"gitSyncStatus,omitempty"`          // pending | synced | error | orphaned（manifest 已从仓库消失，本行由 sync 自己下架）；db-backed 为空
-	GitSyncError      string               `gorm:"type:text;not null;default:''" json:"-"`
-	PreviewCount      int                  `gorm:"default:0" json:"previewCount"`
-	InstallCount      int                  `gorm:"default:0" json:"installCount"`
-	FavoriteCount     int                  `gorm:"default:0" json:"favoriteCount"`
-	Status            string               `gorm:"default:'active'" json:"status"`
-	SecurityStatus    string               `gorm:"default:'unscanned'" json:"securityStatus"`
-	LastScanID        *string              `json:"lastScanId,omitempty"`
-	CreatedBy         string               `gorm:"not null" json:"createdBy"`
-	UpdatedBy         string               `json:"updatedBy"`
-	IsBuiltIn         bool                 `gorm:"default:false;index" json:"isBuiltIn"`
-	Registry          *CapabilityRegistry  `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
-	Versions          []CapabilityVersion  `gorm:"foreignKey:ItemID;constraint:OnDelete:CASCADE;" json:"versions,omitempty"`
-	Assets            []CapabilityAsset    `gorm:"foreignKey:ItemID" json:"assets,omitempty"`
-	Artifacts         []CapabilityArtifact `gorm:"foreignKey:ItemID" json:"artifacts,omitempty"`
-	CreatedAt         time.Time            `gorm:"index:idx_item_registry_created,sort:desc" json:"createdAt"`
-	UpdatedAt         time.Time            `json:"updatedAt"`
+	SourceRepoURL     string     `gorm:"type:text;not null;default:''" json:"sourceRepoUrl,omitempty"`            // 规范化仓库地址（git_server endpoint + owner/repo）；db-backed 为空
+	SourceRepoRef     string     `gorm:"type:varchar(64);not null;default:'main'" json:"sourceRepoRef,omitempty"` // 仓库 ref（分支）
+	SourceRepoPath    string     `gorm:"type:text;not null;default:''" json:"sourceRepoPath,omitempty"`           // 主文件在仓库中的相对路径（fork 时探测）；空表示未探测到，跳转回落仓库首页
+	ContentBackend    string     `gorm:"type:varchar(16);not null;default:'db'" json:"contentBackend,omitempty"`  // db | git
+	SourceGitServerID string     `gorm:"type:varchar(64);not null;default:''" json:"-"`                           // 稳定 Git server 身份；仅 git-backed 使用
+	SourceGitRepoID   int64      `gorm:"not null;default:0" json:"-"`                                             // Gitea repository.id；URL/owner 改名时保持不变
+	SourceGitEntryKey string     `gorm:"type:text;not null;default:''" json:"-"`                                  // 同一 manifest 内的稳定条目身份；单条文件为空，多 MCP 使用 mcpServers key
+	GitSHA            string     `gorm:"type:varchar(40);not null;default:''" json:"gitSha,omitempty"`            // 最近成功写入索引的 default-branch commit
+	GitLastSyncedAt   *time.Time `json:"gitLastSyncedAt,omitempty"`
+	GitSyncStatus     string     `gorm:"type:varchar(16);not null;default:''" json:"gitSyncStatus,omitempty"` // pending | synced | error | orphaned（manifest 已从仓库消失，本行由 sync 自己下架）；db-backed 为空
+	GitSyncError      string     `gorm:"type:text;not null;default:''" json:"-"`
+	// Git 生命周期归属：git_sync_status 说"是这次 sync 把行藏起来的"，但说不出原因，
+	// 而不同原因的恢复规则不同（manifest/默认分支可自动恢复，仓库删除是终态）。
+	// 人工 archived/inactive/banned 会在同一事务里清空 Reason，等于收回 Git 自动恢复的权限。
+	// 列类型必须与 migrations/20260805000000_add_capability_items_git_lifecycle.sql 精确一致：
+	// capability_items 同时受 AutoMigrate 覆盖，谁先跑都要产出同一列。
+	GitLifecycleReason    *string    `gorm:"type:varchar(32)" json:"gitLifecycleReason,omitempty"` // manifest_removed | default_branch_missing | repository_deleted；NULL = Git 未主张归档
+	GitLifecycleChangedAt *time.Time `json:"gitLifecycleChangedAt,omitempty"`                      // Reason 所代表的那次转换的观测时间；有 Reason 必有此值
+	// 最近一次向 Gitea 成功校验可见性/可访问性的时间。公开浏览要求新鲜度（默认 10 分钟），
+	// NULL 或过期一律 fail closed（隐藏），所以存量行天然不可公开投影。运维字段，不出 API。
+	GitVisibilityVerifiedAt *time.Time           `json:"-"`
+	PreviewCount            int                  `gorm:"default:0" json:"previewCount"`
+	InstallCount            int                  `gorm:"default:0" json:"installCount"`
+	FavoriteCount           int                  `gorm:"default:0" json:"favoriteCount"`
+	Status                  string               `gorm:"default:'active'" json:"status"`
+	SecurityStatus          string               `gorm:"default:'unscanned'" json:"securityStatus"`
+	LastScanID              *string              `json:"lastScanId,omitempty"`
+	CreatedBy               string               `gorm:"not null" json:"createdBy"`
+	UpdatedBy               string               `json:"updatedBy"`
+	IsBuiltIn               bool                 `gorm:"default:false;index" json:"isBuiltIn"`
+	Registry                *CapabilityRegistry  `gorm:"foreignKey:RegistryID" json:"registry,omitempty"`
+	Versions                []CapabilityVersion  `gorm:"foreignKey:ItemID;constraint:OnDelete:CASCADE;" json:"versions,omitempty"`
+	Assets                  []CapabilityAsset    `gorm:"foreignKey:ItemID" json:"assets,omitempty"`
+	Artifacts               []CapabilityArtifact `gorm:"foreignKey:ItemID" json:"artifacts,omitempty"`
+	CreatedAt               time.Time            `gorm:"index:idx_item_registry_created,sort:desc" json:"createdAt"`
+	UpdatedAt               time.Time            `json:"updatedAt"`
 
 	ExperienceScore float64 `gorm:"default:0" json:"experienceScore"`
 
@@ -512,9 +522,9 @@ type CapabilityItem struct {
 // ItemCategory 分类字典表，支持国际化
 type ItemCategory struct {
 	ID           string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	Slug         string         `gorm:"not null;uniqueIndex"                           json:"slug"`         // 唯一标识，如 "development", "testing"
-	Icon         string         `                                                      json:"icon"`         // 图标（可选）
-	SortOrder    int            `gorm:"default:0"                                      json:"sortOrder"`    // 排序
+	Slug         string         `gorm:"not null;uniqueIndex"                           json:"slug"`                              // 唯一标识，如 "development", "testing"
+	Icon         string         `                                                      json:"icon"`                              // 图标（可选）
+	SortOrder    int            `gorm:"default:0"                                      json:"sortOrder"`                         // 排序
 	Names        datatypes.JSON `gorm:"type:jsonb;not null;default:'{}'"               json:"names" swaggertype:"object"`        // {"en":"Development","zh":"开发工具"}
 	Descriptions datatypes.JSON `gorm:"type:jsonb;default:'{}'"                        json:"descriptions" swaggertype:"object"` // {"en":"...","zh":"..."}
 	CreatedBy    string         `gorm:"not null"                                       json:"createdBy"`
@@ -552,22 +562,22 @@ type ItemTag struct {
 }
 
 type CapabilityVersion struct {
-	ID          string                   `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	ItemID      string                   `gorm:"not null;index" json:"itemId"`
-	Revision    int                      `gorm:"not null;column:revision" json:"revision"`
-	Name        string                   `json:"name"`
-	Description string                   `json:"description"`
-	Descriptions datatypes.JSON          `gorm:"type:jsonb;not null;default:'{}'" json:"descriptions" swaggertype:"object"`
-	Category    string                   `json:"category"`
-	Version     string                   `json:"version"`
-	Content     string                   `gorm:"type:text;not null" json:"content"`
-	ContentMD5  string                   `gorm:"size:64;default:''" json:"contentMd5"`
-	Metadata    datatypes.JSON           `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
-	CommitMsg   string                   `json:"commitMsg"`
-	CreatedBy   string                   `gorm:"not null" json:"createdBy"`
-	SourcePath  string                   `json:"sourcePath"`
-	Assets      []CapabilityVersionAsset `gorm:"foreignKey:VersionID;constraint:OnDelete:CASCADE;" json:"assets,omitempty"`
-	CreatedAt   time.Time                `json:"createdAt"`
+	ID           string                   `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ItemID       string                   `gorm:"not null;index" json:"itemId"`
+	Revision     int                      `gorm:"not null;column:revision" json:"revision"`
+	Name         string                   `json:"name"`
+	Description  string                   `json:"description"`
+	Descriptions datatypes.JSON           `gorm:"type:jsonb;not null;default:'{}'" json:"descriptions" swaggertype:"object"`
+	Category     string                   `json:"category"`
+	Version      string                   `json:"version"`
+	Content      string                   `gorm:"type:text;not null" json:"content"`
+	ContentMD5   string                   `gorm:"size:64;default:''" json:"contentMd5"`
+	Metadata     datatypes.JSON           `gorm:"type:jsonb;default:'{}'" json:"metadata" swaggertype:"object"`
+	CommitMsg    string                   `json:"commitMsg"`
+	CreatedBy    string                   `gorm:"not null" json:"createdBy"`
+	SourcePath   string                   `json:"sourcePath"`
+	Assets       []CapabilityVersionAsset `gorm:"foreignKey:VersionID;constraint:OnDelete:CASCADE;" json:"assets,omitempty"`
+	CreatedAt    time.Time                `json:"createdAt"`
 }
 
 type CapabilityVersionAsset struct {
@@ -687,15 +697,15 @@ type WorkspaceDirectory struct {
 
 // User represents a local user record synchronized from Casdoor
 type User struct {
-	ID          uint    `gorm:"primaryKey;autoIncrement" json:"id"`                                  // Local database primary key, internal only
-	SubjectID   string  `gorm:"uniqueIndex:idx_user_subject_id;not null;size:191" json:"subject_id"` // Stable application-level user identifier used across business tables and request context
-	Username    string  `gorm:"uniqueIndex:idx_user_username;not null;size:191" json:"username"`     // Casdoor name
-	DisplayName *string `gorm:"size:191" json:"display_name"`                                        // Casdoor preferred_username
-	Email       *string `gorm:"index:idx_user_email;size:191" json:"email"`                          // Email
-	Phone       *string `gorm:"index:idx_user_phone;size:64" json:"phone"`
-	AvatarURL   *string `gorm:"type:text" json:"avatar_url"`                                         // Avatar URL
-	AuthProvider *string `gorm:"index:idx_user_auth_provider;size:64" json:"auth_provider"`
-	ExternalKey *string `gorm:"uniqueIndex:idx_user_external_key;size:255" json:"external_key"`
+	ID             uint    `gorm:"primaryKey;autoIncrement" json:"id"`                                  // Local database primary key, internal only
+	SubjectID      string  `gorm:"uniqueIndex:idx_user_subject_id;not null;size:191" json:"subject_id"` // Stable application-level user identifier used across business tables and request context
+	Username       string  `gorm:"uniqueIndex:idx_user_username;not null;size:191" json:"username"`     // Casdoor name
+	DisplayName    *string `gorm:"size:191" json:"display_name"`                                        // Casdoor preferred_username
+	Email          *string `gorm:"index:idx_user_email;size:191" json:"email"`                          // Email
+	Phone          *string `gorm:"index:idx_user_phone;size:64" json:"phone"`
+	AvatarURL      *string `gorm:"type:text" json:"avatar_url"` // Avatar URL
+	AuthProvider   *string `gorm:"index:idx_user_auth_provider;size:64" json:"auth_provider"`
+	ExternalKey    *string `gorm:"uniqueIndex:idx_user_external_key;size:255" json:"external_key"`
 	ProviderUserID *string `gorm:"index:idx_user_provider_user_id;size:191" json:"provider_user_id"`
 
 	// Casdoor 相关字段
@@ -705,15 +715,15 @@ type User struct {
 	Organization       *string `gorm:"index:idx_user_organization;size:191" json:"organization"`                 // Casdoor owner
 
 	// 状态字段
-	IsActive    bool       `gorm:"not null;default:true" json:"is_active"` // 是否激活
-	Status      string     `gorm:"size:32;not null;default:'active';index" json:"status"` // 账户状态: active|disabled|banned（admin 封禁，独立于 is_active）
+	IsActive bool   `gorm:"not null;default:true" json:"is_active"`                // 是否激活
+	Status   string `gorm:"size:32;not null;default:'active';index" json:"status"` // 账户状态: active|disabled|banned（admin 封禁，独立于 is_active）
 	// ProfileCompletedAt 为 NULL 表示用户尚未完成首次注册(自定义 username +
 	// display_name)。RequireProfileComplete 中间件据此拦截未完成用户的非白名单
 	// API 请求(REGISTRATION_PROFILE_DESIGN §4.2 / §7.2)。存量用户由 migration
 	// 回填至 created_at,只有迁移后新建的用户才能被 gate 拦截。
 	ProfileCompletedAt *time.Time `json:"profile_completed_at"`
-	LastLoginAt *time.Time `json:"last_login_at"`                          // 最后登录时间
-	LastSyncAt  *time.Time `json:"last_sync_at"`                           // 最后同步时间
+	LastLoginAt        *time.Time `json:"last_login_at"` // 最后登录时间
+	LastSyncAt         *time.Time `json:"last_sync_at"`  // 最后同步时间
 
 	// 审计字段
 	CreatedAt time.Time      `json:"created_at"`
@@ -761,18 +771,18 @@ const (
 
 // UserAuthIdentity stores one external login identity bound to a local user.
 type UserAuthIdentity struct {
-	ID              uint           `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserSubjectID   string         `gorm:"index:idx_user_auth_identities_user_subject_id;not null;size:191" json:"user_subject_id"`
-	Provider        string         `gorm:"size:64;not null" json:"provider"`
-	Issuer          *string        `gorm:"size:255" json:"issuer"`
-	ExternalKey     string         `gorm:"uniqueIndex:idx_user_auth_identities_external_key;not null;size:255" json:"external_key"`
-	ExternalSubject *string        `gorm:"size:191" json:"external_subject"`
-	ExternalUserID  *string        `gorm:"size:191" json:"external_user_id"`
-	ProviderUserID  *string        `gorm:"size:191" json:"provider_user_id"`
-	DisplayName     *string        `gorm:"size:191" json:"display_name"`
-	Email           *string        `gorm:"size:191" json:"email"`
-	Phone           *string        `gorm:"size:64" json:"phone"`
-	AvatarURL       *string        `gorm:"type:text" json:"avatar_url"`
+	ID                uint           `gorm:"primaryKey;autoIncrement" json:"id"`
+	UserSubjectID     string         `gorm:"index:idx_user_auth_identities_user_subject_id;not null;size:191" json:"user_subject_id"`
+	Provider          string         `gorm:"size:64;not null" json:"provider"`
+	Issuer            *string        `gorm:"size:255" json:"issuer"`
+	ExternalKey       string         `gorm:"uniqueIndex:idx_user_auth_identities_external_key;not null;size:255" json:"external_key"`
+	ExternalSubject   *string        `gorm:"size:191" json:"external_subject"`
+	ExternalUserID    *string        `gorm:"size:191" json:"external_user_id"`
+	ProviderUserID    *string        `gorm:"size:191" json:"provider_user_id"`
+	DisplayName       *string        `gorm:"size:191" json:"display_name"`
+	Email             *string        `gorm:"size:191" json:"email"`
+	Phone             *string        `gorm:"size:64" json:"phone"`
+	AvatarURL         *string        `gorm:"type:text" json:"avatar_url"`
 	Organization      *string        `gorm:"size:191" json:"organization"`
 	IsPrimary         bool           `gorm:"not null;default:false" json:"is_primary"`
 	ExplicitlyUnbound bool           `gorm:"not null;default:false" json:"explicitly_unbound"`
@@ -824,31 +834,31 @@ func (MemoryVersion) TableName() string {
 
 // ItemDistribution represents a distribution (push/share) of an item to users or departments.
 type ItemDistribution struct {
-	ID             string         `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	ItemID         string         `gorm:"type:uuid;not null;index:idx_dist_item_status" json:"itemId"`
-	DistributorID  string         `gorm:"type:text;not null;index:idx_dist_distributor" json:"distributorId"`
-	PermissionMode string         `gorm:"type:varchar(32);default:'readonly'" json:"permissionMode"` // readonly | dismissible
-	Status         string         `gorm:"type:varchar(32);default:'active'" json:"status"`           // active | paused | revoked
-	ScopeType      string         `gorm:"type:varchar(32);default:'user'" json:"scopeType"`          // user | department
-	TargetID       string         `gorm:"type:text;not null;index:idx_dist_target" json:"targetId"`
-	Message        string         `gorm:"type:text" json:"message,omitempty"`
-	RevokedAt      *time.Time     `json:"revokedAt,omitempty"`
-	ExpiresAt      *time.Time     `json:"expiresAt,omitempty"`
-	CreatedAt      time.Time      `json:"createdAt"`
-	UpdatedAt      time.Time      `json:"updatedAt"`
+	ID             string     `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	ItemID         string     `gorm:"type:uuid;not null;index:idx_dist_item_status" json:"itemId"`
+	DistributorID  string     `gorm:"type:text;not null;index:idx_dist_distributor" json:"distributorId"`
+	PermissionMode string     `gorm:"type:varchar(32);default:'readonly'" json:"permissionMode"` // readonly | dismissible
+	Status         string     `gorm:"type:varchar(32);default:'active'" json:"status"`           // active | paused | revoked
+	ScopeType      string     `gorm:"type:varchar(32);default:'user'" json:"scopeType"`          // user | department
+	TargetID       string     `gorm:"type:text;not null;index:idx_dist_target" json:"targetId"`
+	Message        string     `gorm:"type:text" json:"message,omitempty"`
+	RevokedAt      *time.Time `json:"revokedAt,omitempty"`
+	ExpiresAt      *time.Time `json:"expiresAt,omitempty"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
 
 	Item *CapabilityItem `gorm:"foreignKey:ItemID" json:"item,omitempty"`
 }
 
 // ItemDistributionReceipt represents a user's receipt of an item distribution.
 type ItemDistributionReceipt struct {
-	ID             string     `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
-	DistributionID string     `gorm:"type:uuid;not null;uniqueIndex:idx_dist_receipt_user_dist;index" json:"distributionId"`
-	UserID         string     `gorm:"type:text;not null;uniqueIndex:idx_dist_receipt_user_dist;index" json:"userId"`
-	ReceiptStatus  string     `gorm:"type:varchar(32);default:'unread'" json:"receiptStatus"` // unread | read | dismissed | accepted
-	ForkedItemID   *string    `gorm:"type:uuid" json:"forkedItemId,omitempty"`
-	CreatedAt      time.Time  `json:"createdAt"`
-	UpdatedAt      time.Time  `json:"updatedAt"`
+	ID             string    `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
+	DistributionID string    `gorm:"type:uuid;not null;uniqueIndex:idx_dist_receipt_user_dist;index" json:"distributionId"`
+	UserID         string    `gorm:"type:text;not null;uniqueIndex:idx_dist_receipt_user_dist;index" json:"userId"`
+	ReceiptStatus  string    `gorm:"type:varchar(32);default:'unread'" json:"receiptStatus"` // unread | read | dismissed | accepted
+	ForkedItemID   *string   `gorm:"type:uuid" json:"forkedItemId,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
 
 	Distribution *ItemDistribution `gorm:"foreignKey:DistributionID" json:"distribution,omitempty"`
 }
@@ -883,7 +893,7 @@ type Organization struct {
 	Name        string    `gorm:"type:varchar(191);not null;uniqueIndex" json:"name"` // aligned with Casdoor owner / User.Organization
 	DisplayName string    `gorm:"type:varchar(255)" json:"displayName"`
 	Description string    `gorm:"type:text" json:"description"`
-	ParentID    *string   `gorm:"type:uuid;index" json:"parentId,omitempty"` // reserved for department tree
+	ParentID    *string   `gorm:"type:uuid;index" json:"parentId,omitempty"`         // reserved for department tree
 	OrgType     string    `gorm:"type:varchar(32);default:'company'" json:"orgType"` // company | department | team
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`

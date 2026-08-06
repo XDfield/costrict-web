@@ -23,7 +23,7 @@ func setupResyncDB(t *testing.T) func() {
 	 repository_id TEXT NOT NULL, registry_id TEXT NOT NULL, full_name TEXT NOT NULL,
 	 repo_kind TEXT NOT NULL DEFAULT 'standalone', identification_status TEXT NOT NULL DEFAULT 'unknown',
 	 visibility TEXT NOT NULL DEFAULT 'public', git_remote_url TEXT NOT NULL, default_branch TEXT NOT NULL,
-	 last_synced_commit TEXT NOT NULL DEFAULT '', last_synced_at DATETIME, last_error TEXT NOT NULL DEFAULT '',
+	 last_synced_commit TEXT NOT NULL DEFAULT '', last_synced_at DATETIME, last_error TEXT NOT NULL DEFAULT '', next_due_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, reconcile_paused INTEGER NOT NULL DEFAULT 0, reconcile_failures INTEGER NOT NULL DEFAULT 0,
 	 created_by TEXT NOT NULL, created_at DATETIME NOT NULL, updated_at DATETIME NOT NULL,
 	 UNIQUE(git_server_id, git_repo_id), UNIQUE(repository_id), UNIQUE(registry_id))`).Error; err != nil {
 		t.Fatal(err)

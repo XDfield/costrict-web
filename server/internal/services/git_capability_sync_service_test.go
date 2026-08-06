@@ -130,7 +130,7 @@ func setupGitCapabilitySyncDB(t *testing.T) *gorm.DB {
 			source_repo_url TEXT, source_repo_ref TEXT, source_repo_path TEXT,
 			content_backend TEXT NOT NULL, source_git_server_id TEXT, source_git_repo_id INTEGER, source_git_entry_key TEXT NOT NULL DEFAULT '',
 			git_sha TEXT, git_last_synced_at DATETIME, git_sync_status TEXT,
-			git_sync_error TEXT, status TEXT, security_status TEXT, created_by TEXT, updated_by TEXT,
+			git_sync_error TEXT, git_lifecycle_reason TEXT, git_lifecycle_changed_at DATETIME, git_visibility_verified_at DATETIME, status TEXT, security_status TEXT, created_by TEXT, updated_by TEXT,
 			last_scan_id TEXT, preview_count INTEGER, install_count INTEGER, favorite_count INTEGER,
 			is_built_in INTEGER, experience_score REAL, created_at DATETIME, updated_at DATETIME
 		)`,
@@ -144,7 +144,7 @@ func setupGitCapabilitySyncDB(t *testing.T) *gorm.DB {
 			repository_id TEXT NOT NULL UNIQUE, registry_id TEXT NOT NULL UNIQUE, full_name TEXT NOT NULL,
 			repo_kind TEXT NOT NULL, identification_status TEXT NOT NULL, visibility TEXT NOT NULL,
 			git_remote_url TEXT NOT NULL, default_branch TEXT NOT NULL, last_synced_commit TEXT NOT NULL,
-			last_synced_at DATETIME, last_error TEXT NOT NULL, created_by TEXT NOT NULL,
+			last_synced_at DATETIME, last_error TEXT NOT NULL, next_due_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, reconcile_paused INTEGER NOT NULL DEFAULT 0, reconcile_failures INTEGER NOT NULL DEFAULT 0, created_by TEXT NOT NULL,
 			created_at DATETIME, updated_at DATETIME, UNIQUE(git_server_id, git_repo_id)
 		)`,
 		`CREATE TABLE user_git_binding (

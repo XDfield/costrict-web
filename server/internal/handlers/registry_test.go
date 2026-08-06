@@ -124,7 +124,7 @@ func setupTestDB(t *testing.T) func() {
 			git_sha              TEXT NOT NULL DEFAULT '',
 			git_last_synced_at   DATETIME,
 			git_sync_status      TEXT NOT NULL DEFAULT '',
-			git_sync_error       TEXT NOT NULL DEFAULT '',
+			git_sync_error       TEXT NOT NULL DEFAULT '', git_lifecycle_reason TEXT, git_lifecycle_changed_at DATETIME, git_visibility_verified_at DATETIME,
 			preview_count        INTEGER DEFAULT 0,
 			install_count        INTEGER DEFAULT 0,
 			favorite_count       INTEGER DEFAULT 0,

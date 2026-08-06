@@ -28,9 +28,19 @@ type GitCapabilityRepository struct {
 	LastSyncedCommit     string     `gorm:"column:last_synced_commit;type:varchar(40);not null;default:''" json:"last_synced_commit"`
 	LastSyncedAt         *time.Time `gorm:"column:last_synced_at" json:"last_synced_at,omitempty"`
 	LastError            string     `gorm:"column:last_error;type:text;not null;default:''" json:"last_error,omitempty"`
-	CreatedBy            string     `gorm:"column:created_by;type:varchar(191);not null" json:"created_by"`
-	CreatedAt            time.Time  `gorm:"column:created_at;not null;default:now()" json:"created_at"`
-	UpdatedAt            time.Time  `gorm:"column:updated_at;not null;default:now()" json:"updated_at"`
+	// Reconcile scheduling. Reconciliation — not the webhook — is the
+	// correctness path for a lost/delayed/reordered delivery, so it must meet a
+	// freshness SLA that does not degrade with binding count. NextDueAt turns
+	// the loop into a drain (claim the oldest due rows in bounded batches until
+	// nothing is due); ReconcileFailures drives the backoff that pushes an
+	// unhealthy binding away from the head of the queue; ReconcilePaused is the
+	// per-binding operator kill switch and leaves the drain index entirely.
+	NextDueAt         time.Time `gorm:"column:next_due_at;type:timestamptz;not null;default:now()" json:"next_due_at"`
+	ReconcilePaused   bool      `gorm:"column:reconcile_paused;not null;default:false" json:"reconcile_paused"`
+	ReconcileFailures int       `gorm:"column:reconcile_failures;not null;default:0" json:"reconcile_failures"`
+	CreatedBy         string    `gorm:"column:created_by;type:varchar(191);not null" json:"created_by"`
+	CreatedAt         time.Time `gorm:"column:created_at;not null;default:now()" json:"created_at"`
+	UpdatedAt         time.Time `gorm:"column:updated_at;not null;default:now()" json:"updated_at"`
 }
 
 func (GitCapabilityRepository) TableName() string { return "git_capability_repositories" }

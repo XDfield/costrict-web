@@ -39,7 +39,7 @@ func newGuardTestDB(t *testing.T) *gorm.DB {
 		source_git_server_id TEXT NOT NULL DEFAULT '', source_git_repo_id INTEGER NOT NULL DEFAULT 0,
 		source_git_entry_key TEXT NOT NULL DEFAULT '', git_sha TEXT NOT NULL DEFAULT '',
 		git_last_synced_at DATETIME, git_sync_status TEXT NOT NULL DEFAULT '',
-		git_sync_error TEXT NOT NULL DEFAULT '',
+		git_sync_error TEXT NOT NULL DEFAULT '', git_lifecycle_reason TEXT, git_lifecycle_changed_at DATETIME, git_visibility_verified_at DATETIME,
 		is_built_in INTEGER DEFAULT 0, preview_count INTEGER DEFAULT 0,
 		install_count INTEGER DEFAULT 0, favorite_count INTEGER DEFAULT 0,
 		status TEXT DEFAULT 'active', security_status TEXT DEFAULT 'unscanned',
