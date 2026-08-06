@@ -11,7 +11,9 @@
 package handlers
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -21,6 +23,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
+)
+
+const (
+	gitCreateRequestLimit  = 32 * 1024 * 1024
+	gitCreateMaxAssets     = 64
+	gitCreateMaxAssetBytes = 16 * 1024 * 1024
 )
 
 // CreateGitBackedItem godoc
@@ -54,14 +62,22 @@ func (h *ItemHandler) CreateGitBackedItem(c *gin.Context) {
 			RelPath     string `json:"relPath"`
 			TextContent string `json:"textContent"`
 		} `json:"assets"`
-		Visibility string `json:"visibility"`
-		RegistryID string `json:"registryId"`
+		Visibility *string `json:"visibility"`
+		RegistryID *string `json:"registryId"`
 	}
-	if err := c.ShouldBindJSON(&req); err != nil {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, gitCreateRequestLimit)
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 		return
 	}
-	if req.Visibility != "" || req.RegistryID != "" {
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+	if req.Visibility != nil || req.RegistryID != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "visibility and registryId are not supported for git-backed creation", "error_code": "GIT_CREATE_FIELD_UNSUPPORTED"})
 		return
 	}
@@ -87,9 +103,19 @@ func (h *ItemHandler) CreateGitBackedItem(c *gin.Context) {
 		return
 	}
 	extra := make([]GitCapabilityFile, 0, len(req.Assets))
+	if len(req.Assets) > gitCreateMaxAssets {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "too many assets", "error_code": "GIT_ASSET_COUNT_LIMIT"})
+		return
+	}
+	var totalAssetBytes int
 	for _, asset := range req.Assets {
 		if len(asset.TextContent) > 4*1024*1024 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "asset exceeds size limit", "error_code": "GIT_EXTRA_FILE_REJECTED"})
+			return
+		}
+		totalAssetBytes += len(asset.TextContent)
+		if totalAssetBytes > gitCreateMaxAssetBytes {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "assets exceed aggregate size limit", "error_code": "GIT_ASSET_TOTAL_TOO_LARGE"})
 			return
 		}
 		extra = append(extra, GitCapabilityFile{Path: asset.RelPath, Content: []byte(asset.TextContent)})
