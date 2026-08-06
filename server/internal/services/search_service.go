@@ -33,6 +33,10 @@ type SearchRequest struct {
 	Categories  []string `json:"categories"`
 	RegistryIDs []string `json:"registryIds"`
 	MinScore    float64  `json:"minScore"`
+	// VisibilityScope constrains the query to rows the request caller may browse.
+	// It is supplied by HTTP handlers and deliberately applied before Count,
+	// ordering, and pagination so all three operate on the same relation.
+	VisibilityScope func(*gorm.DB) *gorm.DB `json:"-"`
 }
 
 // SearchResult represents a search result
@@ -89,6 +93,9 @@ func (s *SearchService) KeywordSearch(req SearchRequest) (*SearchResult, error) 
 	}
 	if len(req.RegistryIDs) > 0 {
 		query = query.Where("registry_id IN ?", req.RegistryIDs)
+	}
+	if req.VisibilityScope != nil {
+		query = req.VisibilityScope(query)
 	}
 
 	var total int64

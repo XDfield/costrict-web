@@ -167,6 +167,82 @@ func TestHybridSearch_MissingQuery(t *testing.T) {
 	}
 }
 
+func TestSearch_GitVisibilityFreshness(t *testing.T) {
+	defer setupTestDB(t)()
+
+	const registryID = "reg-search-git-freshness"
+	const repoID = "repo-search-git-freshness"
+	if err := database.DB.Create(&models.Repository{ID: repoID, Name: repoID, OwnerID: "repo-owner", Visibility: "public"}).Error; err != nil {
+		t.Fatalf("seed repository: %v", err)
+	}
+	if err := database.DB.Create(&models.CapabilityRegistry{ID: registryID, Name: "search git freshness", SourceType: "internal", RepoID: repoID, OwnerID: "repo-owner"}).Error; err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	if err := database.DB.Create(&models.RepoMember{ID: "search-git-freshness-member", RepoID: repoID, UserID: "member", Role: "member"}).Error; err != nil {
+		t.Fatalf("seed member: %v", err)
+	}
+
+	fresh := time.Now().Add(-time.Minute)
+	stale := time.Now().Add(-11 * time.Minute)
+	for _, item := range []models.CapabilityItem{
+		{ID: "search-fresh-git", RegistryID: registryID, RepoID: repoID, Slug: "search-fresh-git", ItemType: "skill", Name: "freshness fresh git", Status: "active", CreatedBy: "author", ContentBackend: contentBackendGit, SourceRepoURL: "https://git.example.test/fresh", GitVisibilityVerifiedAt: &fresh, Metadata: datatypes.JSON([]byte("{}"))},
+		{ID: "search-stale-git-owner", RegistryID: registryID, RepoID: repoID, Slug: "search-stale-git-owner", ItemType: "skill", Name: "freshness stale owner", Status: "active", CreatedBy: "owner", ContentBackend: contentBackendGit, SourceRepoURL: "https://git.example.test/stale-owner", GitVisibilityVerifiedAt: &stale, Metadata: datatypes.JSON([]byte("{}"))},
+		{ID: "search-stale-git-member", RegistryID: registryID, RepoID: repoID, Slug: "search-stale-git-member", ItemType: "skill", Name: "freshness stale member", Status: "active", CreatedBy: "author", ContentBackend: contentBackendGit, SourceRepoURL: "https://git.example.test/stale-member", Metadata: datatypes.JSON([]byte("{}"))},
+		{ID: "search-db-backed", RegistryID: registryID, RepoID: repoID, Slug: "search-db-backed", ItemType: "skill", Name: "freshness db backed", Status: "active", CreatedBy: "author", Metadata: datatypes.JSON([]byte("{}"))},
+	} {
+		if err := database.DB.Create(&item).Error; err != nil {
+			t.Fatalf("seed item %s: %v", item.ID, err)
+		}
+	}
+
+	assertSearch := func(endpoint, userID string, page, pageSize, wantTotal int, wantIDs ...string) {
+		t.Helper()
+		w := postJSON(newMarketplaceRouter(userID), endpoint, map[string]interface{}{
+			"query": "freshness", "page": page, "pageSize": pageSize,
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("search %s as %q: status=%d body=%s", endpoint, userID, w.Code, w.Body.String())
+		}
+		var body struct {
+			Items []struct {
+				ID string `json:"id"`
+			} `json:"items"`
+			Total int64 `json:"total"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+			t.Fatalf("decode search %s as %q: %v", endpoint, userID, err)
+		}
+		if body.Total != int64(wantTotal) {
+			t.Fatalf("search %s as %q total=%d, want %d", endpoint, userID, body.Total, wantTotal)
+		}
+		if userID == "" && (strings.Contains(w.Body.String(), "stale-owner") || strings.Contains(w.Body.String(), "stale-member")) {
+			t.Fatalf("anonymous search %s leaked a stale Git repository coordinate: %s", endpoint, w.Body.String())
+		}
+		seen := make(map[string]bool, len(body.Items))
+		for _, item := range body.Items {
+			seen[item.ID] = true
+		}
+		for _, id := range wantIDs {
+			if !seen[id] {
+				t.Fatalf("search %s as %q missing item %q: %+v", endpoint, userID, id, seen)
+			}
+		}
+	}
+
+	for _, endpoint := range []string{"/api/marketplace/items/search", "/api/marketplace/items/hybrid-search"} {
+		// The two pages are from one filtered relation: stale Git-backed rows do
+		// not affect total or push a visible row into a later page.
+		assertSearch(endpoint, "", 1, 1, 2)
+		assertSearch(endpoint, "", 2, 1, 2)
+		assertSearch(endpoint, "", 1, 20, 2, "search-fresh-git", "search-db-backed")
+		assertSearch(endpoint, "owner", 1, 20, 3, "search-stale-git-owner")
+		assertSearch(endpoint, "member", 1, 20, 4, "search-stale-git-member")
+	}
+
+	grantPlatformAdmin(t, "platform-admin")
+	assertSearch("/api/marketplace/items/search", "platform-admin", 1, 20, 4, "search-stale-git-owner", "search-stale-git-member")
+}
+
 // ---------------------------------------------------------------------------
 // GetRecommendations
 // ---------------------------------------------------------------------------

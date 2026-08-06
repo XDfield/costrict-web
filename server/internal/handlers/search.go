@@ -8,6 +8,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/services"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // SearchHandler handles search requests
@@ -67,6 +68,9 @@ func (h *SearchHandler) SemanticSearch(c *gin.Context) {
 		Categories:  req.Categories,
 		RegistryIDs: req.RegistryIDs,
 		MinScore:    req.MinScore,
+		VisibilityScope: func(query *gorm.DB) *gorm.DB {
+			return applyGitBrowseVisibilityFilter(query, c, database.GetDB())
+		},
 	}
 
 	result, err := h.searchSvc.SemanticSearch(c.Request.Context(), searchReq)
@@ -124,6 +128,9 @@ func (h *SearchHandler) HybridSearch(c *gin.Context) {
 		Types:       req.Types,
 		Categories:  req.Categories,
 		RegistryIDs: req.RegistryIDs,
+		VisibilityScope: func(query *gorm.DB) *gorm.DB {
+			return applyGitBrowseVisibilityFilter(query, c, database.GetDB())
+		},
 	}
 
 	result, err := h.searchSvc.HybridSearch(c.Request.Context(), searchReq)
