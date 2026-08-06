@@ -62,22 +62,32 @@ func (h *ItemHandler) CreateGitBackedItem(c *gin.Context) {
 			RelPath     string `json:"relPath"`
 			TextContent string `json:"textContent"`
 		} `json:"assets"`
-		Visibility *string `json:"visibility"`
-		RegistryID *string `json:"registryId"`
+		Visibility json.RawMessage `json:"visibility"`
+		RegistryID json.RawMessage `json:"registryId"`
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, gitCreateRequestLimit)
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "Request body too large", "error_code": "GIT_CREATE_BODY_TOO_LARGE"})
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request", "error_code": "GIT_CREATE_INVALID_REQUEST"})
+		}
 		return
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "Request body too large", "error_code": "GIT_CREATE_BODY_TOO_LARGE"})
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request", "error_code": "GIT_CREATE_INVALID_REQUEST"})
+		}
 		return
 	}
-	if req.Visibility != nil || req.RegistryID != nil {
+	if len(req.Visibility) > 0 || len(req.RegistryID) > 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "visibility and registryId are not supported for git-backed creation", "error_code": "GIT_CREATE_FIELD_UNSUPPORTED"})
 		return
 	}
