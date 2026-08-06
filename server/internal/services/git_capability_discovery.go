@@ -46,6 +46,21 @@ type discoveredGitCapability struct {
 	ItemType string
 	EntryKey string
 	Parsed   *ParsedItem
+	// ManifestSHA256 is SHA-256 over the manifest bytes this pass read, before
+	// any parsing or normalization. Parsed.Content is not a substitute: several
+	// parsers rewrite it (ParsePluginJSON synthesizes markdown from
+	// .plugin.json), and the read path serves the file itself, so only the raw
+	// bytes describe what a reader receives.
+	ManifestSHA256 string
+	// Assets is the capability's asset subtree, resolved from the SAME tree
+	// listing this manifest was read from. It is carried on the entry rather
+	// than recomputed later because the revision digest covers it and a
+	// capability_items row stores neither the content nor the asset set — so
+	// after this struct is discarded, nothing can reproduce either.
+	//
+	// Nil means "never resolved" and is rejected by the digest; a capability
+	// with no assets carries a non-nil empty slice.
+	Assets []gitCapabilityAssetEntry
 }
 
 func gitCapabilityManifestIdentity(manifestPath, entryKey string) string {
@@ -61,6 +76,14 @@ func (s *GitCapabilitySyncService) scanGitCapabilityManifestSet(
 	tree, err := reader.ListTree(ctx, owner, repoName, headSHA)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list repository tree at %s: %w", headSHA, err)
+	}
+	// One listing answers both questions: which manifests exist, and which files
+	// each of them ships. Listing twice would let the two disagree, and the
+	// disagreement would surface as a revision for a change that happened between
+	// the two calls rather than at the commit being projected.
+	blobs, err := newGitCapabilityTreeBlobs(tree)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read repository tree at %s: %w", headSHA, err)
 	}
 	candidates := discoverGitCapabilityReconciliationCandidates(tree, boundItems)
 	if len(candidates) > maxGitCapabilityDiscoveryCandidates {
@@ -99,6 +122,14 @@ func (s *GitCapabilitySyncService) scanGitCapabilityManifestSet(
 			}
 			return nil, skipped, fmt.Errorf("parse manifest candidate %s: %w", candidate.Path, err)
 		}
+		// Resolved once per manifest, not once per parsed entry: several entries of
+		// one .mcp.json share the file, so they share its directory and therefore
+		// its assets.
+		assets, err := gitCapabilityAssetsFromTree(blobs, candidate.Path)
+		if err != nil {
+			return nil, skipped, fmt.Errorf("resolve assets of manifest candidate %s at %s: %w", candidate.Path, headSHA, err)
+		}
+		manifestSHA := sha256Hex(raw)
 		for _, parsed := range items {
 			if parsed == nil {
 				continue
@@ -119,6 +150,7 @@ func (s *GitCapabilitySyncService) scanGitCapabilityManifestSet(
 			parsed.Slug = discoveredCapabilitySlug(parsed, candidate, repoName, entryKey)
 			discovered = append(discovered, discoveredGitCapability{
 				Path: candidate.Path, ItemType: itemType, EntryKey: entryKey, Parsed: parsed,
+				ManifestSHA256: manifestSHA, Assets: assets,
 			})
 		}
 	}
@@ -207,6 +239,10 @@ func (s *GitCapabilitySyncService) discoverGitCapabilities(
 	if err != nil {
 		return nil, fmt.Errorf("list repository tree at %s: %w", headSHA, err)
 	}
+	blobs, err := newGitCapabilityTreeBlobs(tree)
+	if err != nil {
+		return nil, fmt.Errorf("read repository tree at %s: %w", headSHA, err)
+	}
 	candidates := discoverGitCapabilityCandidates(tree)
 	if len(candidates) > maxGitCapabilityDiscoveryCandidates {
 		return nil, fmt.Errorf("repository exposes %d capability manifests; limit is %d", len(candidates), maxGitCapabilityDiscoveryCandidates)
@@ -231,6 +267,15 @@ func (s *GitCapabilitySyncService) discoverGitCapabilities(
 			issues = append(issues, fmt.Sprintf("%s: %v", candidate.Path, parseErr))
 			continue
 		}
+		// An unresolvable asset set is not a per-manifest "issue" to be recorded and
+		// stepped over: the candidate came out of this very listing, so the only way
+		// to fail here is a listing that contradicts itself, and a row created from
+		// it would carry a first revision describing files that may not exist.
+		assets, assetErr := gitCapabilityAssetsFromTree(blobs, candidate.Path)
+		if assetErr != nil {
+			return nil, fmt.Errorf("resolve assets of discovery candidate %s at %s: %w", candidate.Path, headSHA, assetErr)
+		}
+		manifestSHA := sha256Hex(raw)
 		for _, parsed := range items {
 			if parsed == nil {
 				continue
@@ -247,6 +292,7 @@ func (s *GitCapabilitySyncService) discoverGitCapabilities(
 			parsed.Slug = discoveredCapabilitySlug(parsed, candidate, repoName, entryKey)
 			discovered = append(discovered, discoveredGitCapability{
 				Path: candidate.Path, ItemType: candidate.ItemType, EntryKey: entryKey, Parsed: parsed,
+				ManifestSHA256: manifestSHA, Assets: assets,
 			})
 		}
 	}
@@ -1334,16 +1380,22 @@ func buildDiscoveredCapability(
 //
 // It takes the discovered entry rather than just the tag slugs because the
 // revision writer needs the item's projected content digest, and the digest is
-// a function of the MANIFEST (content plus the manifest-derived display
-// fields), not of the row — capability_items deliberately stores no content for
-// a Git-backed capability, so it cannot be recomputed from `item` afterwards.
+// a function of the MANIFEST and its asset subtree, not of the row —
+// capability_items deliberately stores neither for a Git-backed capability, so
+// neither can be recomputed from `item` afterwards.
 func createDiscoveredCapability(
 	tx *gorm.DB,
 	item *models.CapabilityItem,
 	entry discoveredGitCapability,
 	ownerID string,
 ) error {
-	contentDigest, err := gitCapabilityProjectionDigest(entry.ItemType, entry.Path, entry.Parsed)
+	contentDigest, err := gitCapabilityProjectionDigest(gitCapabilityProjectionSource{
+		ItemType:       entry.ItemType,
+		ManifestPath:   entry.Path,
+		ManifestSHA256: entry.ManifestSHA256,
+		Parsed:         entry.Parsed,
+		Assets:         entry.Assets,
+	})
 	if err != nil {
 		return err
 	}

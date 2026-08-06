@@ -40,9 +40,22 @@
 // they are adopted on their next projection like any other baseline.
 //
 // Order matters for one reason only: a content change between this run and the
-// first post-deployment projection is folded into the baseline instead of being
-// recorded. Run this immediately before enabling revision writes and the window
-// is minutes.
+// item's first successful projection afterwards is folded into the baseline
+// instead of being recorded as a revision of its own.
+//
+// How wide that window is depends on the item, and it is worth being exact
+// because the honest answer is not "minutes" for every row:
+//
+//   - a healthy, actively reconciled item closes it at its next successful
+//     projection, so running this immediately before enabling revision writes
+//     bounds it to roughly one reconcile interval;
+//   - an item that is archived after this run and before that first projection
+//     does NOT. An archived row is never projected, so its baseline waits for
+//     its manifest to come back — which may be weeks away, or never.
+//
+// The consequence is identical in both cases (one folded change, and nothing
+// afterwards is affected), so the deferral is not a defect. It is only a reason
+// not to describe the window as short.
 //
 // Dry-run is the default and prints a row-level report; --confirm applies.
 

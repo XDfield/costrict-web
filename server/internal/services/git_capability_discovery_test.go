@@ -601,7 +601,10 @@ func TestGitCapabilityDiscovery_CreatesCompoundRepositoryAndLocksTypes(t *testin
 	})
 	reader.repo.Private = true
 	reader.tree = []gitsync.GitTreeEntry{
-		{Path: "README.md", Type: "blob"},
+		// README.md is not a manifest, so it is an asset of the root SKILL.md and
+		// therefore part of that capability's projection digest. A tree entry that
+		// reaches the digest must carry the object id a real listing carries.
+		{Path: "README.md", Type: "blob", SHA: strings.Repeat("1", 40)},
 		{Path: "SKILL.md", Type: "blob"},
 		{Path: "commands/review.md", Type: "blob"},
 	}
@@ -704,7 +707,9 @@ func TestGitCapabilityDiscovery_CreatesPluginPack(t *testing.T) {
 	})
 	reader.tree = []gitsync.GitTreeEntry{
 		{Path: "plugins/alpha/.plugin.json", Type: "blob"},
-		{Path: "plugins/alpha/skills/internal/SKILL.md", Type: "blob"},
+		// Nested deeply enough that discovery does not classify it as a skill of its
+		// own, so it ships as an asset of the alpha plugin and enters alpha's digest.
+		{Path: "plugins/alpha/skills/internal/SKILL.md", Type: "blob", SHA: strings.Repeat("2", 40)},
 		{Path: "plugins/beta/.plugin.json", Type: "blob"},
 	}
 	svc, cfg := newGitCapabilitySyncService(db, reader)

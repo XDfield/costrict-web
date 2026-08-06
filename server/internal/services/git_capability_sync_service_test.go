@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +39,20 @@ type fakeGitCapabilityReader struct {
 	refs      []string
 }
 
+// fakeGitBlobID is Git's own object id: sha1("blob <len>\0" + content).
+//
+// The fake computes the real thing rather than an arbitrary hash so that the
+// harness carries Git's properties instead of approximating them — two files
+// with identical bytes share an id, and an id changes if and only if the bytes
+// change. The asset half of the projection digest is fingerprinted from these
+// ids, so a fake that stamped every entry with a constant (or with nothing, as
+// this one used to) would make an asset edit undetectable in a test while being
+// perfectly detectable in production.
+func fakeGitBlobID(content []byte) string {
+	sum := sha1.Sum([]byte(fmt.Sprintf("blob %d\x00%s", len(content), content)))
+	return hex.EncodeToString(sum[:])
+}
+
 func (r *fakeGitCapabilityReader) ListTree(_ context.Context, _, _, _ string) ([]gitsync.GitTreeEntry, error) {
 	if r.treeErr != nil {
 		return nil, r.treeErr
@@ -46,13 +62,20 @@ func (r *fakeGitCapabilityReader) ListTree(_ context.Context, _, _, _ string) ([
 	}
 	entries := make([]gitsync.GitTreeEntry, 0, len(r.files))
 	seen := make(map[string]struct{}, len(r.files)+len(r.readErrs))
-	for filePath := range r.files {
-		entries = append(entries, gitsync.GitTreeEntry{Path: filePath, Type: "blob"})
+	for filePath, content := range r.files {
+		entries = append(entries, gitsync.GitTreeEntry{
+			Path: filePath, Type: "blob", SHA: fakeGitBlobID(content), Size: int64(len(content)),
+		})
 		seen[filePath] = struct{}{}
 	}
 	for filePath := range r.readErrs {
 		if _, exists := seen[filePath]; !exists {
-			entries = append(entries, gitsync.GitTreeEntry{Path: filePath, Type: "blob"})
+			// A file the reader is configured to fail on still exists in the tree;
+			// its bytes are simply unreachable. The id is derived from the path so
+			// that it is stable across calls without pretending to know the content.
+			entries = append(entries, gitsync.GitTreeEntry{
+				Path: filePath, Type: "blob", SHA: fakeGitBlobID([]byte("unreadable:" + filePath)),
+			})
 		}
 	}
 	return entries, nil

@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"sort"
 	"strings"
 	"sync"
 
@@ -286,9 +287,60 @@ func (t *gitCapabilityContentTarget) assets(ctx context.Context) ([]GitCapabilit
 	if err != nil {
 		return nil, classifyGitContentError(err)
 	}
-	root := capabilityAssetRoot(t.manifestPath)
-	manifestFound := false
-	assets := make([]GitCapabilityAsset, 0)
+	blobs, err := newGitCapabilityTreeBlobs(tree)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := gitCapabilityAssetsFromTree(blobs, t.manifestPath)
+	if err != nil {
+		return nil, err
+	}
+	assets := make([]GitCapabilityAsset, 0, len(entries))
+	for _, entry := range entries {
+		assets = append(assets, GitCapabilityAsset{
+			RelPath: entry.RelPath, MimeType: InferMimeType(entry.RelPath), FileSize: entry.Size,
+		})
+	}
+	return assets, nil
+}
+
+// gitCapabilityTreeBlob is one repository file, normalized and classified once
+// per tree listing.
+//
+// The classification is hoisted out of the per-capability loop because the sync
+// path asks the same two path questions for every capability bound to the
+// repository — measured locally, up to 55 of them — and both answers depend
+// only on the path, never on which capability is asking.
+type gitCapabilityTreeBlob struct {
+	Path string
+	// BlobID is the Git object id the tree listing already carries: a SHA-1 over
+	// "blob <len>\0"+content. It is NOT interchangeable with
+	// GitCapabilityAsset.ContentSHA, and must never be substituted for it — the
+	// device recomputes SHA-256 over the bytes, so a blob id would fail every
+	// comparison it was fed to. What it IS sufficient for is the only question
+	// the revision digest asks — "did this file change?" — because Git derives
+	// it from the content. That answer arrives with the listing; the SHA-256
+	// answer costs one extra read per asset.
+	BlobID string
+	Size   int64
+	// IsManifest marks a path discovery would index as a capability of its own.
+	// Another capability's manifest is never this capability's asset.
+	IsManifest bool
+	// IsMarker marks the provisioning ownership file, which is platform
+	// bookkeeping rather than capability content.
+	IsMarker bool
+}
+
+// newGitCapabilityTreeBlobs reduces a raw tree listing to its blobs.
+//
+// A path that does not survive NormalizeArchivePath unchanged fails the whole
+// listing rather than being skipped. That is the read path's existing rule and
+// it is deliberately kept as ONE rule: a repository holding such a path already
+// cannot serve its assets to a device, and skipping it here would let the
+// revision digest describe an asset set that differs from the one the device
+// receives.
+func newGitCapabilityTreeBlobs(tree []gitsync.GitTreeEntry) ([]gitCapabilityTreeBlob, error) {
+	blobs := make([]gitCapabilityTreeBlob, 0, len(tree))
 	for _, entry := range tree {
 		if entry.Type != "" && !strings.EqualFold(entry.Type, "blob") {
 			continue
@@ -297,7 +349,60 @@ func (t *gitCapabilityContentTarget) assets(ctx context.Context) ([]GitCapabilit
 		if normalizeErr != nil || normalized != entry.Path {
 			return nil, fmt.Errorf("%w: invalid repository path %q", ErrGitContentCoordinate, entry.Path)
 		}
-		if normalized == t.manifestPath {
+		blobs = append(blobs, gitCapabilityTreeBlob{
+			Path:       normalized,
+			BlobID:     strings.ToLower(strings.TrimSpace(entry.SHA)),
+			Size:       entry.Size,
+			IsManifest: IsGitCapabilityManifestPath(normalized),
+			IsMarker:   normalized == GitCapabilityOwnershipMarkerPath,
+		})
+	}
+	return blobs, nil
+}
+
+// gitCapabilityAssetEntry is one file a capability delivers, as the repository
+// tree describes it.
+type gitCapabilityAssetEntry struct {
+	// RelPath is relative to the capability root — the path the device installs
+	// the file at, with the repository's internal prefix already stripped.
+	RelPath string
+	BlobID  string
+	Size    int64
+}
+
+// gitCapabilityAssetsFromTree selects the files ONE capability delivers.
+//
+// This is the single definition of "belongs to this capability". It is used by
+// the asset manifest the device installs AND by the revision digest that decides
+// whether the capability changed, because two definitions would be worse than
+// either one alone: a digest looser than the manifest appends revisions for
+// files nobody receives, and a digest tighter than it leaves a real change
+// invisible — which is the defect this function was extracted to fix.
+//
+// Membership is the manifest's own directory. A capability at
+// skills/demo/SKILL.md owns skills/demo/**, so a commit under skills/other/
+// cannot reach its asset set — the sibling isolation the digest exists for holds
+// for assets exactly as it holds for content. A capability whose manifest sits
+// at the repository root owns the whole repository minus manifests and
+// bookkeeping; that is not a special case but the same rule with an empty
+// prefix, and it is already what the device installs for such a capability.
+//
+// The manifest must be present in the listing. A tree without it is not "a
+// capability with no assets" — it is a listing that cannot be trusted to
+// describe this capability at all, and returning an empty set from it would let
+// a partial or wrong tree read as the deletion of every asset.
+//
+// The result is sorted by path so that one tree always produces one order,
+// whatever order the Git server happened to answer in.
+func gitCapabilityAssetsFromTree(blobs []gitCapabilityTreeBlob, manifestPath string) ([]gitCapabilityAssetEntry, error) {
+	prefix := ""
+	if root := capabilityAssetRoot(manifestPath); root != "" {
+		prefix = root + "/"
+	}
+	manifestFound := false
+	assets := make([]gitCapabilityAssetEntry, 0, len(blobs))
+	for _, blob := range blobs {
+		if blob.Path == manifestPath {
 			manifestFound = true
 			continue
 		}
@@ -307,31 +412,30 @@ func (t *gitCapabilityContentTarget) assets(ctx context.Context) ([]GitCapabilit
 		// sitting at the capability root of a monorepo. Without this the device
 		// installs .costrict/capability.json alongside the skill, and the user
 		// receives a file describing our provisioning bookkeeping.
-		if normalized == GitCapabilityOwnershipMarkerPath {
+		if blob.IsMarker {
 			continue
 		}
-		if root != "" {
-			prefix := root + "/"
-			if !strings.HasPrefix(normalized, prefix) {
+		relPath := blob.Path
+		if prefix != "" {
+			if !strings.HasPrefix(relPath, prefix) {
 				continue
 			}
-			normalized = strings.TrimPrefix(normalized, prefix)
-			if normalized == GitCapabilityOwnershipMarkerPath {
+			relPath = strings.TrimPrefix(relPath, prefix)
+			if relPath == GitCapabilityOwnershipMarkerPath {
 				continue
 			}
 		}
 		// A multi-capability repository must not install another item's manifest
 		// as an attachment of this item.
-		if IsGitCapabilityManifestPath(entry.Path) {
+		if blob.IsManifest {
 			continue
 		}
-		assets = append(assets, GitCapabilityAsset{
-			RelPath: normalized, MimeType: InferMimeType(normalized), FileSize: entry.Size,
-		})
+		assets = append(assets, gitCapabilityAssetEntry{RelPath: relPath, BlobID: blob.BlobID, Size: blob.Size})
 	}
 	if !manifestFound {
-		return nil, fmt.Errorf("%w: manifest %q is not in the repository tree", ErrGitContentMissing, t.manifestPath)
+		return nil, fmt.Errorf("%w: manifest %q is not in the repository tree", ErrGitContentMissing, manifestPath)
 	}
+	sort.Slice(assets, func(i, j int) bool { return assets[i].RelPath < assets[j].RelPath })
 	return assets, nil
 }
 

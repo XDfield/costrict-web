@@ -138,8 +138,9 @@ type preparedGitCapability struct {
 	parsed   *ParsedItem
 	metadata datatypes.JSON
 	// contentDigest is this item's own projected digest — the revision writer's
-	// trigger. Computed outside the transaction, from the manifest this pass
-	// read, so the projection and the digest describe the same bytes.
+	// trigger. Computed outside the transaction, from the manifest and asset
+	// listing this pass read, so the projection and the digest describe the same
+	// bytes.
 	contentDigest string
 	updateTags    bool
 	removed       bool
@@ -289,7 +290,16 @@ func (s *GitCapabilitySyncService) SyncRepository(
 		if err != nil {
 			return nil, fmt.Errorf("merge metadata for item %s: %w", item.ID, err)
 		}
-		digest, err := gitCapabilityProjectionDigest(item.ItemType, item.SourceRepoPath, parsed)
+		// discoveredEntry.Path is this item's SourceRepoPath — the two were matched
+		// on it — so its manifest bytes and asset set are this item's, both read in
+		// the same pass from the same commit.
+		digest, err := gitCapabilityProjectionDigest(gitCapabilityProjectionSource{
+			ItemType:       item.ItemType,
+			ManifestPath:   item.SourceRepoPath,
+			ManifestSHA256: discoveredEntry.ManifestSHA256,
+			Parsed:         parsed,
+			Assets:         discoveredEntry.Assets,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("digest projection for item %s: %w", item.ID, err)
 		}

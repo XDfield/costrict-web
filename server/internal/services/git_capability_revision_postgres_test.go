@@ -1,11 +1,14 @@
 package services
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -787,4 +790,438 @@ func waitForPostgresRowLockWaiter(db *gorm.DB) error {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return errors.New("timed out waiting for a projection to block on the item row lock")
+}
+
+// TestGitCapabilityRevision_PostgresByteIdenticalContentIsTheTrigger pins the
+// half of the digest that decides what "the content changed" means.
+//
+// The projection digest used to reuse ContentHashService, the same normalization
+// content_md5 uses: it folds CRLF to LF and re-serializes mcp/plugin JSON from
+// its parsed form. That is right for content_md5, which exists to compare a Git
+// manifest against a DB row produced by a different code path, and wrong here.
+// The read path streams the file byte for byte and the device writes those exact
+// bytes to disk, so a CRLF conversion or a reindent is a file the user receives
+// differently — and under the normalized hash it left no revision at all.
+//
+// The counter-argument ("cosmetic commits should not appear in history") is not
+// applied, because the contract's test is whether the bytes a reader receives
+// moved, not whether their meaning did.
+func TestGitCapabilityRevision_PostgresByteIdenticalContentIsTheTrigger(t *testing.T) {
+	t.Run("a SKILL.md converted to CRLF", func(t *testing.T) {
+		db, _ := newGitRevisionPostgresDB(t)
+		seedPostgresGitItem(t, db, pgRevisionSHA1, "active", gitCapabilitySyncSynced)
+
+		lf := pgSkillManifest("1.0.0")
+		reader := &fakeGitCapabilityReader{
+			repo: &gitsync.Repo{ID: gitCapabilityTestRepoID, FullName: "alice/capabilities",
+				DefaultBranch: "main", Owner: &gitsync.RepoOwner{ID: 1001, Login: "alice"}},
+			branch: &gitsync.Branch{Name: "main", CommitSHA: pgRevisionSHA1},
+			files:  map[string][]byte{"SKILL.md": lf},
+		}
+		svc, cfg := newPostgresSyncService(db, reader)
+		sync := func(name string) {
+			t.Helper()
+			lease := seedPostgresLease(t, db, uuid.NewString(), name, name)
+			if _, err := svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID,
+				"alice/capabilities", "main", false, lease); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+		}
+
+		sync("delivery-crlf-baseline")
+		if got := len(pgRevisionRows(t, db)); got != 1 {
+			t.Fatalf("baseline revisions = %d, want 1", got)
+		}
+
+		crlf := bytes.ReplaceAll(lf, []byte("\n"), []byte("\r\n"))
+		if bytes.Equal(crlf, lf) {
+			t.Fatal("the fixture has no newlines to convert")
+		}
+		// Only the line endings differ, so every parsed display field is identical
+		// and the manifest's raw bytes are the only input that moved.
+		reader.files["SKILL.md"] = crlf
+		reader.branch = &gitsync.Branch{Name: "main", CommitSHA: pgRevisionSHA2}
+		sync("delivery-crlf-change")
+
+		revisions := pgRevisionRows(t, db)
+		if len(revisions) != 2 {
+			t.Fatalf("converting SKILL.md to CRLF appended %d revision(s), want 1 — "+
+				"the device writes these exact bytes to disk", len(revisions)-1)
+		}
+		if revisions[1].GitSHA != pgRevisionSHA2 {
+			t.Fatalf("CRLF revision recorded head %q, want %s", revisions[1].GitSHA, pgRevisionSHA2)
+		}
+		if revisions[1].VersionLabel != "1.0.0" {
+			t.Fatalf("version label = %q; the frontmatter did not change", revisions[1].VersionLabel)
+		}
+
+		// Back to LF: a revert is a transition too, and the digest is compared
+		// against the CURRENT value rather than the set of values ever seen.
+		reader.files["SKILL.md"] = lf
+		reader.branch = &gitsync.Branch{Name: "main", CommitSHA: pgRevisionSHA3}
+		sync("delivery-crlf-revert")
+		revisions = pgRevisionRows(t, db)
+		if len(revisions) != 3 {
+			t.Fatalf("reverting to LF appended %d revision(s), want 1", len(revisions)-2)
+		}
+		if revisions[2].ContentDigest != revisions[0].ContentDigest {
+			t.Fatal("returning to the original bytes did not return to the original digest")
+		}
+	})
+
+	t.Run("a .mcp.json reindented and reordered", func(t *testing.T) {
+		db, _ := newGitRevisionPostgresDB(t)
+		const mcpItemID = "cccccccc-3333-3333-3333-333333333333"
+		if err := db.Exec(`INSERT INTO capability_items
+			(id, registry_id, repo_id, slug, item_type, name, version, source_repo_ref, source_repo_path,
+			 source_git_entry_key, content_backend, source_git_server_id, source_git_repo_id,
+			 git_sha, git_sync_status, status, created_by)
+			VALUES (?, 'reg', 'repo', 'mcp-alpha', 'mcp', 'alpha', '1.0.0', 'main', '.mcp.json',
+			        'alpha', 'git', ?, ?, ?, ?, 'active', 'user-1')`,
+			mcpItemID, pgRevisionServerID, gitCapabilityTestRepoID, pgRevisionSHA1,
+			gitCapabilitySyncSynced).Error; err != nil {
+			t.Fatalf("seed mcp item: %v", err)
+		}
+
+		compact := []byte(`{"mcpServers":{"alpha":{"command":"run","args":["--x"]}}}`)
+		reader := &fakeGitCapabilityReader{
+			repo: &gitsync.Repo{ID: gitCapabilityTestRepoID, FullName: "alice/capabilities",
+				DefaultBranch: "main", Owner: &gitsync.RepoOwner{ID: 1001, Login: "alice"}},
+			branch: &gitsync.Branch{Name: "main", CommitSHA: pgRevisionSHA1},
+			files:  map[string][]byte{".mcp.json": compact},
+		}
+		svc, cfg := newPostgresSyncService(db, reader)
+		sync := func(name string) {
+			t.Helper()
+			lease := seedPostgresLease(t, db, uuid.NewString(), name, name)
+			if _, err := svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID,
+				"alice/capabilities", "main", false, lease); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+		}
+		count := func() int {
+			t.Helper()
+			var revisions []models.CapabilityItemGitRevision
+			if err := db.Where("item_id = ?", mcpItemID).Order("revision_no ASC").Find(&revisions).Error; err != nil {
+				t.Fatalf("load mcp revisions: %v", err)
+			}
+			return len(revisions)
+		}
+
+		sync("delivery-mcp-baseline")
+		if got := count(); got != 1 {
+			t.Fatalf("mcp baseline revisions = %d, want 1", got)
+		}
+
+		// Semantically identical JSON: same keys, same values, different bytes.
+		// ContentHashService parses and re-marshals mcp content, so this used to
+		// hash identically while the read path served the reindented file.
+		pretty := []byte("{\n  \"mcpServers\": {\n    \"alpha\": {\n      \"args\": [\"--x\"],\n      \"command\": \"run\"\n    }\n  }\n}\n")
+		var before, after any
+		if err := json.Unmarshal(compact, &before); err != nil {
+			t.Fatalf("decode compact fixture: %v", err)
+		}
+		if err := json.Unmarshal(pretty, &after); err != nil {
+			t.Fatalf("decode pretty fixture: %v", err)
+		}
+		if !reflect.DeepEqual(before, after) {
+			t.Fatal("the two fixtures are not the same JSON value; this test would prove nothing")
+		}
+		reader.files[".mcp.json"] = pretty
+		reader.branch = &gitsync.Branch{Name: "main", CommitSHA: pgRevisionSHA2}
+		sync("delivery-mcp-reindent")
+
+		if got := count(); got != 2 {
+			t.Fatalf("reindenting .mcp.json appended %d revision(s), want 1 — "+
+				"the read path serves the file verbatim, so the reader received different bytes", got-1)
+		}
+	})
+}
+
+// TestGitCapabilityRevision_PostgresAssetSubtreeIsPartOfTheProjection is the
+// asset half on the engine and schema production uses.
+//
+// The manifest never moves in this test. Every appended revision is caused by a
+// file that ships beside it — which csc downloads and the device verifies, so
+// the capability the user installed genuinely changed while a manifest-only
+// digest reported nothing.
+func TestGitCapabilityRevision_PostgresAssetSubtreeIsPartOfTheProjection(t *testing.T) {
+	db, _ := newGitRevisionPostgresDB(t)
+	if err := db.Exec(`UPDATE capability_items SET source_repo_path = 'skills/demo/SKILL.md' WHERE id = ?`,
+		pgRevisionItemID).Error; err != nil {
+		t.Fatalf("pre-seed: %v", err)
+	}
+	if err := db.Exec(`INSERT INTO capability_items
+		(id, registry_id, repo_id, slug, item_type, name, version, source_repo_ref, source_repo_path,
+		 content_backend, source_git_server_id, source_git_repo_id, git_sha, git_sync_status, status, created_by)
+		VALUES (?, 'reg', 'repo', 'skill', 'skill', 'Skill', '1.0.0', 'main', 'skills/demo/SKILL.md',
+		        'git', ?, ?, ?, ?, 'active', 'user-1')`,
+		pgRevisionItemID, pgRevisionServerID, gitCapabilityTestRepoID, pgRevisionSHA1,
+		gitCapabilitySyncSynced).Error; err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+
+	manifest := pgSkillManifest("1.0.0")
+	reader := &fakeGitCapabilityReader{
+		repo: &gitsync.Repo{ID: gitCapabilityTestRepoID, FullName: "alice/capabilities",
+			DefaultBranch: "main", Owner: &gitsync.RepoOwner{ID: 1001, Login: "alice"}},
+		branch: &gitsync.Branch{Name: "main", CommitSHA: pgRevisionSHA1},
+		files: map[string][]byte{
+			"skills/demo/SKILL.md":            manifest,
+			"skills/demo/assets/reference.md": []byte("step one\n"),
+		},
+	}
+	svc, cfg := newPostgresSyncService(db, reader)
+	head := pgRevisionSHA1
+	sync := func(name string) {
+		t.Helper()
+		reader.branch = &gitsync.Branch{Name: "main", CommitSHA: head}
+		lease := seedPostgresLease(t, db, uuid.NewString(), name, name)
+		if _, err := svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID,
+			"alice/capabilities", "main", false, lease); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+
+	sync("delivery-asset-baseline")
+	if got := len(pgRevisionRows(t, db)); got != 1 {
+		t.Fatalf("baseline revisions = %d, want 1", got)
+	}
+
+	for _, tc := range []struct {
+		name string
+		head string
+		edit func()
+	}{
+		{"an asset's bytes change", pgRevisionSHA2, func() {
+			reader.files["skills/demo/assets/reference.md"] = []byte("step one, corrected\n")
+		}},
+		{"an asset is added", pgRevisionSHA3, func() {
+			reader.files["skills/demo/assets/logo.png"] = []byte("\x89PNG binary-ish")
+		}},
+		{"an asset is renamed", pgRevisionSHA4, func() {
+			reader.files["skills/demo/assets/diagram.png"] = reader.files["skills/demo/assets/logo.png"]
+			delete(reader.files, "skills/demo/assets/logo.png")
+		}},
+		{"an asset is deleted", pgRevisionSHA5, func() {
+			delete(reader.files, "skills/demo/assets/diagram.png")
+		}},
+	} {
+		before := pgRevisionRows(t, db)
+		tc.edit()
+		head = tc.head
+		sync("delivery-asset-" + tc.head[:6])
+		after := pgRevisionRows(t, db)
+		if len(after) != len(before)+1 {
+			t.Fatalf("%s appended %d revision(s), want exactly 1", tc.name, len(after)-len(before))
+		}
+		if after[len(after)-1].ContentDigest == before[len(before)-1].ContentDigest {
+			t.Fatalf("%s appended a revision carrying the digest it replaced", tc.name)
+		}
+	}
+
+	if !bytes.Equal(reader.files["skills/demo/SKILL.md"], manifest) {
+		t.Fatal("the test edited the manifest; the assertions above prove nothing about assets")
+	}
+
+	// A pass over an unchanged tree is still a no-op: assets did not turn every
+	// sync into a transition.
+	before := len(pgRevisionRows(t, db))
+	head = pgRevisionSHA6
+	sync("delivery-asset-unchanged")
+	if got := len(pgRevisionRows(t, db)); got != before {
+		t.Fatalf("a pass over an unchanged manifest and asset set appended %d revision(s)", got-before)
+	}
+}
+
+// TestGitCapabilityRevision_PostgresSiblingAssetCommitLeavesTheOtherItemAlone
+// proves that covering assets did not reopen the cross-capability leak the
+// digest change closed.
+//
+// Two capabilities, each in its own directory with its own asset, in ONE
+// repository behind ONE head. Three assertions run together and each one closes
+// a way this test could pass while proving nothing:
+//
+//   - beta appends when its own asset changes → the asset digest is wired up, so
+//     alpha's silence is not "assets are ignored";
+//   - alpha's git_sha advances in that same pass → alpha was projected, so its
+//     silence is not "alpha was skipped";
+//   - alpha appends when ITS asset changes → alpha's subtree is genuinely in
+//     alpha's digest, so its silence is not "alpha resolved to an empty set".
+func TestGitCapabilityRevision_PostgresSiblingAssetCommitLeavesTheOtherItemAlone(t *testing.T) {
+	db, _ := newGitRevisionPostgresDB(t)
+
+	const (
+		itemAlpha = "aaaaaaaa-4444-4444-4444-444444444444"
+		itemBeta  = "bbbbbbbb-5555-5555-5555-555555555555"
+	)
+	seed := func(id, slug, path string) {
+		t.Helper()
+		if err := db.Exec(`INSERT INTO capability_items
+			(id, registry_id, repo_id, slug, item_type, name, version, source_repo_ref, source_repo_path,
+			 content_backend, source_git_server_id, source_git_repo_id, git_sha, git_sync_status, status, created_by)
+			VALUES (?, 'reg', 'repo', ?, 'skill', 'Skill', '1.0.0', 'main', ?,
+			        'git', ?, ?, ?, ?, 'active', 'user-1')`,
+			id, slug, path, pgRevisionServerID, gitCapabilityTestRepoID, pgRevisionSHA1,
+			gitCapabilitySyncSynced).Error; err != nil {
+			t.Fatalf("seed %s: %v", slug, err)
+		}
+	}
+	seed(itemAlpha, "alpha", "skills/alpha/SKILL.md")
+	seed(itemBeta, "beta", "skills/beta/SKILL.md")
+
+	reader := &fakeGitCapabilityReader{
+		repo: &gitsync.Repo{ID: gitCapabilityTestRepoID, FullName: "alice/capabilities",
+			DefaultBranch: "main", Owner: &gitsync.RepoOwner{ID: 1001, Login: "alice"}},
+		files: map[string][]byte{
+			"skills/alpha/SKILL.md":        pgSkillManifest("1.0.0"),
+			"skills/alpha/assets/notes.md": []byte("alpha notes\n"),
+			"skills/beta/SKILL.md":         pgSkillManifest("1.0.0"),
+			"skills/beta/assets/notes.md":  []byte("beta notes\n"),
+		},
+	}
+	svc, cfg := newPostgresSyncService(db, reader)
+	head := pgRevisionSHA1
+	sync := func(name string) {
+		t.Helper()
+		reader.branch = &gitsync.Branch{Name: "main", CommitSHA: head}
+		lease := seedPostgresLease(t, db, uuid.NewString(), name, name)
+		if _, err := svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID,
+			"alice/capabilities", "main", false, lease); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	count := func(itemID string) int64 {
+		t.Helper()
+		var n int64
+		if err := db.Raw(`SELECT COUNT(*) FROM capability_item_git_revisions WHERE item_id = ?`, itemID).
+			Scan(&n).Error; err != nil {
+			t.Fatalf("count revisions for %s: %v", itemID, err)
+		}
+		return n
+	}
+	digestOf := func(itemID string) string {
+		t.Helper()
+		var digest string
+		if err := db.Raw(`SELECT content_digest FROM capability_item_git_revisions
+			WHERE item_id = ? ORDER BY revision_no DESC LIMIT 1`, itemID).Row().Scan(&digest); err != nil {
+			t.Fatalf("read digest for %s: %v", itemID, err)
+		}
+		return digest
+	}
+
+	sync("delivery-asset-sibling-baseline")
+	if count(itemAlpha) != 1 || count(itemBeta) != 1 {
+		t.Fatalf("baselines = alpha:%d beta:%d, want 1/1", count(itemAlpha), count(itemBeta))
+	}
+	alphaBaselineDigest := digestOf(itemAlpha)
+	if alphaBaselineDigest == digestOf(itemBeta) {
+		t.Fatal("two capabilities with different assets produced the same digest")
+	}
+
+	// One commit, beta's asset only.
+	reader.files["skills/beta/assets/notes.md"] = []byte("beta notes, revised\n")
+	head = pgRevisionSHA2
+	sync("delivery-beta-asset")
+
+	if got := count(itemBeta); got != 2 {
+		t.Fatalf("beta's own asset changed and it has %d revisions, want 2 — "+
+			"if this is 1 the asset digest is not wired up and the alpha assertion is vacuous", got)
+	}
+	if got := count(itemAlpha); got != 1 {
+		t.Fatalf("a commit touching only a sibling's asset gave alpha %d revisions, want 1", got)
+	}
+	if digestOf(itemAlpha) != alphaBaselineDigest {
+		t.Fatal("alpha's recorded digest moved for a commit to a sibling's asset")
+	}
+	var alphaSHA string
+	if err := db.Raw(`SELECT git_sha FROM capability_items WHERE id = ?`, itemAlpha).
+		Row().Scan(&alphaSHA); err != nil {
+		t.Fatalf("read alpha: %v", err)
+	}
+	if alphaSHA != pgRevisionSHA2 {
+		t.Fatalf("alpha git_sha = %q, want the projected head %s — alpha was not visited, "+
+			"so the isolation assertion proves nothing", alphaSHA, pgRevisionSHA2)
+	}
+
+	// And alpha's own asset IS part of alpha's digest.
+	reader.files["skills/alpha/assets/notes.md"] = []byte("alpha notes, revised\n")
+	head = pgRevisionSHA3
+	sync("delivery-alpha-asset")
+	if got := count(itemAlpha); got != 2 {
+		t.Fatalf("alpha's own asset changed and it has %d revisions, want 2 — "+
+			"alpha's asset subtree is not part of alpha's digest", got)
+	}
+	if got := count(itemBeta); got != 2 {
+		t.Fatalf("alpha's asset commit gave beta %d revisions, want 2", got)
+	}
+}
+
+// TestGitCapabilityRevision_PostgresBaselineAdoptionRefusesToNoOpSilently covers
+// the zero-row branch of the baseline compare-and-set.
+//
+// Every caller today holds the item's row lock, so a zero-row result can only
+// mean "a concurrent adopter already finished" — which is success. The reason it
+// is not simply reported as success is what happens if that ever stops being
+// true: a caller without the lock, or a predicate that no longer matches, turns
+// adoption into a permanent no-op. Every projection takes the adopt branch,
+// matches nothing, reports success, and the item's history stops growing with
+// nothing anywhere to notice. So the zero-row path asserts the outcome it was
+// supposed to produce rather than assuming it.
+func TestGitCapabilityRevision_PostgresBaselineAdoptionRefusesToNoOpSilently(t *testing.T) {
+	db, _ := newGitRevisionPostgresDB(t)
+	seedPostgresGitItem(t, db, pgRevisionSHA1, "active", gitCapabilitySyncSynced)
+	insertBaseline := func(digest any) {
+		t.Helper()
+		if err := db.Exec(`INSERT INTO capability_item_git_revisions
+			(item_id, revision_no, git_server_id, git_repo_id, git_ref, manifest_path, git_sha,
+			 version_label, source, content_digest, observed_at)
+			VALUES (?, 1, ?, ?, 'main', 'SKILL.md', ?, '1.0.0', 'backfill', ?, now())`,
+			pgRevisionItemID, pgRevisionServerID, gitCapabilityTestRepoID, pgRevisionSHA1, digest).Error; err != nil {
+			t.Fatalf("insert baseline: %v", err)
+		}
+	}
+
+	// No history at all: adoption cannot have happened, so it must not be
+	// reported as if it had.
+	if err := adoptGitCapabilityBaselineDigest(db, pgRevisionItemID, 1, pgRevisionDigest("a")); err == nil {
+		t.Fatal("adopting into an item with no history reported success")
+	}
+
+	// The predicate misses (wrong revision number stands in for any future
+	// reason it stops matching) and the baseline is still digest-less.
+	insertBaseline(nil)
+	err := adoptGitCapabilityBaselineDigest(db, pgRevisionItemID, 2, pgRevisionDigest("a"))
+	if err == nil {
+		t.Fatal("a compare-and-set that matched nothing and left the baseline unset reported success")
+	}
+	if !strings.Contains(err.Error(), pgRevisionItemID) {
+		t.Fatalf("the error must name the item that would stop growing: %v", err)
+	}
+	var stillNull bool
+	if err := db.Raw(`SELECT content_digest IS NULL FROM capability_item_git_revisions
+		WHERE item_id = ? AND revision_no = 1`, pgRevisionItemID).Row().Scan(&stillNull); err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	if !stillNull {
+		t.Fatal("the failing adoption wrote a digest anyway")
+	}
+
+	// The real CAS still works and is still idempotent: the second call matches
+	// nothing, finds the digest present, and returns success.
+	digest := pgRevisionDigest("a")
+	if err := adoptGitCapabilityBaselineDigest(db, pgRevisionItemID, 1, digest); err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	if err := adoptGitCapabilityBaselineDigest(db, pgRevisionItemID, 1, pgRevisionDigest("b")); err != nil {
+		t.Fatalf("a concurrent adopter that already finished must be success, not an error: %v", err)
+	}
+	var adopted string
+	if err := db.Raw(`SELECT content_digest FROM capability_item_git_revisions
+		WHERE item_id = ? AND revision_no = 1`, pgRevisionItemID).Row().Scan(&adopted); err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	if adopted != digest {
+		t.Fatalf("adopted digest = %q, want the first one observed %q", adopted, digest)
+	}
 }

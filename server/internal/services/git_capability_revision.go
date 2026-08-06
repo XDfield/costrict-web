@@ -74,7 +74,24 @@ func GitRevisionSourceForDelivery(deliveryID string) string {
 // made. The version makes that consequence explicit at the top of the payload
 // rather than something a reviewer has to infer, and it makes an intentional
 // re-baseline distinguishable from a silent drift in the serialization.
-const gitCapabilityProjectionDigestVersion = 1
+//
+// Version 2 made two corrections, both of the same kind — v1 called things
+// "unchanged" that a reader would have received differently:
+//
+//   - the capability's asset subtree entered the payload. v1 hashed only the
+//     manifest, so a commit that changed nothing but a skill's bundled scripts
+//     or references appended no revision, while csc downloaded those files and
+//     the user's installed capability really had changed.
+//   - the manifest is hashed from its raw bytes instead of through
+//     ContentHashService. That service folds CRLF to LF and re-serializes
+//     mcp/plugin JSON, so converting a SKILL.md to CRLF or reindenting a
+//     .mcp.json left the digest untouched — while the read path streams the file
+//     verbatim and the device writes those exact bytes to disk.
+//
+// The re-baseline that comes with the bump is one revision per item on the first
+// sync after deployment; that is the price of the correction, paid once, and it
+// is why this constant exists.
+const gitCapabilityProjectionDigestVersion = 2
 
 // gitCapabilityProjectionPayload is the exact, ordered set of facts a revision
 // is a transition BETWEEN.
@@ -82,28 +99,66 @@ const gitCapabilityProjectionDigestVersion = 1
 // The membership rule is one sentence: everything the item projects to a
 // reader, and nothing its siblings share. So:
 //
-//   - ContentHash is in. It is the item's own manifest content, hashed exactly
-//     the way the DB write path hashes content (HashGitCapabilityContent), so
-//     the one existing content-digest mechanism is reused rather than
-//     duplicated with slightly different normalization. Content is by far the
-//     most common thing to change and would otherwise be invisible here.
+//   - ManifestSHA256 is in: SHA-256 over the manifest file's bytes EXACTLY as
+//     the repository stores them. Content is by far the most common thing to
+//     change and would otherwise be invisible here.
+//
+//     The bytes are deliberately raw rather than run through
+//     ContentHashService, which is what this digest used to reuse. That service
+//     normalizes newlines and re-serializes `mcp`/`plugin` JSON from its parsed
+//     form — appropriate for content_md5, whose job is to compare a Git manifest
+//     against a DB row written by a different path, and wrong here. The read
+//     path (ItemContentBytes) streams the file byte for byte, so converting a
+//     SKILL.md to CRLF or reindenting a .mcp.json changes what every consumer
+//     receives — the device writes those exact bytes to disk — while leaving a
+//     normalized hash untouched. A digest that called those "no change" would
+//     contradict its own membership rule.
+//
+//     The counter-argument, that skipping purely cosmetic commits is a feature,
+//     is rejected on the contract's own terms: the test is whether the bytes the
+//     user receives moved, not whether their meaning did. content_md5 and the
+//     device-facing asset SHA-256 keep their existing definitions; only this
+//     consumer changed.
+//
 //   - Name/Description/Category/Version are in. They are the manifest-derived
 //     fields item detail displays, they are Git-owned columns (only this writer
 //     may move them), and a manifest that renames a capability without touching
 //     its body has changed what the reader sees.
+//
 //   - Metadata is in — the MANIFEST's metadata, not the merged column. The
 //     merged column is deliberately not Git-owned (see
 //     models.gitOwnedCapabilityColumns), so Cloud can write it; hashing the
 //     merged value would let a Cloud-side edit append a "revision" stamped with
 //     a Git commit that did not cause it.
+//
+//   - Assets are in, as (capability-relative path, Git blob id) pairs. They are
+//     distributed to the device and verified there, so an asset-only commit
+//     really does change what the user installed; leaving them out made that
+//     change invisible in history. The blob id is what makes this affordable:
+//     it arrives with the tree listing the sync already performs, so covering
+//     assets costs no extra Git round trip, whereas re-reading every asset of
+//     every skill on every reconcile to compute SHA-256 would cost one request
+//     per file per pass. The device-facing SHA-256 contract
+//     (GitCapabilityAsset.ContentSHA) is untouched and unrelated — see
+//     gitCapabilityTreeBlob.BlobID for why the two must not be confused.
+//     The PATH is hashed alongside the id so that a rename, which in Git moves
+//     no blob, is still a transition.
+//
 //   - The head SHA, remote URL, default branch and repository full name are
 //     OUT. They are identical for every capability in the repository, which is
 //     the whole reason this digest exists.
+//
 //   - `status`, sync health and timestamps are OUT: lifecycle is not content,
 //     and an archive is explicitly not a content revision.
 //
+//   - Asset SIZE is out. It is a function of the bytes the blob id already
+//     identifies, so it can only add ways for the digest to move without the
+//     content moving.
+//
 // Field order is the struct's order and map keys are sorted by encoding/json,
-// so the serialization is deterministic without a canonicalization pass.
+// so the serialization is deterministic without a canonicalization pass. The
+// asset list is sorted by path (gitCapabilityAssetsFromTree) for the same
+// reason: the Git server's answer order is not part of the contract.
 //
 // One coupling survives on purpose. Several MCP entries can share ONE manifest
 // file (ParseMCPJSON gives every `mcpServers` entry the whole file as its
@@ -114,54 +169,132 @@ const gitCapabilityProjectionDigestVersion = 1
 // far smaller grouping than the repository one — measured locally, 15 of 538
 // Git-backed items sit in a multi-entry manifest, largest 9, against 507 in a
 // shared repository.
+//
+// Assets add a second, narrower sharing case of the same kind. Two capabilities
+// whose manifests both sit at the REPOSITORY root share one asset root, so they
+// share their asset set — and again the read path agrees, because the device
+// installs those same files for both. Capabilities in their own directories,
+// which is the layout of every multi-capability repository measured locally, are
+// isolated.
 type gitCapabilityProjectionPayload struct {
-	Version     int             `json:"v"`
-	ItemType    string          `json:"itemType"`
-	ContentHash string          `json:"contentHash"`
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Category    string          `json:"category"`
-	VersionText string          `json:"version"`
-	Metadata    json.RawMessage `json:"metadata"`
+	Version  int    `json:"v"`
+	ItemType string `json:"itemType"`
+	// The key is manifestSha256 rather than the old contentHash so that nothing
+	// reads it as the content_md5 column, which is still computed the other way
+	// and still means something else.
+	ManifestSHA256 string                          `json:"manifestSha256"`
+	Name           string                          `json:"name"`
+	Description    string                          `json:"description"`
+	Category       string                          `json:"category"`
+	VersionText    string                          `json:"version"`
+	Metadata       json.RawMessage                 `json:"metadata"`
+	Assets         []gitCapabilityAssetFingerprint `json:"assets"`
 }
 
-// gitCapabilityProjectionDigest hashes one manifest's projection for one item.
+// gitCapabilityAssetFingerprint is one asset as the digest sees it.
+//
+// It is a type of its own rather than a reuse of gitCapabilityAssetEntry so
+// that the hashed payload cannot silently gain a field: adding one to the read
+// path's struct would otherwise re-baseline every item's history.
+type gitCapabilityAssetFingerprint struct {
+	Path string `json:"path"`
+	Blob string `json:"blob"`
+}
+
+// gitCapabilityProjectionSource is everything one capability's digest is
+// computed from, gathered by the pass that read the repository.
+//
+// It is a struct rather than an argument list because three of the fields are
+// strings that a caller could transpose without the compiler noticing, and the
+// consequence of transposing them is a wrong digest — which reads as a content
+// change nobody made.
+type gitCapabilityProjectionSource struct {
+	ItemType     string
+	ManifestPath string
+	// ManifestSHA256 is SHA-256 over the manifest file's bytes as the repository
+	// stores them — the same bytes ItemContentBytes streams to a reader. It is
+	// NOT hashDiscoveredCapabilityContent / content_md5, which normalizes first;
+	// see the payload's field comment for why the difference matters here.
+	ManifestSHA256 string
+	Parsed         *ParsedItem
+	// Assets must come from gitCapabilityAssetsFromTree over the SAME tree
+	// listing the manifest was read from.
+	Assets []gitCapabilityAssetEntry
+}
+
+// gitCapabilityProjectionDigest hashes one capability's projection: its
+// manifest and the assets that ship with it.
 //
 // It is the single definition, called by both writers — the reconcile path in
-// SyncRepository and the provisioning path in buildDiscoveredCapability. Two
+// SyncRepository and the provisioning path in createDiscoveredCapability. Two
 // implementations that agree today would diverge the first time one of them is
 // edited, and the symptom would be a spurious revision on the next sync of
 // every row the other one created.
-func gitCapabilityProjectionDigest(itemType, manifestPath string, parsed *ParsedItem) (string, error) {
-	if parsed == nil {
-		return "", fmt.Errorf("cannot digest a nil projection for %s", manifestPath)
+//
+// Three guards keep an unobserved input from masquerading as an observed one.
+// Each of them protects the same property: the digest must move only when the
+// bytes a reader receives moved.
+//
+//   - a nil asset slice is rejected. gitCapabilityAssetsFromTree returns a
+//     non-nil empty slice for a capability that genuinely has no assets, so nil
+//     can only mean "never resolved" — and digesting it as "no assets" is
+//     indistinguishable from "the author deleted every asset".
+//   - an asset without a Git object id is rejected. Fingerprinting it as the
+//     empty string would make every future change to that file invisible, which
+//     is silent and permanent; failing is neither.
+//   - an empty manifest digest is rejected, for the same reason in the other
+//     half of the payload.
+//
+// A tree listing or manifest read that failed outright never reaches here at
+// all: the sync aborts first, so the item keeps its current digest and its
+// history is untouched.
+func gitCapabilityProjectionDigest(source gitCapabilityProjectionSource) (string, error) {
+	if source.Parsed == nil {
+		return "", fmt.Errorf("cannot digest a nil projection for %s", source.ManifestPath)
+	}
+	manifestSHA := strings.ToLower(strings.TrimSpace(source.ManifestSHA256))
+	if manifestSHA == "" {
+		return "", fmt.Errorf("cannot digest %s without the manifest's own bytes", source.ManifestPath)
+	}
+	if source.Assets == nil {
+		return "", fmt.Errorf("cannot digest %s without a resolved asset set", source.ManifestPath)
+	}
+	fingerprints := make([]gitCapabilityAssetFingerprint, 0, len(source.Assets))
+	for _, asset := range source.Assets {
+		blob := strings.ToLower(strings.TrimSpace(asset.BlobID))
+		if blob == "" {
+			return "", fmt.Errorf("asset %q of %s carries no Git object id to fingerprint",
+				asset.RelPath, source.ManifestPath)
+		}
+		fingerprints = append(fingerprints, gitCapabilityAssetFingerprint{Path: asset.RelPath, Blob: blob})
 	}
 	metadata := []byte("{}")
-	if len(parsed.Metadata) > 0 {
-		encoded, err := json.Marshal(parsed.Metadata)
+	if len(source.Parsed.Metadata) > 0 {
+		encoded, err := json.Marshal(source.Parsed.Metadata)
 		if err != nil {
 			// Unreachable in practice: the same map is marshalled by
 			// mergeGitCapabilityMetadata a few lines away, so a map that cannot
 			// be encoded fails the sync before it reaches here. Reported rather
 			// than defaulted to "{}", because silently hashing an empty object
 			// would make two different manifests digest identically.
-			return "", fmt.Errorf("encode manifest metadata for %s: %w", manifestPath, err)
+			return "", fmt.Errorf("encode manifest metadata for %s: %w", source.ManifestPath, err)
 		}
 		metadata = encoded
 	}
 	payload := gitCapabilityProjectionPayload{
-		Version:     gitCapabilityProjectionDigestVersion,
-		ItemType:    itemType,
-		ContentHash: hashDiscoveredCapabilityContent(itemType, manifestPath, parsed.Content),
-		Name:        parsed.Name,
-		Description: parsed.Description,
-		Category:    parsed.Category,
-		VersionText: parsed.Version,
-		Metadata:    metadata,
+		Version:        gitCapabilityProjectionDigestVersion,
+		ItemType:       source.ItemType,
+		ManifestSHA256: manifestSHA,
+		Name:           source.Parsed.Name,
+		Description:    source.Parsed.Description,
+		Category:       source.Parsed.Category,
+		VersionText:    source.Parsed.Version,
+		Metadata:       metadata,
+		Assets:         fingerprints,
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("encode projection digest payload for %s: %w", manifestPath, err)
+		return "", fmt.Errorf("encode projection digest payload for %s: %w", source.ManifestPath, err)
 	}
 	return sha256Hex(encoded), nil
 }
@@ -333,14 +466,28 @@ func projectGitCapabilityRevision(tx *gorm.DB, input gitCapabilityRevisionInput)
 //
 // The predicate is a compare-and-set on `content_digest IS NULL` (plus the
 // backfill source), so it can never overwrite an observed digest, and a
-// concurrent adopter simply finds nothing to update. Zero rows affected is
-// therefore success, not a lost write.
+// concurrent adopter simply finds nothing to update.
+//
+// Zero rows affected is therefore ALMOST always success — but "almost" is not
+// something this function is willing to assume, because the failure it would
+// hide is silent and permanent. Every caller today holds the item's row lock,
+// so the only way to match nothing is a concurrent adopter that already
+// finished. A future caller without that lock, or a predicate that stopped
+// matching for some other reason, would make adoption a no-op forever: every
+// projection would take this branch, match nothing, report success, and that
+// item's history would stop growing with nothing to notice it. So the zero-row
+// path re-reads the head and requires that a digest is now present, whoever
+// wrote it. One indexed read, only on a path that should not be taken.
 //
 // Stated rather than hidden: if the item's content changed between the backfill
 // and this first observation, that one change is folded into the baseline
-// instead of being recorded as revision 2. The rollout order (backfill, then
-// enable revision writes) keeps that window to minutes, and no later projection
-// is affected — from here on the digest is observed and every change appends.
+// instead of being recorded as revision 2. For a healthy item the rollout order
+// (backfill, then enable revision writes) bounds that window to about one
+// reconcile interval. It is NOT bounded for an item that is archived between the
+// two: an archived row is never projected, so its baseline waits for its
+// manifest to return, which may be weeks away or never come. Either way no
+// later projection is affected — from here on the digest is observed and every
+// change appends.
 func adoptGitCapabilityBaselineDigest(tx *gorm.DB, itemID string, revisionNo int64, digest string) error {
 	result := tx.Model(&models.CapabilityItemGitRevision{}).
 		Where("item_id = ? AND revision_no = ? AND source = ? AND content_digest IS NULL",
@@ -348,6 +495,23 @@ func adoptGitCapabilityBaselineDigest(tx *gorm.DB, itemID string, revisionNo int
 		Update("content_digest", strings.ToLower(strings.TrimSpace(digest)))
 	if result.Error != nil {
 		return fmt.Errorf("adopt baseline digest for item %s revision %d: %w", itemID, revisionNo, result.Error)
+	}
+	if result.RowsAffected > 0 {
+		return nil
+	}
+	// The head, not the row this statement targeted: a concurrent adopter may
+	// have completed the baseline AND appended past it, and that is a healthy
+	// outcome. What must not be true afterwards is that the item's newest
+	// revision still has no digest, because that is the state in which the next
+	// projection would come straight back here and no-op again.
+	head, err := readGitCapabilityRevisionHead(tx, itemID)
+	if err != nil {
+		return err
+	}
+	if head == nil || strings.TrimSpace(head.ContentDigest) == "" {
+		return fmt.Errorf(
+			"baseline adoption for item %s revision %d matched no row and left the current revision without a digest",
+			itemID, revisionNo)
 	}
 	return nil
 }

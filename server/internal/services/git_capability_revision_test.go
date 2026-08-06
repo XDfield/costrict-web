@@ -1,9 +1,11 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -113,11 +115,31 @@ func skillManifest(version, body string) []byte {
 // exclusion is asserted here rather than left to the integration tests to
 // notice.
 func TestGitCapabilityProjectionDigest_CoversTheProjectionAndNothingElse(t *testing.T) {
+	baseAssets := []gitCapabilityAssetEntry{
+		{RelPath: "assets/logo.png", BlobID: strings.Repeat("a", 40)},
+		{RelPath: "reference.md", BlobID: strings.Repeat("b", 40)},
+	}
+	cloneAssets := func() []gitCapabilityAssetEntry {
+		return append([]gitCapabilityAssetEntry(nil), baseAssets...)
+	}
 	base := &ParsedItem{
 		Name: "Skill", Description: "d", Category: "tools", Version: "1.0.0",
 		Content: "body", Metadata: map[string]any{"a": 1},
 	}
-	baseDigest, err := gitCapabilityProjectionDigest("skill", "SKILL.md", base)
+	const baseManifestSHA = "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+	digestOf := func(source gitCapabilityProjectionSource) (string, error) {
+		if source.ItemType == "" {
+			source.ItemType = "skill"
+		}
+		if source.ManifestPath == "" {
+			source.ManifestPath = "SKILL.md"
+		}
+		if source.ManifestSHA256 == "" {
+			source.ManifestSHA256 = baseManifestSHA
+		}
+		return gitCapabilityProjectionDigest(source)
+	}
+	baseDigest, err := digestOf(gitCapabilityProjectionSource{Parsed: base, Assets: cloneAssets()})
 	if err != nil {
 		t.Fatalf("digest: %v", err)
 	}
@@ -126,9 +148,12 @@ func TestGitCapabilityProjectionDigest_CoversTheProjectionAndNothingElse(t *test
 	}
 
 	// Deterministic: the same projection must never look like a change.
-	repeat, err := gitCapabilityProjectionDigest("skill", "SKILL.md", &ParsedItem{
-		Name: "Skill", Description: "d", Category: "tools", Version: "1.0.0",
-		Content: "body", Metadata: map[string]any{"a": 1},
+	repeat, err := digestOf(gitCapabilityProjectionSource{
+		Parsed: &ParsedItem{
+			Name: "Skill", Description: "d", Category: "tools", Version: "1.0.0",
+			Content: "body", Metadata: map[string]any{"a": 1},
+		},
+		Assets: cloneAssets(),
 	})
 	if err != nil {
 		t.Fatalf("digest: %v", err)
@@ -137,11 +162,30 @@ func TestGitCapabilityProjectionDigest_CoversTheProjectionAndNothingElse(t *test
 		t.Fatalf("an identical projection digested differently: %q != %q", repeat, baseDigest)
 	}
 
+	// The manifest's own bytes. This is a separate input from the parsed display
+	// fields on purpose: several parsers rewrite Content (ParsePluginJSON
+	// synthesizes markdown from .plugin.json), and the read path serves the file
+	// itself, so a byte change with no parsed consequence still changes what the
+	// reader receives.
+	byteChange, err := digestOf(gitCapabilityProjectionSource{
+		Parsed: base, Assets: cloneAssets(), ManifestSHA256: strings.Repeat("9", 64),
+	})
+	if err != nil {
+		t.Fatalf("digest: %v", err)
+	}
+	if byteChange == baseDigest {
+		t.Fatal("the manifest's bytes changed and the digest did not")
+	}
+	if _, err := gitCapabilityProjectionDigest(gitCapabilityProjectionSource{
+		ItemType: "skill", ManifestPath: "SKILL.md", Parsed: base, Assets: cloneAssets(),
+	}); err == nil {
+		t.Fatal("a missing manifest digest must be reported, not hashed as the empty string")
+	}
+
 	for _, tc := range []struct {
 		name   string
 		mutate func(*ParsedItem)
 	}{
-		{"content", func(p *ParsedItem) { p.Content = "body edited" }},
 		{"name", func(p *ParsedItem) { p.Name = "Renamed" }},
 		{"description", func(p *ParsedItem) { p.Description = "d2" }},
 		{"category", func(p *ParsedItem) { p.Category = "writing" }},
@@ -153,7 +197,7 @@ func TestGitCapabilityProjectionDigest_CoversTheProjectionAndNothingElse(t *test
 			mutated := *base
 			mutated.Metadata = map[string]any{"a": 1}
 			tc.mutate(&mutated)
-			got, err := gitCapabilityProjectionDigest("skill", "SKILL.md", &mutated)
+			got, err := digestOf(gitCapabilityProjectionSource{Parsed: &mutated, Assets: cloneAssets()})
 			if err != nil {
 				t.Fatalf("digest: %v", err)
 			}
@@ -163,10 +207,68 @@ func TestGitCapabilityProjectionDigest_CoversTheProjectionAndNothingElse(t *test
 		})
 	}
 
+	// The asset half. The manifest is byte-identical in every one of these — only
+	// the files that ship alongside it move — so before assets entered the payload
+	// each of these produced no revision at all while the device installed
+	// something different.
+	for _, tc := range []struct {
+		name   string
+		assets []gitCapabilityAssetEntry
+	}{
+		{"an asset's bytes change", []gitCapabilityAssetEntry{
+			{RelPath: "assets/logo.png", BlobID: strings.Repeat("c", 40)},
+			{RelPath: "reference.md", BlobID: strings.Repeat("b", 40)},
+		}},
+		{"an asset is added", append(cloneAssets(),
+			gitCapabilityAssetEntry{RelPath: "assets/extra.txt", BlobID: strings.Repeat("d", 40)})},
+		{"an asset is removed", []gitCapabilityAssetEntry{
+			{RelPath: "assets/logo.png", BlobID: strings.Repeat("a", 40)},
+		}},
+		// Git moves no blob on a rename, so the path must be hashed too or the
+		// rename is invisible.
+		{"an asset is renamed", []gitCapabilityAssetEntry{
+			{RelPath: "assets/logo.png", BlobID: strings.Repeat("a", 40)},
+			{RelPath: "REFERENCE.md", BlobID: strings.Repeat("b", 40)},
+		}},
+		{"every asset is deleted", []gitCapabilityAssetEntry{}},
+	} {
+		t.Run(tc.name+" changes the digest", func(t *testing.T) {
+			got, err := digestOf(gitCapabilityProjectionSource{Parsed: base, Assets: tc.assets})
+			if err != nil {
+				t.Fatalf("digest: %v", err)
+			}
+			if got == baseDigest {
+				t.Fatalf("%s did not change the digest", tc.name)
+			}
+		})
+	}
+
+	// An unresolved asset set must never be digested as an empty one: the two are
+	// indistinguishable in the result, and one of them is "the author deleted
+	// every asset".
+	if _, err := digestOf(gitCapabilityProjectionSource{Parsed: base}); err == nil {
+		t.Fatal("a nil asset set must be reported, not digested as no assets")
+	}
+	empty, err := digestOf(gitCapabilityProjectionSource{Parsed: base, Assets: []gitCapabilityAssetEntry{}})
+	if err != nil {
+		t.Fatalf("a capability with genuinely no assets must digest: %v", err)
+	}
+	if empty == baseDigest {
+		t.Fatal("a capability with no assets digested the same as one with two")
+	}
+	// A tree entry without an object id cannot answer "did this file change?", and
+	// fingerprinting it as the empty string would lose every future change to it
+	// silently and permanently.
+	if _, err := digestOf(gitCapabilityProjectionSource{
+		Parsed: base, Assets: []gitCapabilityAssetEntry{{RelPath: "assets/logo.png"}},
+	}); err == nil {
+		t.Fatal("an asset without a Git object id must be reported, not fingerprinted as empty")
+	}
+
 	// The excluded half. These are the facts every capability in a repository
 	// shares, so none of them may reach the digest — a sibling's push moves all
 	// of them.
-	if _, err := gitCapabilityProjectionDigest("skill", "SKILL.md", nil); err == nil {
+	if _, err := digestOf(gitCapabilityProjectionSource{Assets: cloneAssets()}); err == nil {
 		t.Fatal("a nil projection must be reported, not digested as empty")
 	}
 	payload := gitCapabilityProjectionPayload{}
@@ -342,6 +444,365 @@ func TestGitCapabilitySync_SiblingManifestCommitAppendsNothing(t *testing.T) {
 	if betaRevisions[0].GitSHA != revisionSHAFirst {
 		t.Fatalf("beta's history moved to %q; the head is a coordinate of ITS OWN transition",
 			betaRevisions[0].GitSHA)
+	}
+}
+
+// TestGitCapabilityAssetsFromTree_ScopesToTheCapabilityAndNothingElse pins the
+// membership rule the digest inherits from the read path.
+//
+// Scope is the point. If the rule leaked past the capability's own directory,
+// every sibling would be back to appending revisions for each other's commits —
+// the exact defect the digest change removed, re-entering through the asset
+// door. And if the rule were tighter than the read path's, a file the device
+// really does install would move without leaving a revision, which is the defect
+// the asset change was made to fix.
+func TestGitCapabilityAssetsFromTree_ScopesToTheCapabilityAndNothingElse(t *testing.T) {
+	blobs, err := newGitCapabilityTreeBlobs([]gitsync.GitTreeEntry{
+		{Path: "skills/alpha", Type: "tree", SHA: strings.Repeat("0", 40)},
+		{Path: "skills/alpha/SKILL.md", Type: "blob", SHA: strings.Repeat("1", 40)},
+		{Path: "skills/alpha/assets/logo.png", Type: "blob", SHA: strings.Repeat("2", 40), Size: 7},
+		{Path: "skills/alpha/reference.md", Type: "blob", SHA: strings.Repeat("3", 40)},
+		{Path: "skills/alpha/.costrict/capability.json", Type: "blob", SHA: strings.Repeat("4", 40)},
+		{Path: "skills/beta/SKILL.md", Type: "blob", SHA: strings.Repeat("5", 40)},
+		{Path: "skills/beta/assets/logo.png", Type: "blob", SHA: strings.Repeat("6", 40)},
+		{Path: ".costrict/capability.json", Type: "blob", SHA: strings.Repeat("7", 40)},
+		{Path: "README.md", Type: "blob", SHA: strings.Repeat("8", 40)},
+	})
+	if err != nil {
+		t.Fatalf("newGitCapabilityTreeBlobs: %v", err)
+	}
+
+	assets, err := gitCapabilityAssetsFromTree(blobs, "skills/alpha/SKILL.md")
+	if err != nil {
+		t.Fatalf("gitCapabilityAssetsFromTree: %v", err)
+	}
+	want := []gitCapabilityAssetEntry{
+		{RelPath: "assets/logo.png", BlobID: strings.Repeat("2", 40), Size: 7},
+		{RelPath: "reference.md", BlobID: strings.Repeat("3", 40)},
+	}
+	if !reflect.DeepEqual(assets, want) {
+		t.Fatalf("alpha's assets = %#v, want %#v", assets, want)
+	}
+
+	// Restated as the properties that matter, so a future change that breaks one
+	// of them says which one.
+	for _, asset := range assets {
+		if strings.Contains(asset.RelPath, "beta") {
+			t.Fatalf("a sibling's file %q reached this capability's asset set", asset.RelPath)
+		}
+		if strings.Contains(asset.RelPath, "capability.json") {
+			t.Fatalf("provisioning bookkeeping %q reached the asset set", asset.RelPath)
+		}
+		if asset.RelPath == "README.md" {
+			t.Fatal("a repository-root file reached a capability rooted in a subdirectory")
+		}
+	}
+
+	// A manifest that is not in the listing is not "a capability with no assets".
+	// Returning an empty set there would let a partial tree read as the deletion
+	// of every asset, and the digest would move for a change nobody made.
+	if _, err := gitCapabilityAssetsFromTree(blobs, "skills/ghost/SKILL.md"); err == nil {
+		t.Fatal("a manifest missing from the tree must be reported, not treated as an empty asset set")
+	} else if !errors.Is(err, ErrGitContentMissing) {
+		t.Fatalf("missing manifest error = %v, want ErrGitContentMissing", err)
+	}
+
+	// A root manifest owns the repository minus manifests and bookkeeping — the
+	// same rule with an empty prefix, and what the device already installs.
+	//
+	// The marker exclusion is pinned exactly as the read path has always applied
+	// it: at the repository root always, and at the capability root when the
+	// capability lives in a subdirectory. A marker in some OTHER subdirectory is
+	// not excluded from a root-rooted capability, because the read path installs
+	// it. That residual is inherited deliberately — the digest must describe the
+	// files the device receives, not the files it ideally would.
+	rootAssets, err := gitCapabilityAssetsFromTree(blobs, "README.md")
+	if err != nil {
+		t.Fatalf("gitCapabilityAssetsFromTree(root): %v", err)
+	}
+	rootPaths := make(map[string]bool, len(rootAssets))
+	for _, asset := range rootAssets {
+		if strings.HasSuffix(asset.RelPath, "SKILL.md") {
+			t.Fatalf("another capability's manifest %q was listed as an asset", asset.RelPath)
+		}
+		rootPaths[asset.RelPath] = true
+	}
+	if rootPaths[GitCapabilityOwnershipMarkerPath] {
+		t.Fatalf("the repository-root ownership marker %q reached the asset set", GitCapabilityOwnershipMarkerPath)
+	}
+	if !rootPaths["skills/alpha/assets/logo.png"] {
+		t.Fatal("a root-rooted capability did not receive a repository file the read path installs for it")
+	}
+
+	// One tree, one order, whatever order the Git server answered in.
+	shuffled := append([]gitCapabilityTreeBlob(nil), blobs...)
+	for i, j := 0, len(shuffled)-1; i < j; i, j = i+1, j-1 {
+		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+	}
+	reordered, err := gitCapabilityAssetsFromTree(shuffled, "skills/alpha/SKILL.md")
+	if err != nil {
+		t.Fatalf("gitCapabilityAssetsFromTree(shuffled): %v", err)
+	}
+	if !reflect.DeepEqual(reordered, assets) {
+		t.Fatalf("listing order changed the asset set: %#v vs %#v", reordered, assets)
+	}
+}
+
+// TestGitCapabilitySync_AssetOnlyCommitAppendsARevision is the defect this asset
+// work exists for: the manifest is byte-identical and the capability still
+// changed, because the files csc downloads next to it changed.
+func TestGitCapabilitySync_AssetOnlyCommitAppendsARevision(t *testing.T) {
+	db := setupGitCapabilitySyncDB(t)
+	item := newGitCapabilityItem("item-assets", "repo-git", "skill", "skill", "skills/demo/SKILL.md")
+	item.GitSHA = revisionSHAFirst
+	item.GitSyncStatus = gitCapabilitySyncSynced
+	createGitCapabilityItem(t, db, item)
+
+	manifest := skillManifest("1.0.0", "body")
+	reader := newGitCapabilityReader(map[string][]byte{
+		"skills/demo/SKILL.md":            manifest,
+		"skills/demo/assets/reference.md": []byte("step one\n"),
+	})
+	reader.branch = &gitsync.Branch{Name: "main", CommitSHA: revisionSHAFirst}
+	svc, cfg := newGitCapabilitySyncService(db, reader)
+	head := revisionSHAFirst
+	sync := func(job string) {
+		t.Helper()
+		reader.branch = &gitsync.Branch{Name: "main", CommitSHA: head}
+		lease := createGitCapabilityLease(t, db, job, "lease-"+job)
+		if _, err := svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID,
+			"alice/capabilities", "main", false, lease); err != nil {
+			t.Fatalf("%s: %v", job, err)
+		}
+	}
+
+	sync("job-baseline")
+	if got := len(loadGitRevisions(t, db, item.ID)); got != 1 {
+		t.Fatalf("baseline revisions = %d, want 1", got)
+	}
+
+	for _, tc := range []struct {
+		name string
+		head string
+		edit func()
+	}{
+		{"an asset's bytes change", "3333333333333333333333333333333333333333", func() {
+			reader.files["skills/demo/assets/reference.md"] = []byte("step one, corrected\n")
+		}},
+		{"an asset is added", "4444444444444444444444444444444444444444", func() {
+			reader.files["skills/demo/assets/logo.png"] = []byte("\x89PNG binary-ish")
+		}},
+		{"an asset is renamed", "5555555555555555555555555555555555555555", func() {
+			reader.files["skills/demo/assets/diagram.png"] = reader.files["skills/demo/assets/logo.png"]
+			delete(reader.files, "skills/demo/assets/logo.png")
+		}},
+		{"an asset is deleted", "6666666666666666666666666666666666666666", func() {
+			delete(reader.files, "skills/demo/assets/diagram.png")
+		}},
+	} {
+		before := loadGitRevisions(t, db, item.ID)
+		tc.edit()
+		head = tc.head
+		sync("job-" + tc.head[:8])
+		after := loadGitRevisions(t, db, item.ID)
+		if len(after) != len(before)+1 {
+			t.Fatalf("%s appended %d revision(s), want exactly 1", tc.name, len(after)-len(before))
+		}
+		latest := after[len(after)-1]
+		if latest.GitSHA != tc.head {
+			t.Fatalf("%s recorded head %q, want %q", tc.name, latest.GitSHA, tc.head)
+		}
+		if latest.ContentDigest == before[len(before)-1].ContentDigest {
+			t.Fatalf("%s appended a revision carrying the digest it replaced", tc.name)
+		}
+	}
+
+	// The manifest never moved in any of the steps above, which is the whole
+	// point: under a manifest-only digest none of them existed.
+	if !bytes.Equal(reader.files["skills/demo/SKILL.md"], manifest) {
+		t.Fatal("the test edited the manifest; the assertions above prove nothing about assets")
+	}
+
+	// And a pass over an unchanged tree still appends nothing, so the assertions
+	// above are about the edits rather than about assets making every sync a
+	// transition.
+	before := len(loadGitRevisions(t, db, item.ID))
+	head = "7777777777777777777777777777777777777777"
+	sync("job-unchanged")
+	if got := len(loadGitRevisions(t, db, item.ID)); got != before {
+		t.Fatalf("a pass over an unchanged manifest and asset set appended %d revision(s)", got-before)
+	}
+}
+
+// TestGitCapabilitySync_SiblingAssetCommitAppendsNothing is the assertion that
+// asset coverage did not reintroduce the cross-capability leak the digest change
+// removed.
+//
+// Two capabilities, each in its own directory with its own asset, in ONE
+// repository behind ONE head. A commit edits beta's asset only.
+//
+// Three things are asserted together, and each one closes a way the test could
+// pass while proving nothing:
+//
+//   - beta appends a revision → the asset digest is actually wired up, so the
+//     absence of alpha's revision is not "assets are ignored entirely";
+//   - alpha's git_sha advances to the new head → alpha WAS projected in that same
+//     pass, so the absence is not "alpha was never visited";
+//   - alpha appends a revision when ITS OWN asset changes → alpha's asset subtree
+//     is genuinely part of alpha's digest, so the absence is not "alpha's asset
+//     set resolved to empty".
+func TestGitCapabilitySync_SiblingAssetCommitAppendsNothing(t *testing.T) {
+	db := setupGitCapabilitySyncDB(t)
+	for _, seed := range []struct{ id, slug, path string }{
+		{"item-alpha", "alpha", "skills/alpha/SKILL.md"},
+		{"item-beta", "beta", "skills/beta/SKILL.md"},
+	} {
+		seeded := newGitCapabilityItem(seed.id, "repo-git", seed.slug, "skill", seed.path)
+		seeded.GitSHA = revisionSHAFirst
+		seeded.GitSyncStatus = gitCapabilitySyncSynced
+		createGitCapabilityItem(t, db, seeded)
+	}
+
+	reader := newGitCapabilityReader(map[string][]byte{
+		"skills/alpha/SKILL.md":         skillManifest("1.0.0", "alpha body"),
+		"skills/alpha/assets/notes.md":  []byte("alpha notes\n"),
+		"skills/beta/SKILL.md":          skillManifest("1.0.0", "beta body"),
+		"skills/beta/assets/notes.md":   []byte("beta notes\n"),
+		"skills/beta/assets/extra.txt":  []byte("beta extra\n"),
+		"skills/gamma/unbound-asset.md": []byte("nobody's\n"),
+	})
+	svc, cfg := newGitCapabilitySyncService(db, reader)
+	head := revisionSHAFirst
+	sync := func(job string) {
+		t.Helper()
+		reader.branch = &gitsync.Branch{Name: "main", CommitSHA: head}
+		lease := createGitCapabilityLease(t, db, job, "lease-"+job)
+		if _, err := svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID,
+			"alice/capabilities", "main", false, lease); err != nil {
+			t.Fatalf("%s: %v", job, err)
+		}
+	}
+	revisionsOf := func(id string) []models.CapabilityItemGitRevision {
+		t.Helper()
+		return loadGitRevisions(t, db, id)
+	}
+
+	sync("job-baseline")
+	if len(revisionsOf("item-alpha")) != 1 || len(revisionsOf("item-beta")) != 1 {
+		t.Fatalf("baseline revisions = alpha %d / beta %d, want 1 each",
+			len(revisionsOf("item-alpha")), len(revisionsOf("item-beta")))
+	}
+	alphaBaseline := revisionsOf("item-alpha")[0].ContentDigest
+
+	// One commit, beta's asset only.
+	reader.files["skills/beta/assets/notes.md"] = []byte("beta notes, revised\n")
+	head = revisionSHASecond
+	sync("job-beta-asset")
+
+	if got := len(revisionsOf("item-beta")); got != 2 {
+		t.Fatalf("beta's own asset changed and it has %d revisions, want 2 — "+
+			"if this is 1 the asset digest is not wired up and the alpha assertion below is vacuous", got)
+	}
+	alphaRevisions := revisionsOf("item-alpha")
+	if len(alphaRevisions) != 1 {
+		t.Fatalf("a commit that only touched a sibling's asset gave alpha %d revisions, want 1", len(alphaRevisions))
+	}
+	if alphaRevisions[0].ContentDigest != alphaBaseline {
+		t.Fatal("alpha's recorded digest moved for a commit to a sibling's asset")
+	}
+	// alpha WAS projected in that same pass — so "no revision" is about the
+	// trigger, not about alpha having been skipped.
+	if sha := loadGitCapabilityItem(t, db, "item-alpha").GitSHA; sha != revisionSHASecond {
+		t.Fatalf("alpha git_sha = %q, want the projected head %s — alpha was not visited, "+
+			"so the isolation assertion proves nothing", sha, revisionSHASecond)
+	}
+
+	// And alpha's own asset IS in alpha's digest, so the isolation above is not
+	// alpha's asset set resolving to empty.
+	reader.files["skills/alpha/assets/notes.md"] = []byte("alpha notes, revised\n")
+	head = "8888888888888888888888888888888888888888"
+	sync("job-alpha-asset")
+	if got := len(revisionsOf("item-alpha")); got != 2 {
+		t.Fatalf("alpha's own asset changed and it has %d revisions, want 2 — "+
+			"alpha's asset subtree is not part of alpha's digest", got)
+	}
+	if got := len(revisionsOf("item-beta")); got != 2 {
+		t.Fatalf("alpha's asset commit gave beta %d revisions, want 2", got)
+	}
+
+	// A file under no capability's root moves nothing at all.
+	reader.files["skills/gamma/unbound-asset.md"] = []byte("still nobody's, edited\n")
+	head = "9999999999999999999999999999999999999999"
+	sync("job-unbound")
+	if got := len(revisionsOf("item-alpha")); got != 2 {
+		t.Fatalf("a file outside every capability root gave alpha %d revisions, want 2", got)
+	}
+	if got := len(revisionsOf("item-beta")); got != 2 {
+		t.Fatalf("a file outside every capability root gave beta %d revisions, want 2", got)
+	}
+}
+
+// TestGitCapabilitySync_UnreadableTreeAppendsNoRevision covers the failure mode
+// the asset digest introduces: the asset set now comes from a network call, and
+// a call that does not answer must not be read as "the assets are gone".
+//
+// An empty asset set and an unavailable one produce different digests, and only
+// one of them is a change the author made. The projection has to fail rather
+// than guess — the item keeps its digest, its history and its SHA.
+func TestGitCapabilitySync_UnreadableTreeAppendsNoRevision(t *testing.T) {
+	db := setupGitCapabilitySyncDB(t)
+	item := newGitCapabilityItem("item-treefail", "repo-git", "skill", "skill", "skills/demo/SKILL.md")
+	item.GitSHA = revisionSHAFirst
+	item.GitSyncStatus = gitCapabilitySyncSynced
+	createGitCapabilityItem(t, db, item)
+
+	reader := newGitCapabilityReader(map[string][]byte{
+		"skills/demo/SKILL.md":            skillManifest("1.0.0", "body"),
+		"skills/demo/assets/reference.md": []byte("step one\n"),
+	})
+	reader.branch = &gitsync.Branch{Name: "main", CommitSHA: revisionSHAFirst}
+	svc, cfg := newGitCapabilitySyncService(db, reader)
+
+	baseline := createGitCapabilityLease(t, db, "job-tree-baseline", "lease-tree-baseline")
+	if _, err := svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID,
+		"alice/capabilities", "main", false, baseline); err != nil {
+		t.Fatalf("baseline sync: %v", err)
+	}
+	before := loadGitRevisions(t, db, item.ID)
+	if len(before) != 1 {
+		t.Fatalf("baseline revisions = %d, want 1", len(before))
+	}
+
+	// The listing fails while the head has moved. Under a digest that treated an
+	// unavailable listing as an empty asset set, this would append a revision
+	// recording the deletion of every asset.
+	reader.treeErr = errors.New("git server unreachable")
+	reader.branch = &gitsync.Branch{Name: "main", CommitSHA: revisionSHASecond}
+	failing := createGitCapabilityLease(t, db, "job-tree-fail", "lease-tree-fail")
+	if _, err := svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID,
+		"alice/capabilities", "main", false, failing); err == nil {
+		t.Fatal("a failed tree listing must fail the sync")
+	}
+	after := loadGitRevisions(t, db, item.ID)
+	if len(after) != 1 || after[0].ContentDigest != before[0].ContentDigest {
+		t.Fatalf("a failed tree listing changed the history: %+v", after)
+	}
+	if sha := loadGitCapabilityItem(t, db, item.ID).GitSHA; sha != revisionSHAFirst {
+		t.Fatalf("a failed tree listing moved git_sha to %q", sha)
+	}
+
+	// Recovery is a no-op, not a catch-up revision: the content never changed.
+	reader.treeErr = nil
+	recovered := createGitCapabilityLease(t, db, "job-tree-recover", "lease-tree-recover")
+	if _, err := svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID,
+		"alice/capabilities", "main", false, recovered); err != nil {
+		t.Fatalf("recovery sync: %v", err)
+	}
+	if got := len(loadGitRevisions(t, db, item.ID)); got != 1 {
+		t.Fatalf("recovering from a failed listing appended %d revision(s)", got-1)
+	}
+	if sha := loadGitCapabilityItem(t, db, item.ID).GitSHA; sha != revisionSHASecond {
+		t.Fatalf("git_sha after recovery = %q, want %s", sha, revisionSHASecond)
 	}
 }
 
