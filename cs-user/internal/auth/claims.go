@@ -6,10 +6,11 @@
 //  2. OIDC identity (mirrors models.JWTClaims): universal_id / name / email /
 //     picture / owner / provider / provider_user_id / phone. These overlap
 //     1:1 with Casdoor's token shape, so a relying party switching from
-//     Casdoor tokens to cs-user tokens sees no diff. Two relying-party-driven
-//     claims ride in this group without a Casdoor counterpart: short_id (the
-//     Gitea username) and user_id (the Gitea binding-lookup key, same value
-//     as sub) — see the field comments before changing either.
+//     Casdoor tokens to cs-user tokens sees no diff.
+//     Two relying-party-driven claims ride in this group without a Casdoor
+//     counterpart: short_id (the Gitea username) and user_id (the Gitea
+//     binding-lookup key, same value as sub) — see the field comments before
+//     changing either.
 //  3. Enterprise context (populated from employment_identities):
 //     employee_number / job_title / job_level / employment_type /
 //     cost_center / org_path / work_location. Plus tenant_id (single-tenant
@@ -93,10 +94,10 @@ type EnterpriseClaims struct {
 
 	// --- Tenant ---
 	TenantID string `json:"tenant_id,omitempty"`
-	// TenantSlug is the URL-friendly tenant key. Server's auth
-	// middleware reads this claim to compare against the runtime-resolved
-	// slug (cookie / subdomain) for cross-tenant detection (B3b.2c). Empty
-	// for Casdoor-issued tokens (pre-cutover) — comparison must skip.
+	// TenantSlug is the URL-friendly tenant key. Server's auth middleware
+	// reads this claim to compare against the runtime-resolved slug (cookie
+	// / subdomain) for cross-tenant detection. Empty for Casdoor-issued
+	// tokens (pre-cutover) — comparison must skip.
 	TenantSlug string `json:"tenant_slug,omitempty"`
 
 	// --- Permission (populated from tenant_admins + platform_admins) ---
