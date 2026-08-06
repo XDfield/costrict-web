@@ -1,7 +1,6 @@
-// Package tenantconfig is the per-tenant YAML configuration store service
-// (Phase C3.2).
+// Package tenantconfig is the per-tenant YAML configuration store service.
 //
-// Wraps the tenant_configs table introduced in Phase A2. Two operations only:
+// Wraps the tenant_configs table. Two operations only:
 //
 //	Get(ctx, tenantID) → reads the row (returns a synthetic default row when
 //	    the tenant has no entry yet — every tenant has an implicit "{}" config).
@@ -195,11 +194,11 @@ func (s *Service) Update(ctx context.Context, p UpdateParams) (*models.TenantCon
 	return &out, nil
 }
 
-// GetProviderMapping returns the typed provider_mapping subsection
-// (Phase C3.3). Reads the raw blob via Get (synthetic default on missing
-// row), then parses out provider_mapping. Returns an empty mapping
-// (Providers == {}) when the section is absent — every tenant implicitly
-// has an empty mapping.
+// GetProviderMapping returns the typed provider_mapping subsection.
+// Reads the raw blob via Get (synthetic default on missing row), then
+// parses out provider_mapping. Returns an empty mapping (Providers == {})
+// when the section is absent — every tenant implicitly has an empty
+// mapping.
 func (s *Service) GetProviderMapping(ctx context.Context, tenantID string) (*ProviderMapping, error) {
 	if tenantID == "" {
 		return nil, ErrEmptyTenantID

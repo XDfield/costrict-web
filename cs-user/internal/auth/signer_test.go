@@ -249,7 +249,7 @@ func TestSignJWT_NilSigner(t *testing.T) {
 
 // TestJWKS_Shape verifies the JWKS JSON shape matches what
 // server/internal/middleware/jwks.go expects (kty/use/kid/alg/n/e fields,
-// base64url-no-pad encoding, single key in Phase A).
+// base64url-no-pad encoding, single key).
 func TestJWKS_Shape(t *testing.T) {
 	pk := newTestRSAKey(t, 2048)
 	s, err := NewSignerFromPEM(encodePKCS8PEM(t, pk))

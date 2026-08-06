@@ -153,7 +153,7 @@ type TenantConfig struct {
 
 // JWTConfig holds the RS256 signing-key path + the A7 issuance parameters.
 //
-// SigningKeyPath is OPTIONAL at startup (Phase A3): when empty, the JWKS
+// SigningKeyPath is OPTIONAL at startup: when empty, the JWKS
 // endpoint returns 503 (signing not configured) and SignJWT is never called
 // by any wired path. A7 reissue-token endpoint returns 503 if the signer is
 // missing.

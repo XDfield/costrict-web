@@ -1,4 +1,4 @@
-// Package middleware — tenant resolver (Phase B3b.1).
+// Package middleware — tenant resolver.
 //
 // ResolveTenant runs early in the gin chain and pins the request to a single
 // *models.Tenant via the §5 three-layer fallback. The resolved tenant is
@@ -50,7 +50,7 @@ const (
 	TenantSlugCookie = "cs_tenant_slug"
 
 	// DefaultTenantSlug is the slug of the always-present fallback tenant
-	// (bootstrapped by Phase A6 migration).
+	// (bootstrapped by the tenants migration).
 	DefaultTenantSlug = "default"
 )
 

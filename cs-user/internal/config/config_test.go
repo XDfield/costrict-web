@@ -165,7 +165,7 @@ func TestPostgresDSN(t *testing.T) {
 	}
 }
 
-// --- Phase A7: JWT config ---
+// --- JWT config ---
 
 // TestLoad_JWTDefaults verifies the safe defaults applied when no JWT env
 // vars are set. A fresh deployment shouldn't need extra config to issue
@@ -416,7 +416,7 @@ func TestLoad_CasdoorJWKS_BothEmptyDisablesVerifier(t *testing.T) {
 	}
 }
 
-// --- Phase B3b.1: tenant apex-domain config ---
+// --- tenant apex-domain config ---
 
 // TestLoad_ApexDomainsDefault verifies that with no env var set, the apex
 // list is empty — disabling subdomain resolution (the local-dev default).

@@ -301,8 +301,8 @@ func TestApplyEnterpriseMapping_ReconcileRealignsOrphanSubjectID(t *testing.T) {
 }
 
 // TestApplyEnterpriseMapping_DefaultTenantID verifies that an empty
-// TenantID falls back to "default" rather than erroring. Phase A callers
-// don't need to know the tenant routing.
+// TenantID falls back to "default" rather than erroring. Callers without
+// a resolved tenant fall through to the bootstrap row.
 func TestApplyEnterpriseMapping_DefaultTenantID(t *testing.T) {
 	t.Parallel()
 	svc := newEmploymentMappingService(t)
@@ -367,12 +367,12 @@ func TestApplyEnterpriseMapping_ValidationErrors(t *testing.T) {
 }
 
 // TestApplyEnterpriseMapping_PerProviderConfigIgnored verifies yaml.v3's
-// default tolerance for unmapped fields. Phase A reads only `enabled`;
-// the canonical per-provider config shape (provider_mapping.providers.<name>
+// default tolerance for unmapped fields. The current reader consumes only
+// `enabled`; the canonical per-provider config shape (provider_mapping.providers.<name>
 // in MULTI_TENANCY §9.3) is being finalized and will be modeled in the
 // follow-up PR that introduces real provider clients. This test pins the
 // tolerance contract so follow-ups can swap the YAML freely without
-// breaking Phase A's parse path.
+// breaking the current parse path.
 func TestApplyEnterpriseMapping_PerProviderConfigIgnored(t *testing.T) {
 	t.Parallel()
 	svc := newEmploymentMappingService(t)

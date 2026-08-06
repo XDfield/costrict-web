@@ -43,30 +43,32 @@ type Deps struct {
 	// needs. Typically the same *user.Service as Users; declared separately
 	// to keep the auth handler's dependency surface explicit + minimal.
 	EmploymentReader handlers.EmploymentReader
-	// PermissionReader is the Phase C1 read-side subset the reissue-token
+	// PermissionReader is the read-side subset the reissue-token
 	// flow uses to populate platform_admin / tenant_roles JWT claims. When
-	// nil, the issued token omits the permission claims (灰度 rollout).
+	// nil, the issued token omits the permission claims (deployments that
+	// haven't wired the permission surface yet).
 	PermissionReader handlers.PermissionReader
-	// Signer is the JWT signing primitive (Phase A3). Optional — when nil,
-	// /.well-known/jwks returns 503 and no path issues tokens. A7 (OAuth
-	// callback takeover) will require it.
+	// Signer is the JWT signing primitive. Optional — when nil,
+	// /.well-known/jwks returns 503 and no path issues tokens. The OAuth
+	// callback takeover requires it.
 	Signer *auth.Signer
-	// TenantResolver is the §5 three-layer resolver (Phase B3b). When nil,
+	// TenantResolver is the §5 three-layer resolver. When nil,
 	// ResolveTenant middleware is not mounted and handlers see no tenant in
-	// the request context (Phase A still works in implicit-default mode).
+	// the request context (implicit-default mode still works via the
+	// bootstrap "default" tenant row).
 	// Also drives the /api/internal/tenants/resolve-by-email RPC endpoint
-	// (B3b.2b-step2) — when nil, that endpoint returns 503.
+	// — when nil, that endpoint returns 503.
 	TenantResolver *tenant.Resolver
-	// TenantAdmin is the write/lifecycle surface for the tenants table
-	// (Phase C2). Drives /api/internal/platform/tenants* (7 endpoints:
+	// TenantAdmin is the write/lifecycle surface for the tenants table.
+	// Drives /api/internal/platform/tenants* (7 endpoints:
 	// list / get / create / patch / suspend / restore / delete). When nil,
 	// those endpoints return 503 so the swagger spec stays consistent.
 	TenantAdmin *tenant.Admin
-	// TenantConfig is the per-tenant YAML config CRUD surface (Phase C3.2).
+	// TenantConfig is the per-tenant YAML config CRUD surface.
 	// Drives /api/internal/tenant/config (GET + PUT). When nil, those
 	// endpoints return 503 so the swagger spec stays consistent.
 	TenantConfig *tenantconfig.Service
-	// AuditLog is the Phase C4.1 best-effort writer. When nil, the
+	// AuditLog is the best-effort audit-log writer. When nil, the
 	// platform-tenant / tenant-config / provider-mapping handlers skip the
 	// post-success audit-log write (recordAudit is nil-safe). Tests that
 	// need to assert on audit rows inject a real *auditlog.Service bound to
@@ -104,9 +106,9 @@ func NewRouter(cfg *config.Config, deps Deps) *gin.Engine {
 	r.Use(gin.Recovery())
 
 	// Tenant resolver runs before any route group so handlers can pull the
-	// resolved tenant via middleware.TenantFromGin (B3b.1). When no resolver
-	// is wired, the middleware is a no-op and Phase A behavior is unchanged
-	// (implicit default tenant).
+	// resolved tenant via middleware.TenantFromGin. When no resolver
+	// is wired, the middleware is a no-op and the implicit default tenant
+	// is in effect (single-tenant deployments).
 	if deps.TenantResolver != nil {
 		r.Use(middleware.ResolveTenant(deps.TenantResolver, cfg.Tenant.ApexDomains))
 	}
@@ -192,7 +194,7 @@ func registerUserRoutes(rg *gin.RouterGroup, deps Deps) {
 	// after status for audit; 409 on self-lock, 404 on unknown subject_id.
 	users.POST("/:subject_id/status", usersAPI.SetUserStatus)
 
-	// Phase A4b: enterprise-mapping refresh hook fired by the server's OAuth
+	// Enterprise-mapping refresh hook fired by the server's OAuth
 	// callback after GetOrCreateUser. Lives outside the :subject_id path
 	// subtree so it doesn't collide with the routes above.
 	users.POST("/apply-enterprise-mapping", usersAPI.ApplyEnterpriseMapping)
@@ -233,7 +235,7 @@ func registerAuthIdentityRoutes(rg *gin.RouterGroup, deps Deps) {
 
 // registerAuthRoutes wires POST /users/reissue-token. Mounted inside the
 // /users subtree to match the other users-group endpoints but lives on the
-// AuthAPI handler because it spans user-data + signer orchestration (Phase A7).
+// AuthAPI handler because it spans user-data + signer orchestration.
 // When deps.EmploymentReader is nil (unit tests), an unavailableAuthReader
 // stub returns 503 so the path exists in the swagger spec without requiring
 // a real service.
@@ -263,9 +265,15 @@ func registerAuthRoutes(rg *gin.RouterGroup, cfg *config.Config, deps Deps) {
 	// applies. Order matters: try cs-user signature first, fall back to
 	// Casdoor JWKS — gateway gets one round-trip covering both formats.
 	rg.POST("/auth/verify", authAPI.VerifyToken)
+	// server's bind-identity-callback no longer unverified
+	// -parses the Casdoor JWT — it forwards the raw token here and reads
+	// the verified profile + computed external_key off the response. Same
+	// /auth/* mount point as verify (token-validity boundary, not user
+	// data). X-Internal-Token gating applies via the parent group.
+	rg.POST("/auth/parse-identity", authAPI.ParseIdentity)
 }
 
-// registerTenantRoutes wires POST /tenants/resolve-by-email (Phase B3b.2b-step2).
+// registerTenantRoutes wires POST /tenants/resolve-by-email.
 // When deps.TenantResolver is nil (unit tests), an unavailableTenantResolver
 // stub returns 503 so the path always exists in the swagger spec.
 func registerTenantRoutes(rg *gin.RouterGroup, deps Deps) {
@@ -277,7 +285,7 @@ func registerTenantRoutes(rg *gin.RouterGroup, deps Deps) {
 	rg.POST("/tenants/resolve-by-email", tenantsAPI.ResolveByEmail)
 }
 
-// registerPlatformTenantRoutes wires the 7 Phase C2 platform-admin tenant
+// registerPlatformTenantRoutes wires the 7 platform-admin tenant
 // CRUD endpoints (list / get / create / patch / suspend / restore / delete).
 // When deps.TenantAdmin is nil (unit tests), an
 // unavailablePlatformTenantService stub returns 503 so the paths always exist
@@ -449,6 +457,10 @@ func (unavailableAuthReader) GetUserByID(_ context.Context, _ string) (*models.U
 	return nil, errServiceUnavailable
 }
 
+func (unavailableAuthReader) GetOrCreateUser(_ context.Context, _ *models.JWTClaims) (*models.User, bool, error) {
+	return nil, false, errServiceUnavailable
+}
+
 // unavailableTenantResolver is the fallback when Deps.TenantResolver is nil —
 // keeps /tenants/resolve-by-email resolvable for swagger while refusing
 // traffic with 503 (production wires a real *tenant.Resolver via main.go).
@@ -462,7 +474,7 @@ func (unavailableTenantResolver) ListByEmailDomain(_ context.Context, _ string) 
 	return nil, errServiceUnavailable
 }
 
-// registerTenantConfigRoutes wires GET + PUT /tenant/config (Phase C3.2).
+// registerTenantConfigRoutes wires GET + PUT /tenant/config.
 // When deps.TenantConfig is nil (unit tests), an
 // unavailableTenantConfigService stub returns 503 so the paths always exist
 // in the swagger spec while refusing traffic.
@@ -489,8 +501,8 @@ func (unavailableTenantConfigService) Update(_ context.Context, _ tenantconfig.U
 	return nil, errServiceUnavailable
 }
 
-// registerTenantProviderMappingRoutes wires GET + PUT /tenant/provider-mapping
-// (Phase C3.3). Shares the same *tenantconfig.Service as the raw-blob route;
+// registerTenantProviderMappingRoutes wires GET + PUT /tenant/provider-mapping.
+// Shares the same *tenantconfig.Service as the raw-blob route;
 // declared separately because the typed surface is a distinct handler /
 // interface. When deps.TenantConfig is nil, an
 // unavailableTenantProviderMappingService stub returns 503 so the paths
@@ -548,8 +560,8 @@ func (unavailablePlatformTenantService) RequestDeletion(_ context.Context, _ str
 	return nil, errServiceUnavailable
 }
 
-// registerPlatformAuditLogRoutes wires GET /platform/audit-logs (Phase C4.3
-// — platform-admin, cross-tenant). When deps.AuditLog is nil (unit tests /
+// registerPlatformAuditLogRoutes wires GET /platform/audit-logs
+// (platform-admin, cross-tenant). When deps.AuditLog is nil (unit tests /
 // 503 fallback), an unavailableAuditLogService stub returns 503 so the path
 // always exists in the swagger spec while refusing traffic.
 func registerPlatformAuditLogRoutes(rg *gin.RouterGroup, deps Deps) {
@@ -561,8 +573,8 @@ func registerPlatformAuditLogRoutes(rg *gin.RouterGroup, deps Deps) {
 	rg.Group("/platform/audit-logs").GET("", api.List)
 }
 
-// registerTenantAuditLogRoutes wires GET /tenants/audit-logs (Phase C4.3
-// — tenant-scoped via middleware.ResolveTenant). When deps.AuditLog is nil,
+// registerTenantAuditLogRoutes wires GET /tenants/audit-logs
+// (tenant-scoped via middleware.ResolveTenant). When deps.AuditLog is nil,
 // the same unavailableAuditLogService stub returns 503.
 //
 // Note: tenant scope is established by middleware.ResolveTenant (installed

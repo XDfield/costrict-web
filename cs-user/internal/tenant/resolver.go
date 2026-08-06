@@ -1,4 +1,4 @@
-// Package tenant implements cs-user's tenant-resolution logic (Phase B3).
+// Package tenant implements cs-user's tenant-resolution logic.
 //
 // The Resolver exposes the three primitives behind the §5 three-layer
 // fallback documented in docs/identity-tenant/MULTI_TENANCY_DESIGN.md:
@@ -9,11 +9,10 @@
 //     ErrTenantNotFound / ErrAmbiguousTenant so the caller knows to fall
 //     through. The Resolver itself does not own UI.
 //
-// Scope of B3 first iteration: pure read-side logic + email_domains typed
-// reader (B1 left email_domains as an opaque TEXT-holding JSON string;
-// B3 is where that field gets a typed parser per the B1 known-limitations
-// note). HTTP middleware / cookie / session / Casdoor redirect wiring is
-// deferred to B3b.
+// Scope: pure read-side logic + a typed email_domains reader (the
+// underlying column is an opaque TEXT-holding JSON string; the typed parser
+// is layered on top). HTTP middleware / cookie / session / Casdoor redirect
+// wiring lives in internal/middleware.
 //
 // All queries filter status='active' — suspended / deleted tenants never
 // resolve, matching §5.1 "WHERE slug = 'acme' AND status = 'active'".
@@ -223,8 +222,8 @@ func ParseEmailDomains(t *models.Tenant) []string {
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
 		return nil
 	}
-	// Lowercase + trim each entry defensively; tenants CRUD (Phase C) will
-	// normalize at write time but readers stay defensive.
+	// Lowercase + trim each entry defensively; the tenants CRUD normalizes
+	// at write time but readers stay defensive.
 	for i, d := range out {
 		out[i] = normalizeEmailDomain(d)
 	}

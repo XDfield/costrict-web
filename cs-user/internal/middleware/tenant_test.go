@@ -132,7 +132,7 @@ func TestResolveTenant_BogusHeaderFallsThroughToDefault(t *testing.T) {
 
 func TestResolveTenant_NilResolverNoOps(t *testing.T) {
 	// When no resolver wired, middleware must not crash and must leave the
-	// tenant unset (Phase A backwards-compat).
+	// tenant unset (backwards-compat with no-resolver deployments).
 	r := newTenantEngine(t, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()

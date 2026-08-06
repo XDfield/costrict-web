@@ -16,7 +16,7 @@ const (
 	TenantRoleBilling = "billing" // billing-only (read quota, manage plan)
 )
 
-// TenantAdmin records one user's role grant on one tenant (Phase B1).
+// TenantAdmin records one user's role grant on one tenant.
 // Composite primary key (tenant_id, user_id) enforces "one active grant per
 // user per tenant" — the same user can still hold grants in MULTIPLE tenants
 // (multi-tenant membership).

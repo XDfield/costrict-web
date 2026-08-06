@@ -1,7 +1,7 @@
-// Tenant-admin provider_mapping typed-edit endpoints (Phase C3.3).
+// Tenant-admin provider_mapping typed-edit endpoints.
 //
 // /api/internal/tenant/provider-mapping is the typed counterpart to
-// /api/internal/tenant/config (C3.2 raw blob CRUD). Same tenant-scoped
+// /api/internal/tenant/config (raw blob CRUD). Same tenant-scoped
 // shape: ResolveTenant middleware pins the caller via X-Tenant-Id;
 // X-Actor-Subject-Id forwards the JWT subject_id for the audit trail.
 //
@@ -15,7 +15,7 @@
 // are preserved verbatim. See service.UpdateProviderMapping + the
 // mergeProviderMappingSection helper.
 //
-// Error mapping (extends C3.2's set):
+// Error mapping (extends the raw blob CRUD set):
 //
 //	tenant unresolved              → 400 "tenant resolution required"
 //	ErrInvalidYAML                → 400 "invalid YAML"
@@ -43,10 +43,10 @@ import (
 // wires *tenantconfig.Service (which satisfies both TenantConfigService
 // and TenantProviderMappingService).
 //
-// Audit (Phase C4.1) is optional — nil skips the post-success audit-log
+// Audit is optional — nil skips the post-success audit-log
 // write. When set, UpdateProviderMapping writes a provider_mapping.update
 // row to user_center_audit_log. Payload captures provider count + names
-// (post-state; diff deferred per C4.1 known limitations).
+// (post-state; diff is a known limitation).
 type TenantProviderMappingAPI struct {
 	Svc   TenantProviderMappingService
 	Audit *auditlog.Service

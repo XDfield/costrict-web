@@ -1,10 +1,10 @@
-// Platform-admin tenant CRUD endpoints (Phase C2).
+// Platform-admin tenant CRUD endpoints.
 //
 // /api/internal/platform/tenants* exposes the full tenant lifecycle to the
 // costrict-web server (which re-exposes them under /api/platform/tenants*
-// behind the C1 RequirePlatformAdmin middleware). cs-user owns the tenants
+// behind the RequirePlatformAdmin middleware). cs-user owns the tenants
 // table (ADR D1); this is the write surface that complements the read-side
-// Resolver / handlers.TenantsAPI shipped in Phase B.
+// Resolver / handlers.TenantsAPI.
 //
 // 7 endpoints — list / get / create / patch / suspend / restore / delete.
 // State-machine transitions return 409 (ErrInvalidStateTransition); slug /
@@ -33,10 +33,10 @@ import (
 // PlatformTenantsAPI wraps a tenant.Admin. The dependency is an interface so
 // unit tests can substitute a fake; production wires *tenant.Admin.
 //
-// Audit (Phase C4.1) is optional — nil skips the post-success audit-log write
+// Audit is optional — nil skips the post-success audit-log write
 // (test path / 503 fallback). When set, the four write/lifecycle handlers
 // (Create / Suspend / Restore / DeleteTenant) call Audit.Record after the
-// service returns. UpdateTenant is intentionally not audited in C4.1 (low
+// service returns. UpdateTenant is intentionally not audited (low
 // compliance value; see progress doc).
 type PlatformTenantsAPI struct {
 	Svc   PlatformTenantService

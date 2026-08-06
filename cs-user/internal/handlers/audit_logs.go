@@ -1,4 +1,4 @@
-// Phase C4.3 — audit-log list endpoints.
+// audit-log list endpoints.
 //
 // Two endpoints sit on top of auditlog.Service.List (step 1 of this slice):
 //
@@ -113,7 +113,7 @@ func respondAuditLogErr(c *gin.Context, err error) {
 // PlatformAuditLogsAPI exposes the cross-tenant audit-log list to the
 // costrict-web server (which re-exposes it at /api/platform/audit-logs
 // behind RequirePlatformAdmin). cs-user owns user_center_audit_log (ADR D1);
-// this is the read surface that complements the C4.1 writer instrumented
+// this is the read surface that complements the writer instrumented
 // into PlatformTenantsAPI / UsersAPI / TenantConfigAPI / etc.
 type PlatformAuditLogsAPI struct {
 	Svc AuditLogListService

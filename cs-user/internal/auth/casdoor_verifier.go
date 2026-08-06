@@ -11,7 +11,7 @@
 //   - Unknown `kid` triggers a single synchronous refresh per request. If
 //     refresh still doesn't yield the kid, verification fails (rotation
 //     race beyond the TTL window is the operator's responsibility).
-//   - Only RS256 accepted. Matches cs-user's own signer (Phase A scope).
+//   - Only RS256 accepted. Matches cs-user's own signer.
 
 package auth
 
@@ -117,8 +117,8 @@ func (v *CasdoorVerifier) Verify(ctx context.Context, rawJWT string) (*models.JW
 	// "in the future" by a slightly-ahead Casdoor must not be rejected.
 	mapClaims := jwt.MapClaims{}
 	_, err := jwt.ParseWithClaims(rawJWT, mapClaims, func(t *jwt.Token) (interface{}, error) {
-		// Pin RS256 — Phase A scope deliberately rejects other algs to
-		// keep the audit surface small. An attacker advertising HS256
+		// Pin RS256 — deliberately rejects other algs to keep the audit
+		// surface small. An attacker advertising HS256
 		// with the public key as HMAC secret would otherwise bypass.
 		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
 			return nil, fmt.Errorf("%w: unexpected alg %v", ErrCasdoorJWTInvalid, t.Header["alg"])
