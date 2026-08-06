@@ -7,10 +7,10 @@
 //     picture / owner / provider / provider_user_id / phone. These overlap
 //     1:1 with Casdoor's token shape, so a relying party switching from
 //     Casdoor tokens to cs-user tokens sees no diff.
-//  3. Enterprise context (Phase A5 — populated from employment_identities):
+//  3. Enterprise context (populated from employment_identities):
 //     employee_number / job_title / job_level / employment_type /
-//     cost_center / org_path / work_location. Plus tenant_id, reserved for
-//     Phase B (single-tenant now).
+//     cost_center / org_path / work_location. Plus tenant_id (single-tenant
+//     for now).
 //
 // Wire compatibility: server's existing JWTClaims parser
 // (server/internal/user/service.go) already handles group 2 — group 3 fields
@@ -60,7 +60,7 @@ type EnterpriseClaims struct {
 	ProviderUserID    string `json:"provider_user_id,omitempty"`
 	Phone             string `json:"phone,omitempty"`
 
-	// --- Enterprise context (Phase A5 — from employment_identities) ---
+	// --- Enterprise context (from employment_identities) ---
 	// EnterpriseUID is the user's stable identifier at the enterprise IdP
 	// (e.g. idtrust id). DisplayName is the per-provider 姓名 (display name).
 	// Both are immutable from the user's perspective — every login
@@ -77,15 +77,15 @@ type EnterpriseClaims struct {
 	OrgPath        string `json:"org_path,omitempty"`
 	WorkLocation   string `json:"work_location,omitempty"`
 
-	// --- Tenant (Phase B populates; Phase A5 reserves) ---
+	// --- Tenant ---
 	TenantID string `json:"tenant_id,omitempty"`
-	// TenantSlug is the URL-friendly tenant key (Phase B). Server's auth
-	// middleware reads this claim to compare against the runtime-resolved
-	// slug (cookie / subdomain) for cross-tenant detection (B3b.2c). Empty
-	// for Casdoor-issued tokens (pre-cutover) — comparison must skip.
+	// TenantSlug is the URL-friendly tenant key. Server's auth middleware
+	// reads this claim to compare against the runtime-resolved slug (cookie
+	// / subdomain) for cross-tenant detection. Empty for Casdoor-issued
+	// tokens (pre-cutover) — comparison must skip.
 	TenantSlug string `json:"tenant_slug,omitempty"`
 
-	// --- Permission (Phase C1 — populated from tenant_admins + platform_admins) ---
+	// --- Permission (populated from tenant_admins + platform_admins) ---
 	// TenantRoles lists the user's active roles on their current tenant
 	// (TenantID). Sourced from tenant_admins rows WHERE revoked_at IS NULL.
 	// Empty for users who are not tenant admins (regular tenant members).
@@ -171,8 +171,8 @@ type IssuanceParams struct {
 	// token. Empty slice means "no aud claim" (some validators reject this;
 	// populate when in doubt).
 	Audience []string
-	// TTL is the time from issuance to expiry. Required (Phase A default
-	// is set by the caller, typically A7 — 1h is a sensible starting point).
+	// TTL is the time from issuance to expiry. Required; the caller picks
+	// a sensible value (1h is a reasonable starting point).
 	TTL time.Duration
 	// JTI is the unique token id. Optional; caller can generate via uuid.
 	JTI string
@@ -182,21 +182,21 @@ type IssuanceParams struct {
 	// Employment carries the enterprise snapshot. May be nil if the user
 	// has no employment_identities row — enterprise fields are then omitted.
 	Employment *models.EmploymentIdentity
-	// TenantID is reserved for Phase B multi-tenancy. Phase A callers
-	// should pass "default" or leave empty.
+	// TenantID is the canonical tenants.tenant_id PK. Pass "default" or
+	// leave empty when the caller has no tenant context.
 	TenantID string
-	// TenantSlug is the URL-friendly tenant key (Phase B). Server's
-	// TenantMatch middleware compares this against the runtime-resolved
-	// slug — empty means "leave the JWT claim unset" (e.g. Casdoor-token
-	// re-sign under pre-cutover conditions).
+	// TenantSlug is the URL-friendly tenant key. Server's TenantMatch
+	// middleware compares this against the runtime-resolved slug — empty
+	// means "leave the JWT claim unset" (e.g. Casdoor-token re-sign under
+	// pre-cutover conditions).
 	TenantSlug string
 	// TenantRoles lists the user's active roles on their current tenant
-	// (Phase C1 — sourced from tenant_admins WHERE revoked_at IS NULL).
-	// Empty / nil for users with no admin role on the tenant.
+	// (sourced from tenant_admins WHERE revoked_at IS NULL). Empty / nil
+	// for users with no admin role on the tenant.
 	TenantRoles []string
 	// PlatformAdmin + PlatformScope mark the user as a platform-level
-	// admin (Phase C1 — sourced from platform_admins). When PlatformAdmin
-	// is false, PlatformScope is ignored.
+	// admin (sourced from platform_admins). When PlatformAdmin is false,
+	// PlatformScope is ignored.
 	PlatformAdmin bool
 	PlatformScope string
 }

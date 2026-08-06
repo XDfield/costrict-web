@@ -24,7 +24,7 @@ import (
 // substitute without spinning a real Service).
 type UsersAPI struct {
 	Svc UserService
-	// Audit (Phase C4.1) is optional — nil skips the post-success audit
+	// Audit is optional — nil skips the post-success audit
 	// log write. Used by admin endpoints to record status transitions
 	// in user_center_audit_log.
 	Audit *auditlog.Service
@@ -35,7 +35,7 @@ type UsersAPI struct {
 // directly into its tests via a concrete type — keeps the substitution
 // seam explicit.
 type UserService interface {
-	// Reads (Phase 1) — B5: ctx carries the tenant signal used by
+	// Reads — ctx carries the tenant signal used by
 	// tenant.Scope for auto-filtering.
 	GetUserByID(ctx context.Context, subjectID string) (*models.User, error)
 	GetUsersByIDs(ctx context.Context, subjectIDs []string) (map[string]*models.User, error)
@@ -48,7 +48,7 @@ type UserService interface {
 	// employment_identities row. Powers the employment sub-object in the
 	// /search response. Missing users simply don't appear in the map.
 	GetEmploymentIdentitiesBySubjectIDs(ctx context.Context, subjectIDs []string) (map[string]*models.EmploymentIdentity, error)
-	// Writes (Phase 2) — RPCWriter on costrict-web server side calls these.
+	// Writes — RPCWriter on costrict-web server side calls these.
 	GetOrCreateUser(ctx context.Context, claims *models.JWTClaims) (*models.User, bool, error)
 	// ProvisionByEnterprise pre-creates a user keyed by an external enterprise
 	// identity (no Casdoor claim required). Powers POST /api/internal/users/provision.
@@ -56,12 +56,12 @@ type UserService interface {
 	BindIdentityToUser(ctx context.Context, userSubjectID string, claims *models.JWTClaims, opts ...models.BindIdentityOptions) error
 	TransferIdentityToUser(ctx context.Context, targetUserSubjectID, externalKey, sourceUserSubjectID string) error
 	UnbindIdentityByProvider(ctx context.Context, userSubjectID, provider string) error
-	// Phase A4b: enterprise mapping refresh — server's OAuth callback fires
+	// Enterprise mapping refresh — server's OAuth callback fires
 	// this after GetOrCreateUser. cs-user is authoritative for
 	// employment_identities (server has no such table); ApplyEnterpriseMapping
 	// is the single write path.
 	ApplyEnterpriseMapping(ctx context.Context, params user.EmploymentMappingParams) error
-	// R2 (REGISTRATION_PROFILE_DESIGN): first-time registration + profile
+	// First-time registration + profile
 	// self-edit. Backed by user.Service profile.go. Username uniqueness is
 	// tenant-scoped via tenant.Scope(ctx).
 	CompleteRegistration(ctx context.Context, subjectID, username, displayName string) (*models.User, error)
@@ -618,7 +618,7 @@ func isBindArgError(err error) bool {
 		msg == "external key is required"
 }
 
-// --- Phase A4b: Enterprise mapping ---
+// --- Enterprise mapping ---
 
 // applyEnterpriseMappingRequest is the body for POST
 // /api/internal/users/apply-enterprise-mapping. TenantID is optional (the
@@ -748,7 +748,7 @@ type updateProfileRequest struct {
 // UpdateProfile godoc
 //
 //	@Summary		Update user profile (display_name self-edit or admin override)
-//	@Description	User self-edit accepts display_name only. Admin override (R5) may additionally set username. username validation + tenant-scoped uniqueness enforced.
+//	@Description	User self-edit accepts display_name only. Admin override may additionally set username. username validation + tenant-scoped uniqueness enforced.
 //	@Tags			users
 //	@Accept			json
 //	@Produce		json

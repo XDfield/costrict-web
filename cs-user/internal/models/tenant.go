@@ -4,9 +4,9 @@ import (
 	"time"
 )
 
-// Tenant is the canonical tenant entity (Phase B1). One row per tenant.
-// Paired with TenantConfig (per-tenant YAML, A2) and TenantAdmin (user ×
-// tenant membership, B1).
+// Tenant is the canonical tenant entity. One row per tenant.
+// Paired with TenantConfig (per-tenant YAML) and TenantAdmin (user ×
+// tenant membership).
 //
 // Schema decisions (see migration 20260717100000_create_tenants_and_tenant_admins.sql):
 //
@@ -14,13 +14,13 @@ import (
 //     and users.id conventions — cs-user is not yet locked to UUID column types.
 //   - email_domains / features / limits / settings are TEXT columns holding JSON
 //     text (not JSONB / TEXT[]), matching the EmploymentIdentity.Attributes
-//     pattern. App-layer marshaling; B2/B3 introduce typed readers.
+//     pattern. App-layer marshaling; typed readers sit on top.
 //   - timestamps use TIMESTAMPTZ (RFC 3339 best practice; diverges from the
 //     legacy users table which uses TIMESTAMPTZ-less TIMESTAMP).
 //
 // The default tenant (tenant_id="default", slug="default") is bootstrapped by
-// the migration. Phase B code runs in default-tenant context until B5
-// activates dynamic tenant routing.
+// the migration. Code runs in default-tenant context until dynamic tenant
+// routing resolves a different tenant.
 type Tenant struct {
 	TenantID            string     `gorm:"primaryKey;type:text" json:"tenant_id"`
 	Slug                string     `gorm:"size:32;not null;uniqueIndex:uq_tenants_slug" json:"slug"`

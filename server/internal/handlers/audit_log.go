@@ -1,9 +1,9 @@
-// Audit-log list handlers (Phase C4.3 step 5).
+// Audit-log list handlers.
 //
 // 2 thin handlers at /api/platform/audit-logs + /api/tenant/audit-logs that
-// proxy to cs-user via RPCClient (the C4.3 step 4 client). The platform
-// route is gated by middleware.RequirePlatformAdmin; the tenant route by
-// middleware.RequireTenantAdmin. cs-user remains the sole owner of
+// proxy to cs-user via RPCClient (the audit-log list RPC client). The
+// platform route is gated by middleware.RequirePlatformAdmin; the tenant
+// route by middleware.RequireTenantAdmin. cs-user remains the sole owner of
 // user_center_audit_log (ADR D1).
 //
 // Error mapping (translates RPCClient sentinels → HTTP):

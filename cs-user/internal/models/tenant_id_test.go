@@ -46,8 +46,8 @@ func newTenantScopedDB(t *testing.T) *gorm.DB {
 // TestUser_TenantIDDefaultsToDefault verifies that a User created without an
 // explicit TenantID picks up the column default 'default' from the GORM tag
 // (which mirrors the migration's NOT NULL DEFAULT 'default'). This is the
-// backfill path for Phase B2 — all existing single-tenant rows land in the
-// 'default' tenant without code changes.
+// backfill path — all existing single-tenant rows land in the 'default'
+// tenant without code changes.
 func TestUser_TenantIDDefaultsToDefault(t *testing.T) {
 	t.Parallel()
 	db := newTenantScopedDB(t)

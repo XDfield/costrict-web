@@ -17,7 +17,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/models"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 func signHandlersTestJWT(t *testing.T, claims jwt.MapClaims) string {
@@ -285,6 +285,11 @@ func TestBindCallbackRejectsProviderMismatch(t *testing.T) {
 	defer setupTestDB(t)()
 	defer InitUserModule(nil)
 	InitUserModule(userpkg.New(database.DB))
+	// Phase 4: production ParseIdentity routes through cs-user RPC, which
+	// returns ErrSelfSignUnavailable under local mode. Swap in the test
+	// stub so the bind flow reads claims off the test-signed JWT without
+	// a real cs-user round-trip.
+	UserModule.Writer = &jwtParsingStubWriter{UserService: UserModule.Service}
 	bindStateSecret = "test-secret"
 	currentToken := signHandlersTestJWT(t, jwt.MapClaims{"id": "current-id", "sub": "current-sub", "universal_id": "current-uuid", "name": "acct_alpha", "provider": "phone", "phone_number": "15500000001"})
 	currentUser, _, err := UserModule.Service.GetOrCreateUser(context.Background(), &userpkg.JWTClaims{ID: "current-id", Sub: "current-sub", UniversalID: "current-uuid", Name: "acct_alpha", PreferredUsername: "Account Alpha", Provider: "phone", Phone: "15500000001"})
@@ -336,6 +341,7 @@ func TestBindCallbackSuccess(t *testing.T) {
 	defer setupTestDB(t)()
 	defer InitUserModule(nil)
 	InitUserModule(userpkg.New(database.DB))
+	UserModule.Writer = &jwtParsingStubWriter{UserService: UserModule.Service}
 	bindStateSecret = "test-secret"
 	defer func() {
 		exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {
@@ -395,6 +401,7 @@ func TestBindCallbackRejectsIdentityAlreadyBound(t *testing.T) {
 	defer setupTestDB(t)()
 	defer InitUserModule(nil)
 	InitUserModule(userpkg.New(database.DB))
+	UserModule.Writer = &jwtParsingStubWriter{UserService: UserModule.Service}
 	bindStateSecret = "test-secret"
 	defer func() {
 		exchangeCodeForTokenFunc = func(code, callbackURL string) (*casdoor.CasdoorTokenResponse, error) {

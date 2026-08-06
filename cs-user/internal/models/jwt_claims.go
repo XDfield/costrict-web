@@ -1,10 +1,25 @@
 package models
 
-// JWTClaims represents the parsed JWT payload from Casdoor, transmitted over
-// the internal RPC surface. cs-user does NOT verify the JWT signature — it
-// trusts the X-Internal-Token header on the request. Verification stays in
-// server. Field set mirrors server/internal/user/service.go JWTClaims 1:1 so
-// the wire format is identical regardless of which side serializes.
+// JWTClaims is cs-user's internal representation of a parsed + verified
+// Casdoor JWT payload. cs-user IS the identity-trust boundary:
+// CasdoorVerifier.Verify / Signer.VerifyJWT produce this type, and the
+// issuance + employment-mapping pipelines consume it. Server no longer parses
+// JWT payload itself, so this type is NOT a wire-type mirror of server's
+// user.JWTClaims — both types just happen to share a JSON shape because they
+// describe the same Casdoor claim set. Per JWT_VERIFY_CLEANUP_PLAN Q4 the
+// symmetric decision applies: server's user.JWTClaims stays as server's
+// internal context representation; cs-user's models.JWTClaims stays as cs-user's
+// internal claims representation.
+//
+// Wire-type role on cs-user side (post-cleanup):
+//   - New identity-authority RPCs (ReissueToken, ParseIdentity) take raw
+//     `casdoor_jwt` strings and produce this type internally via CasdoorVerifier.
+//   - Legacy upsert / bind / suggest RPCs (GetOrCreate, BindIdentity,
+//     SuggestProfile) still accept a claims-shape JSON body — these RPCs
+//     receive identity data the server already holds (from ParseIdentity's
+//     response Profile, or from /api/userinfo), not a raw JWT to forward.
+//     Migrating them to casdoor_jwt input is plan §2's terminal vision but is
+//     out of Phase 6.1 scope.
 //
 // Field names use JSON snake_case (matching Casdoor's token format) via the
 // json tags; Go identifiers stay PascalCase per convention.

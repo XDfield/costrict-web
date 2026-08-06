@@ -441,7 +441,7 @@ func main() {
 	r.Use(middleware.Logger())
 	r.Use(middleware.Recovery())
 	r.Use(middleware.ErrorLogger())
-	// Phase B3b.2a: extract tenant slug (X-Tenant-Id / cs_tenant_slug cookie /
+	// Extract tenant slug (X-Tenant-Id / cs_tenant_slug cookie /
 	// Host subdomain) and stash in request ctx so RPC client forwards it to
 	// cs-user. Runs before OptionalAuth so even unauthenticated routes (JWKS,
 	// health, swagger) resolve a slug if the cookie/subdomain is present.
@@ -455,16 +455,16 @@ func main() {
 
 	r.Use(middleware.OptionalAuth())
 
-	// Phase B3b.2c: cross-tenant mismatch detection. Compares the
-	// tenant_slug claim embedded in cs-user-signed JWTs (Phase A7) against
-	// the runtime-resolved slug (ResolveTenantSlug above). When both
+	// Cross-tenant mismatch detection. Compares the tenant_slug claim
+	// embedded in cs-user-signed JWTs against the runtime-resolved slug
+	// (ResolveTenantSlug above). When both
 	// populated and divergent → 401 + cookie clear. No-op for Casdoor-issued
 	// tokens (no tenant_slug claim) or any request missing either signal.
 	// Must run after OptionalAuth (populates AuthClaims) and after
 	// ResolveTenantSlug (populates ctx slug).
 	r.Use(middleware.TenantMatch())
 
-	// Phase B4: hydrate tenant_id from JWT into request ctx so B5's
+	// Hydrate tenant_id from JWT into request ctx so B5's
 	// tenantScope(ctx) helper can scope queries without re-parsing the JWT.
 	// Falls back to tenant.DefaultTenantID when no token is supplied or the
 	// token predates cs-user self-sign (Casdoor-only). Runs after
@@ -551,8 +551,8 @@ func main() {
 		api.GET("/plugins/:slug/download", handlers.DownloadPluginZip)
 		api.GET("/marketplace/:repo/marketplace.json", handlers.MarketplaceJSON)
 
-		// Phase B3b.2b-step2c: tenant picker suggestion endpoint. Public read
-		// (OptionalAuth) so the pre-login picker page can call it after the
+		// Tenant picker suggestion endpoint. Public read (OptionalAuth) so
+		// the pre-login picker page can call it after the
 		// OAuth callback redirects with an ambiguous state. Wrapper over cs-user
 		// ResolveTenantByEmail; returns 503 in local backend mode (no tenant
 		// data on this side per ADR D1).
@@ -616,9 +616,9 @@ func main() {
 			authed.POST("/auth/bind/cancel-merge", handlers.CancelMergeIdentity)
 			authed.POST("/auth/identities/:provider/unbind", handlers.UnbindIdentity)
 
-			// R2 (REGISTRATION_PROFILE_DESIGN): user-side registration +
-			// profile self-edit. Mounted under /api/users/me/* so the
-			// gate middleware (R3) can whitelist them cleanly.
+			// User-side registration + profile self-edit
+			// (REGISTRATION_PROFILE_DESIGN). Mounted under /api/users/me/* so
+			// the gate middleware can whitelist them cleanly.
 			usersMe := authed.Group("/users/me")
 			{
 				usersMe.GET("/username-available", handlers.UsernameAvailable)
@@ -712,8 +712,8 @@ func main() {
 				platformAdmin.DELETE("/tags/:id", handlers.DeleteTagHandler(tagSvc))
 			}
 
-			// Phase C2 — platform-admin tenant CRUD. First real wiring of the
-			// C1 middleware.RequirePlatformAdmin (JWT-claim-based; distinct
+			// Platform-admin tenant CRUD. Wired under
+			// middleware.RequirePlatformAdmin (JWT-claim-based; distinct
 			// from the legacy systemrole.RequirePlatformAdmin above, which
 			// stays on /tags). cs-user owns tenant data (ADR D1); RPCClient
 			// proxies. When UserModule.TenantResolver is nil (local backend
@@ -732,8 +732,8 @@ func main() {
 				platformTenants.POST("/:id/delete", platformTenantAPI.PlatformDeleteTenant)
 			}
 
-			// Phase C3.1 — tenant-admin user listing. First real wiring
-			// of middleware.RequireTenantAdmin (previously test-only).
+			// Tenant-admin user listing. Wired under
+			// middleware.RequireTenantAdmin.
 			// tenant_admin JWT carries tenant_id + tenant_roles[]; the
 			// handler derives X-Tenant-Id from AuthClaims.TenantSlug
 			// (fallback TenantID for legacy tokens) and the RPC client
@@ -745,7 +745,7 @@ func main() {
 			tenantUsers := authed.Group("/tenant/users")
 			tenantUsers.Use(middleware.RequireTenantAdmin("owner", "admin"))
 			tenantUsers.GET("", tenantUserAPI.ListTenantUsers)
-			// Phase C3.4 — tenant_admin user status management. Mirrors
+			// Tenant_admin user status management. Mirrors
 			// the platform_admin endpoint (PUT /admin/users/:id/status)
 			// but scoped to the caller's own tenant via the forwarded
 			// X-Tenant-Id header. cs-user enforces row-level scope via
@@ -753,7 +753,7 @@ func main() {
 			// a user in tenant Y surfaces as 404 (row invisible).
 			tenantUsers.PUT("/:id/status", tenantUserAPI.SetTenantUserStatus)
 
-			// Phase C3.2: tenant_admin config CRUD (GET + PUT raw YAML blob).
+			// Tenant_admin config CRUD (GET + PUT raw YAML blob).
 			tenantConfigAPI := &handlers.TenantConfigAPI{
 				Svc: buildTenantConfigService(userModule),
 			}
@@ -762,9 +762,9 @@ func main() {
 			tenantConfig.GET("", tenantConfigAPI.GetTenantConfig)
 			tenantConfig.PUT("", tenantConfigAPI.UpdateTenantConfig)
 
-			// Phase C3.3: tenant_admin typed provider_mapping editor
+			// Tenant_admin typed provider_mapping editor
 			// (GET + PUT typed JSON, PUT = full replace of the
-			// provider_mapping subtree). Shares the RPCClient with C3.2.
+			// provider_mapping subtree). Shares the RPCClient with the config surface.
 			providerMappingAPI := &handlers.TenantProviderMappingAPI{
 				Svc: buildProviderMappingService(userModule),
 			}
@@ -773,7 +773,7 @@ func main() {
 			providerMapping.GET("", providerMappingAPI.GetProviderMapping)
 			providerMapping.PUT("", providerMappingAPI.UpdateProviderMapping)
 
-			// Phase C4.3 — audit-log list endpoints. Two surfaces on the
+			// Audit-log list endpoints. Two surfaces on the
 			// same *RPCClient: platform-scope (cross-tenant, gated by
 			// RequirePlatformAdmin) and tenant-scope (this tenant only,
 			// gated by RequireTenantAdmin; cs-user forces tenant scope
@@ -1266,7 +1266,7 @@ func (p deptSyncDepartmentProvider) GetDepartmentPath(deptID string) (string, er
 }
 
 // buildPlatformTenantService returns the platform-admin tenant CRUD service
-// used by Phase C2 handlers. In rpc backend mode it's the same *RPCClient
+// used by the platform-tenant handlers. In rpc backend mode it's the same *RPCClient
 // that backs Module.TenantResolver (cs-user owns tenant data per ADR D1);
 // in local backend mode there is no tenant data on this side, so it
 // returns nil and handlers answer 502.
@@ -1280,8 +1280,8 @@ func buildPlatformTenantService(module *userpkg.Module) handlers.PlatformTenantS
 	return nil
 }
 
-// buildTenantUserService returns the tenant-admin user listing service
-// for Phase C3.1. Same *RPCClient as platform tenants — single transport
+// buildTenantUserService returns the tenant-admin user listing service.
+// Same *RPCClient as platform tenants — single transport
 // per server instance (Module.TenantResolver) handles every cs-user RPC.
 // nil in local backend mode; handlers return 502.
 func buildTenantUserService(module *userpkg.Module) handlers.TenantUserService {
@@ -1295,7 +1295,7 @@ func buildTenantUserService(module *userpkg.Module) handlers.TenantUserService {
 }
 
 // buildTenantConfigService wires the RPCClient for the tenant-config CRUD
-// surface (Phase C3.2). Same shape as buildTenantUserService — local
+// surface. Same shape as buildTenantUserService — local
 // backend mode returns nil so handlers cleanly 502.
 func buildTenantConfigService(module *userpkg.Module) handlers.TenantConfigService {
 	if module == nil {
@@ -1308,8 +1308,8 @@ func buildTenantConfigService(module *userpkg.Module) handlers.TenantConfigServi
 }
 
 // buildProviderMappingService wires the RPCClient for the typed
-// provider_mapping editor (Phase C3.3). Shares the same RPC client as
-// C3.2 — both surfaces are methods on *userpkg.RPCClient.
+// provider_mapping editor. Shares the same RPC client as the config
+// surface — both surfaces are methods on *userpkg.RPCClient.
 func buildProviderMappingService(module *userpkg.Module) handlers.TenantProviderMappingService {
 	if module == nil {
 		return nil
@@ -1321,7 +1321,7 @@ func buildProviderMappingService(module *userpkg.Module) handlers.TenantProvider
 }
 
 // buildPlatformAuditLogService wires the RPCClient for the platform-scope
-// audit-log list (Phase C4.3). Same single transport as every other cs-user
+// audit-log list. Same single transport as every other cs-user
 // RPC surface. nil in local backend mode; handler returns 502.
 func buildPlatformAuditLogService(module *userpkg.Module) handlers.PlatformAuditLogService {
 	if module == nil {
@@ -1334,7 +1334,7 @@ func buildPlatformAuditLogService(module *userpkg.Module) handlers.PlatformAudit
 }
 
 // buildTenantAuditLogService wires the RPCClient for the tenant-scope
-// audit-log list (Phase C4.3). Same *RPCClient; the platform vs tenant
+// audit-log list. Same *RPCClient; the platform vs tenant
 // distinction is encoded in which method the handler calls
 // (ListAuditLogs vs ListAuditLogsForTenant).
 func buildTenantAuditLogService(module *userpkg.Module) handlers.TenantAuditLogService {

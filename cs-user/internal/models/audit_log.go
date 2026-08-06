@@ -59,14 +59,14 @@ const (
 	TargetTypeTenant          = "tenant"
 	TargetTypeTenantConfig    = "tenant_config"
 	TargetTypeProviderMapping = "provider_mapping"
-	// TargetTypeUserGiteaBinding — Phase E3a.1 user_gitea_binding row.
+	// TargetTypeUserGiteaBinding — user_gitea_binding row.
 	TargetTypeUserGiteaBinding = "user_gitea_binding"
 	// TargetTypeUser — users row targeted by an admin operation (status
 	// change, role grant, etc.). Target_id is the user's subject_id.
 	TargetTypeUser = "user"
 )
 
-// AuditLog records one admin write operation (Phase C4.1).
+// AuditLog records one admin write operation.
 //
 // Lifecycle: append-only. The service layer must never issue UPDATE or DELETE
 // against this table; only INSERT. Retention / TTL is a separate ops concern

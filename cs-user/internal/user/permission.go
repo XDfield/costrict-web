@@ -1,5 +1,5 @@
 // Package user — permission.go provides role-lookup primitives backing the
-// Phase C1 JWT permission claims. Two surfaces:
+// JWT permission claims. Two surfaces:
 //
 //   - GetPlatformAdmin — single-row lookup by user_id; (nil, nil) means the
 //     user is not a platform admin (graceful degradation, mirrors

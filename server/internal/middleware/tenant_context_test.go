@@ -37,7 +37,7 @@ func TestTenantContext_JWTTenantIDWins(t *testing.T) {
 }
 
 func TestTenantContext_EmptyClaimsFallsBackToDefault(t *testing.T) {
-	// Casdoor-issued pre-cutover token: AuthClaims exists but TenantID is "".
+	// Token issued without a tenant_id claim: AuthClaims exists but TenantID is "".
 	r := newTenantContextEngine(AuthClaims{Sub: "u1"}, true)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	w := httptest.NewRecorder()

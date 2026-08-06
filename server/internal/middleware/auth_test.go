@@ -246,7 +246,7 @@ func TestExtractToken_NonBearerAuthHeaderUseCookie(t *testing.T) {
 // 3. introspectToken (cs-user verify contract)
 // ===========================================================================
 
-// TestParseToken_ValidTokenMapsFields pins the response→CasdoorUserInfo field
+// TestParseToken_ValidTokenMapsFields pins the response→VerifiedUserInfo field
 // mapping: the contract between cs-user's verifyTokenResponse JSON and the
 // middleware. Silent drift in either direction fails this test.
 func TestParseToken_ValidTokenMapsFields(t *testing.T) {
@@ -268,7 +268,7 @@ func TestParseToken_ValidTokenMapsFields(t *testing.T) {
 	})
 	installVerifier(t, stub.server.URL)
 
-	info, err := ParseToken("valid-token-A")
+	info, err := ParseToken("valid.token.A")
 	if err != nil {
 		t.Fatalf("ParseToken: %v", err)
 	}
@@ -302,9 +302,9 @@ func TestParseToken_ValidTokenMapsFields(t *testing.T) {
 	if info.Issuer != "cs-user" {
 		t.Errorf("Issuer = %q, want cs-user", info.Issuer)
 	}
-	// Phase C1 fields stay zero — server no longer trusts local JWT claims.
+	// Platform-admin fields stay zero — server no longer trusts local JWT claims.
 	if info.PlatformAdmin || info.PlatformScope != "" || info.TenantRoles != nil {
-		t.Errorf("Phase C1 fields must be zero, got admin=%v scope=%q roles=%v", info.PlatformAdmin, info.PlatformScope, info.TenantRoles)
+		t.Errorf("platform-admin fields must be zero, got admin=%v scope=%q roles=%v", info.PlatformAdmin, info.PlatformScope, info.TenantRoles)
 	}
 }
 
@@ -330,7 +330,7 @@ func TestParseToken_RejectedByCSUser(t *testing.T) {
 	})
 	installVerifier(t, stub.server.URL)
 
-	_, err := ParseToken("rejected-token")
+	_, err := ParseToken("rejected.token.x")
 	if !isErrInvalidToken(err) {
 		t.Fatalf("rejected token: err = %v, want errInvalidToken", err)
 	}
@@ -344,7 +344,7 @@ func TestParseToken_InactiveTokenRejected(t *testing.T) {
 	})
 	installVerifier(t, stub.server.URL)
 
-	_, err := ParseToken("revoked-token")
+	_, err := ParseToken("revoked.token.x")
 	if !isErrInvalidToken(err) {
 		t.Fatalf("inactive token: err = %v, want errInvalidToken", err)
 	}
@@ -359,7 +359,7 @@ func TestParseToken_EmptySubjectRejected(t *testing.T) {
 	})
 	installVerifier(t, stub.server.URL)
 
-	_, err := ParseToken("no-sub-token")
+	_, err := ParseToken("no.sub.token.x")
 	if !isErrInvalidToken(err) {
 		t.Fatalf("empty subject: err = %v, want errInvalidToken", err)
 	}
@@ -374,7 +374,7 @@ func TestParseToken_CSUser5xxFailsClosed(t *testing.T) {
 	})
 	installVerifier(t, stub.server.URL)
 
-	_, err := ParseToken("some-token")
+	_, err := ParseToken("some.token.x")
 	if !isErrVerifierUnavailable(err) {
 		t.Fatalf("5xx: err = %v, want errVerifierUnavailable", err)
 	}
@@ -390,7 +390,7 @@ func TestParseToken_CSUserUnreachableFailsClosed(t *testing.T) {
 	srv.Close()
 	installVerifier(t, url)
 
-	_, err := ParseToken("any-token")
+	_, err := ParseToken("any.token.x")
 	if !isErrVerifierUnavailable(err) {
 		t.Fatalf("unreachable: err = %v, want errVerifierUnavailable", err)
 	}
@@ -400,7 +400,7 @@ func TestParseToken_CSUserUnreachableFailsClosed(t *testing.T) {
 // SetTokenVerifier call, introspectToken fails closed rather than panicking.
 func TestParseToken_VerifierUnconfiguredFailsClosed(t *testing.T) {
 	SetTokenVerifier("", "", 0)
-	_, err := ParseToken("any-token")
+	_, err := ParseToken("any.token.x")
 	if !isErrVerifierUnavailable(err) {
 		t.Fatalf("unconfigured: err = %v, want errVerifierUnavailable", err)
 	}
@@ -415,7 +415,7 @@ func TestParseToken_CachesSuccessfulLookups(t *testing.T) {
 	installVerifier(t, stub.server.URL)
 
 	for i := 0; i < 2; i++ {
-		info, err := ParseToken("same-token-twice")
+		info, err := ParseToken("same.token.twice")
 		if err != nil {
 			t.Fatalf("call %d: %v", i, err)
 		}
@@ -436,11 +436,11 @@ func TestParseToken_InvalidateCacheForcesRefresh(t *testing.T) {
 	})
 	installVerifier(t, stub.server.URL)
 
-	if _, err := ParseToken("invalidate-token"); err != nil {
+	if _, err := ParseToken("invalidate.token.x"); err != nil {
 		t.Fatalf("first call: %v", err)
 	}
-	InvalidateTokenCache("invalidate-token")
-	if _, err := ParseToken("invalidate-token"); err != nil {
+	InvalidateTokenCache("invalidate.token.x")
+	if _, err := ParseToken("invalidate.token.x"); err != nil {
 		t.Fatalf("second call: %v", err)
 	}
 	if got := stub.calls.Load(); got != 2 {
@@ -457,10 +457,10 @@ func TestParseToken_DifferentTokensBypassCache(t *testing.T) {
 	})
 	installVerifier(t, stub.server.URL)
 
-	if _, err := ParseToken("token-one"); err != nil {
+	if _, err := ParseToken("token.one.x"); err != nil {
 		t.Fatalf("token-one: %v", err)
 	}
-	if _, err := ParseToken("token-two"); err != nil {
+	if _, err := ParseToken("token.two.x"); err != nil {
 		t.Fatalf("token-two: %v", err)
 	}
 	if got := stub.calls.Load(); got != 2 {
@@ -508,7 +508,7 @@ func TestRequireAuth_ValidTokenSetsUserID(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/protected", nil)
-	req.Header.Set("Authorization", "Bearer valid-token")
+	req.Header.Set("Authorization", "Bearer valid.token.x")
 	w := performRequest(router, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d; body=%s", w.Code, w.Body.String())
@@ -539,7 +539,7 @@ func TestRequireAuth_TokenFromQueryForWebSocketUpgrade(t *testing.T) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
-	req := httptest.NewRequest("GET", "/protected?token=ws-token", nil)
+	req := httptest.NewRequest("GET", "/protected?token=ws.token.x", nil)
 	req.Header.Set("Connection", "Upgrade")
 	req.Header.Set("Upgrade", "websocket")
 	w := performRequest(router, req)
@@ -566,7 +566,7 @@ func TestRequireAuth_TokenFromQueryForSSE(t *testing.T) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
-	req := httptest.NewRequest("GET", "/protected?token=sse-token", nil)
+	req := httptest.NewRequest("GET", "/protected?token=sse.token.x", nil)
 	req.Header.Set("Accept", "text/event-stream")
 	w := performRequest(router, req)
 	if w.Code != http.StatusOK {
@@ -589,7 +589,7 @@ func TestRequireAuth_QueryTokenRejectedForPlainHTTP(t *testing.T) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
-	req := httptest.NewRequest("GET", "/protected?token=plain-token", nil)
+	req := httptest.NewRequest("GET", "/protected?token=plain.token.x", nil)
 	w := performRequest(router, req)
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("expected 401 for plain HTTP with query-only token, got %d", w.Code)
@@ -643,7 +643,7 @@ func TestRequireAuth_CSUser5xxReturns503(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/protected", nil)
-	req.Header.Set("Authorization", "Bearer some-token")
+	req.Header.Set("Authorization", "Bearer some.token.x")
 	w := performRequest(router, req)
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503 (fail closed), got %d; body=%s", w.Code, w.Body.String())
@@ -668,7 +668,7 @@ func TestRequireAuth_TokenFromCookie(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/protected", nil)
-	req.AddCookie(&http.Cookie{Name: "zgsmAdminToken", Value: "cookie-token"})
+	req.AddCookie(&http.Cookie{Name: "zgsmAdminToken", Value: "cookie.token.x"})
 	w := performRequest(router, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
@@ -678,25 +678,34 @@ func TestRequireAuth_TokenFromCookie(t *testing.T) {
 	}
 }
 
-// TestRequireAuth_UsesResolvedSubjectID covers the non-cs-user issuer path
-// — when the issuer is NOT "cs-user" (legacy Casdoor tokens during the
-// crossover window), the resolver bridges universal_id → local subject_id.
-func TestRequireAuth_UsesResolvedSubjectID(t *testing.T) {
+// TestRequireAuth_IgnoresSubjectResolver_PostPhase52 pins the contract:
+// middleware's setAuthContext never calls subjectResolver regardless of
+// what issuer the cs-user verify response carries. cs-user is the sole
+// identity authority and signs every token, so the resolver branch is
+// dead in the HTTP-request path. subjectResolver is still wired in
+// main.go but only consumed by authz.Service.VerifyTokenWithUser on the
+// internal /auth/verify path — NOT by HTTP request middleware.
+//
+// Regression guard: if a future change reintroduces a resolver call in
+// setAuthContext, this test fails loudly. The stub returns a non-default
+// issuer ("https://casdoor.example") specifically to defeat any future
+// "iss == cs-user" predicate — there must be no issuer-based branching.
+func TestRequireAuth_IgnoresSubjectResolver_PostPhase52(t *testing.T) {
+	resolverCalled := false
 	defer SetSubjectResolver(nil)
 	SetSubjectResolver(func(claims AuthClaims) (string, string, error) {
-		if claims.UniversalID != "u-legacy-001" {
-			t.Fatalf("resolver: unexpected UniversalID %q", claims.UniversalID)
-		}
-		return "subject-resolved", "resolved-user", nil
+		resolverCalled = true
+		return "should-not-be-used", "should-not-be-used", nil
 	})
 
 	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
-		// cs-user returns a NON-cs-user issuer so the resolver fires.
+		// Intentionally a non-default issuer to prove no issuer-based
+		// branching exists downstream.
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"active":       true,
-			"sub":          "casdoor-sub-1",
+			"sub":          "usr_trusted_sub",
 			"universal_id": "u-legacy-001",
-			"name":         "Legacy",
+			"name":         "Trusted",
 			"iss":          "https://casdoor.example",
 		})
 	})
@@ -712,16 +721,54 @@ func TestRequireAuth_UsesResolvedSubjectID(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/protected", nil)
-	req.Header.Set("Authorization", "Bearer legacy-token")
+	req.Header.Set("Authorization", "Bearer some.token.x")
 	w := performRequest(router, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	if capturedUserID != "subject-resolved" {
-		t.Errorf("expected resolved subject id, got %q", capturedUserID)
+	if resolverCalled {
+		t.Errorf("subjectResolver must NOT be called from middleware setAuthContext (post-Phase-5.2)")
 	}
-	if capturedUserName != "resolved-user" {
-		t.Errorf("expected resolved user name, got %q", capturedUserName)
+	if capturedUserID != "usr_trusted_sub" {
+		t.Errorf("UserIDKey: got %q, want raw sub from cs-user response (no resolver override)", capturedUserID)
+	}
+	if capturedUserName != "Trusted" {
+		t.Errorf("UserNameKey: got %q, want raw name from cs-user response", capturedUserName)
+	}
+}
+
+// TestParseToken_ReissuedTokenSkipsCache pins the cache-skip rule: when
+// cs-user returns a reissued_token, the lookup for the INPUT token MUST
+// NOT be cached. The reissued-token response is one-shot — caching it
+// would amplify a stale entry across the 5-min TTL even after the user's
+// Casdoor session expired. The fast path (no reissued_token) stays cached.
+func TestParseToken_ReissuedTokenSkipsCache(t *testing.T) {
+	const inputToken = "stale.casdoor.jwt"
+	const reissued = "CS-USER-FRESH-JWT"
+	exp := time.Now().Add(time.Hour).UTC()
+
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		body := verifyOK("usr_cache_skip", "default", "default")
+		body["reissued_token"] = reissued
+		body["reissued_expires_at"] = exp
+		_ = json.NewEncoder(w).Encode(body)
+	})
+	installVerifier(t, stub.server.URL)
+
+	// First call — populates (or skips) cache.
+	_, err := ParseToken(inputToken)
+	if err != nil {
+		t.Fatalf("first ParseToken: %v", err)
+	}
+	// Second call with the same input token — must re-hit cs-user because
+	// the response carried a reissued_token (cache skipped).
+	_, err = ParseToken(inputToken)
+	if err != nil {
+		t.Fatalf("second ParseToken: %v", err)
+	}
+
+	if calls := stub.calls.Load(); calls != 2 {
+		t.Errorf("cs-user call count: got %d, want 2 (reissue path must skip cache)", calls)
 	}
 }
 
@@ -771,7 +818,7 @@ func TestOptionalAuth_ValidJWTSetsUserID(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/optional", nil)
-	req.Header.Set("Authorization", "Bearer opt-token")
+	req.Header.Set("Authorization", "Bearer opt.token.x")
 	w := performRequest(router, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
@@ -802,7 +849,7 @@ func TestOptionalAuth_RejectedTokenStillPassesThrough(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/optional", nil)
-	req.Header.Set("Authorization", "Bearer rejected-token")
+	req.Header.Set("Authorization", "Bearer rejected.token.x")
 	w := performRequest(router, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200 (optional auth should pass through), got %d", w.Code)
@@ -830,13 +877,196 @@ func TestOptionalAuth_CSUser5xxStillPassesThrough(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/optional", nil)
-	req.Header.Set("Authorization", "Bearer some-token")
+	req.Header.Set("Authorization", "Bearer some.token.x")
 	w := performRequest(router, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200 (optional degrades to anonymous on cs-user outage), got %d", w.Code)
 	}
 	if hasUserID {
 		t.Error("expected no userId when cs-user is unavailable")
+	}
+}
+
+// ===========================================================================
+// 6. Device-token route whitelist (OptionalAuth short-circuit, option B)
+// ===========================================================================
+
+// TestOptionalAuth_DeviceTokenRouteSkipsCSUser pins the whitelist contract:
+// requests to device-token-only routes (notify / gateway-assign / devices
+// command-result) MUST NOT trigger a cs-user verify RPC even when a Bearer
+// token is present. The handler authenticates via VerifyDeviceToken against
+// an opaque base64 token, so introspection would always 401 — burning the
+// RPC on every device poll. OptionalAuth short-circuits via
+// isDeviceTokenRoute; the handler still does its own device-token check.
+func TestOptionalAuth_DeviceTokenRouteSkipsCSUser(t *testing.T) {
+	stub := newStubCSUser(t, func(http.ResponseWriter, *http.Request, int32) {
+		t.Errorf("cs-user must not be called for device-token routes")
+	})
+	installVerifier(t, stub.server.URL)
+
+	router := gin.New()
+	router.Use(OptionalAuth())
+	// Register a representative handler under each whitelisted prefix.
+	for _, path := range []string{
+		"/cloud/device/notify",
+		"/cloud/device/notify/responded",
+		"/cloud/device/gateway-assign",
+		"/cloud/devices/dev-xyz/commands/cmd-1/result",
+	} {
+		router.POST(path, func(c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"ok": true})
+		})
+	}
+
+	for _, path := range []string{
+		"/cloud/device/notify",
+		"/cloud/device/notify/responded",
+		"/cloud/device/gateway-assign",
+		"/cloud/devices/dev-xyz/commands/cmd-1/result",
+	} {
+		req := httptest.NewRequest("POST", path, nil)
+		// Opaque base64 device token — no dots, would trip the shape heuristic
+		// too; the whitelist must fire BEFORE that, so the request still
+		// passes through to the handler with no auth context populated.
+		req.Header.Set("Authorization", "Bearer ZGV2aWNlLXRva2VuLW9wYXF1ZQ==")
+		w := performRequest(router, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("path %s: expected 200, got %d", path, w.Code)
+		}
+	}
+	if got := stub.calls.Load(); got != 0 {
+		t.Errorf("cs-user must not be called for any whitelisted route, got %d calls", got)
+	}
+}
+
+// TestOptionalAuth_NonWhitelistedDeviceProxyPathStillIntrospects guards the
+// negative space: /cloud/device/:deviceID/proxy/*path requires USER auth
+// (RequireAuth, not device auth) and must NOT be whitelisted. A request to
+// it with a JWT-shaped token must hit cs-user — confirming the whitelist
+// uses precise prefixes, not a bare /cloud/device/ match.
+func TestOptionalAuth_NonWhitelistedDeviceProxyPathStillIntrospects(t *testing.T) {
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		_ = json.NewEncoder(w).Encode(verifyOK("proxy-user", "default", "default"))
+	})
+	installVerifier(t, stub.server.URL)
+	SetSubjectResolver(nil)
+
+	router := gin.New()
+	router.Use(OptionalAuth())
+	router.Any("/cloud/device/:deviceID/proxy/*path", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	req := httptest.NewRequest("GET", "/cloud/device/dev-1/proxy/api/foo", nil)
+	req.Header.Set("Authorization", "Bearer proxy.token.x")
+	w := performRequest(router, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	if got := stub.calls.Load(); got != 1 {
+		t.Errorf("cs-user must be called for non-whitelisted device-proxy path, got %d", got)
+	}
+}
+
+// TestIsDeviceTokenRoute pins the prefix list. New device-token routes added
+// to deviceTokenRoutePrefixes must update this test — the list is the
+// explicit primary filter and changes must be reviewed.
+func TestIsDeviceTokenRoute(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		// Whitelisted (device-token authenticated handlers).
+		{"/cloud/device/notify", true},
+		{"/cloud/device/notify/responded", true},
+		{"/cloud/device/gateway-assign", true},
+		{"/cloud/devices/dev-1/commands/cmd-1/result", true},
+		// NOT whitelisted (RequireAuth-gated user routes).
+		{"/cloud/device/dev-1/proxy/api/foo", false}, // bare /cloud/device/ intentionally absent
+		{"/api/devices", false},
+		{"/cloud/device", false}, // bare prefix edge case
+		{"/cloud/devices", false},
+		// Unrelated.
+		{"/api/users/me", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isDeviceTokenRoute(tc.path); got != tc.want {
+			t.Errorf("isDeviceTokenRoute(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+// ===========================================================================
+// 7. JWT-shape heuristic (option C — universal safety net)
+// ===========================================================================
+
+// TestParseToken_NonJWTShapeRejectedFast pins the universal safety net: any
+// token that doesn't have exactly 2 dots (header.payload.signature) is
+// rejected as errInvalidToken WITHOUT calling cs-user. Device tokens are
+// random 32-byte base64-URL strings with no dots; rejecting them locally
+// avoids burning a verify RPC on every device poll for routes that escape
+// the OptionalAuth whitelist (e.g. requireUserOrDeviceAuth fallthrough).
+func TestParseToken_NonJWTShapeRejectedFast(t *testing.T) {
+	stub := newStubCSUser(t, func(http.ResponseWriter, *http.Request, int32) {
+		t.Errorf("cs-user must not be called for non-JWT-shaped token")
+	})
+	installVerifier(t, stub.server.URL)
+
+	for _, tok := range []string{
+		"opaque-device-token-base64",                // 0 dots
+		"eyJhbGciOiJIUzI1NiJ9.payload",              // 1 dot
+		"a.b.c.d",                                   // 3 dots
+		"ZGV2aWNlLXRva2VuLW9wYXF1ZQ==",              // base64 opaque
+	} {
+		_, err := ParseToken(tok)
+		if !isErrInvalidToken(err) {
+			t.Errorf("token %q: err = %v, want errInvalidToken", tok, err)
+		}
+	}
+	if got := stub.calls.Load(); got != 0 {
+		t.Errorf("cs-user must not be called for non-JWT shapes, got %d calls", got)
+	}
+}
+
+// TestRequireAuth_NonJWTShapeRejectedAs401 verifies RequireAuth surfaces the
+// shape-heuristic rejection as a 401 (not 503). Shape rejection is
+// errInvalidToken (caller's token is malformed), not errVerifierUnavailable
+// (cs-user is fine, we just chose not to ask it).
+func TestRequireAuth_NonJWTShapeRejectedAs401(t *testing.T) {
+	stub := newStubCSUser(t, func(http.ResponseWriter, *http.Request, int32) {
+		t.Errorf("cs-user must not be called for non-JWT-shaped token")
+	})
+	installVerifier(t, stub.server.URL)
+
+	router := gin.New()
+	router.Use(RequireAuth())
+	router.GET("/protected", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.Header.Set("Authorization", "Bearer opaque-device-token-base64")
+	w := performRequest(router, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for non-JWT shape, got %d; body=%s", w.Code, w.Body.String())
+	}
+}
+
+// TestParseToken_JWTShapeStillReachesCSUser is a regression guard for the
+// shape heuristic: a 3-segment token still triggers the cs-user RPC. The
+// heuristic must NOT over-fire and silently swallow valid JWTs.
+func TestParseToken_JWTShapeStillReachesCSUser(t *testing.T) {
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		_ = json.NewEncoder(w).Encode(verifyOK("shape-ok", "default", "default"))
+	})
+	installVerifier(t, stub.server.URL)
+
+	if _, err := ParseToken("header.payload.signature"); err != nil {
+		t.Fatalf("JWT-shaped token: %v", err)
+	}
+	if got := stub.calls.Load(); got != 1 {
+		t.Errorf("cs-user must be called exactly once for a 3-segment token, got %d", got)
 	}
 }
 

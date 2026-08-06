@@ -22,7 +22,7 @@ func tenantSlugFromContext(ctx context.Context) string {
 
 // ActorRoleHeader / ActorPlatformScopeHeader are the header names cs-user's
 // handlers/audit.go reads to populate audit-log actor_tenant_role /
-// actor_platform_scope columns (Phase C4.1). Mirror of the constants in
+// actor_platform_scope columns. Mirror of the constants in
 // cs-user/internal/handlers/audit.go — kept duplicated rather than shared
 // because cs-user and server are separate Go modules.
 const (
@@ -31,7 +31,7 @@ const (
 )
 
 // applyActorMetaHeaders forwards the JWT-derived actor role + platform scope
-// (Phase C4.1) from the request ctx to the outbound cs-user request as
+// from the request ctx to the outbound cs-user request as
 // X-Actor-Tenant-Role / X-Actor-Platform-Scope headers. Empty fields are
 // omitted so cs-user writes NULL columns.
 //

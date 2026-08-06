@@ -1,10 +1,10 @@
-// Tenant-admin config read/write endpoints (Phase C3.2).
+// Tenant-admin config read/write endpoints.
 //
 // /api/internal/tenant/config exposes the per-tenant YAML config blob to
 // the costrict-web server, which re-exposes it under /api/tenant/config
-// behind the C1 RequireTenantAdmin middleware. cs-user owns tenant data
-// (ADR D1); this is the raw blob CRUD surface that C3.3's typed
-// provider_mapping editor will build on top of.
+// behind the RequireTenantAdmin middleware. cs-user owns tenant data
+// (ADR D1); this is the raw blob CRUD surface that a future typed
+// provider_mapping editor may build on top of.
 //
 // Two endpoints:
 //
@@ -47,11 +47,11 @@ import (
 // interface so unit tests can substitute a fake; production wires
 // *tenantconfig.Service.
 //
-// Audit (Phase C4.1) is optional — nil skips the post-success audit-log
+// Audit is optional — nil skips the post-success audit-log
 // write (test path / 503 fallback). When set, UpdateTenantConfig writes a
 // tenant_config.update row to user_center_audit_log after the service
 // commits. Payload captures the new YAML blob (post-state only — diff
-// generation deferred per C4.1 known limitations).
+// generation is a known limitation).
 type TenantConfigAPI struct {
 	Svc   TenantConfigService
 	Audit *auditlog.Service
@@ -109,7 +109,7 @@ func (a *TenantConfigAPI) GetTenantConfig(c *gin.Context) {
 // UpdateTenantConfig godoc
 //
 //	@Summary		Update tenant config (tenant admin)
-//	@Description	Replaces the caller's tenant_configs.config_yaml blob. Validates the YAML parses (schema-agnostic — C3.2 accepts any well-formed YAML; C3.3 will layer typed provider_mapping checks on top). Empty / whitespace-only body normalizes to "{}". 64 KiB cap. X-Actor-Subject-Id header (forwarded by server from JWT) stamps updated_by.
+//	@Description	Replaces the caller's tenant_configs.config_yaml blob. Validates the YAML parses (schema-agnostic — accepts any well-formed YAML; a future typed provider_mapping check may layer on top). Empty / whitespace-only body normalizes to "{}". 64 KiB cap. X-Actor-Subject-Id header (forwarded by server from JWT) stamps updated_by.
 //	@Tags			tenant-config
 //	@Accept			json
 //	@Produce		json

@@ -59,11 +59,11 @@ type RPCClient struct {
 	internalToken string
 	httpClient    *http.Client
 
-	// byIdentityCache backs GetUserByIdentity — the auth middleware's
-	// subjectResolver hits it on every Casdoor-issued JWT (legacy/associated
-	// projects keep signing Casdoor tokens indefinitely). Identity mapping
-	// is stable in a user's lifetime, so a short TTL turns repeated RPCs
-	// from the same session into a single round-trip. Errors are not cached.
+	// byIdentityCache backs GetUserByIdentity — the authz layer's
+	// subjectResolver hits it on the internal /auth/verify path. Identity
+	// mapping is stable in a user's lifetime, so a short TTL turns repeated
+	// RPCs from the same session into a single round-trip. Errors are not
+	// cached.
 	byIdentityMu    sync.RWMutex
 	byIdentityCache map[string]byIdentityCacheEntry
 }
@@ -115,9 +115,8 @@ func (c *RPCClient) GetUserByID(ctx context.Context, userID string) (*models.Use
 }
 
 // GetUserByIdentity calls GET /api/internal/users/by-identity?provider=...&universal_id=...
-// to resolve the canonical user from a Casdoor identity handle. Used by the
-// auth middleware's subjectResolver on every Casdoor-issued JWT (legacy and
-// associated-project tokens keep flowing in indefinitely) so the server
+// to resolve the canonical user from an identity handle. Used by the authz
+// layer's subjectResolver on the internal /auth/verify path, so the server
 // doesn't need a local casdoor_universal_id copy. HTTP 404 →
 // gorm.ErrRecordNotFound so callers can distinguish "identity never seen"
 // from cs-user outages.
@@ -317,7 +316,7 @@ func (c *RPCClient) do(ctx context.Context, method, path string, body []byte, ou
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	// Phase B3b.2a: forward the tenant slug (if any) so cs-user's ResolveTenant
+	// Forward the tenant slug (if any) so cs-user's ResolveTenant
 	// middleware resolves against the same tenant. Empty slug = no signal —
 	// cs-user falls back to default tenant.
 	if slug := tenantSlugFromContext(ctx); slug != "" {

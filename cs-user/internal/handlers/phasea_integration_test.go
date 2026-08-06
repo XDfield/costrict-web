@@ -1,8 +1,8 @@
 //go:build cgo
 
-// Phase A integration tests — end-to-end exercise of the OAuth-callback-takeover
+// Integration tests — end-to-end exercise of the OAuth-callback-takeover
 // flow at the unit-test level. The acceptance criteria in
-// todo/IDENTITY_TENANT_PROGRESS.md §"Phase A 验收" list integration points
+// todo/IDENTITY_TENANT_PROGRESS.md §"OAuth-callback 验收" list integration points
 // (cs-cloud / csc / assistant-ui / quota-manager) that can't be exercised from
 // this repo; these tests cover the code-level bar that CAN be locked in:
 //
@@ -11,14 +11,14 @@
 //  2. The JWKS endpoint serves the public key that verifies the issued token
 //     — exercises the actual key-distribution path, not just the test's own
 //     copy of the private key.
-//  3. The 灰度 path (no permission reader, no employment row) still issues a
-//     verifiable token carrying only the standard + tenant claims.
+//  3. The minimal-token path (no permission reader, no employment row) still
+//     issues a verifiable token carrying only the standard + tenant claims.
 //  4. server-side NormalizeClaimsMap can decode the cs-user-issued token
-//     (Phase A 双格式 reader contract per §9.6 / acceptance item L453).
+//     (dual-format reader contract per §9.6 / acceptance item L453).
 //
-// Together these pin the Phase A "does the issued token work downstream"
-// contract that the operational acceptance items exercise against real
-// downstream services.
+// Together these pin the "does the issued token work downstream" contract
+// that the operational acceptance items exercise against real downstream
+// services.
 
 package handlers
 
@@ -41,7 +41,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// phaseAFixture bundles the moving parts a Phase A integration test needs.
+// phaseAFixture bundles the moving parts an integration test needs.
 // All optional readers are stubs so the test pins exact responses without
 // a DB. The fixture also wires a mock Casdoor JWKS so the verifier path
 // runs end-to-end — tests pass a raw Casdoor JWT (signed by casdoorKey) and
@@ -58,7 +58,7 @@ type phaseAFixture struct {
 // newPhaseAFixture builds a gin engine wired with both /.well-known/jwks and
 // /api/internal/users/reissue-token. employment MUST wire external_key +
 // GetUserByID stubs so the handler can resolve subject_id and tenant from
-// the verified JWT. permissions is optional: pass nil for the 灰度 path.
+// the verified JWT. permissions is optional: pass nil for the minimal-token path.
 func newPhaseAFixture(t *testing.T, employment EmploymentReader, permissions PermissionReader, tenant TenantReader) phaseAFixture {
 	t.Helper()
 	signer, pk := newTestSigner(t)
@@ -189,7 +189,7 @@ func (f phaseAFixture) verifyViaJWKS(t *testing.T, token string) *auth.Enterpris
 	return got
 }
 
-// TestPhaseA_FullContextEndToEnd exercises the complete Phase A pipeline in
+// TestPhaseA_FullContextEndToEnd exercises the complete reissue pipeline in
 // one test: all claim groups populated, JWKS-served key verifies the token.
 // Locks in the contract that the OAuth-callback takeover endpoint, given
 // real reader responses, produces a token that downstream services can
@@ -285,11 +285,11 @@ func TestPhaseA_FullContextEndToEnd(t *testing.T) {
 	if got.EmployeeNumber != empNum || got.JobTitle != "Staff Engineer" {
 		t.Errorf("enterprise: emp=%q job=%q", got.EmployeeNumber, got.JobTitle)
 	}
-	// Tenant group (Phase B).
+	// Tenant group.
 	if got.TenantID != tenantID || got.TenantSlug != "acme" {
 		t.Errorf("tenant: id=%q slug=%q", got.TenantID, got.TenantSlug)
 	}
-	// Permission group (Phase C1).
+	// Permission group.
 	if !got.PlatformAdmin || got.PlatformScope != models.PlatformScopeFull {
 		t.Errorf("platform: admin=%v scope=%q", got.PlatformAdmin, got.PlatformScope)
 	}
@@ -298,12 +298,12 @@ func TestPhaseA_FullContextEndToEnd(t *testing.T) {
 	}
 }
 
-// TestPhaseA_GrayReleaseMinimalToken verifies the 灰度 path: no permission
-// reader wired (Phase A pre-C1 activation), no employment row. The handler
-// must still issue a verifiable token, and the JSON must omit the
-// enterprise + permission claim groups entirely — so pre-cutover relying
-// parties parsing the token see only the standard + tenant claims they
-// already know how to handle.
+// TestPhaseA_GrayReleaseMinimalToken verifies the minimal-token path: no
+// permission reader wired, no employment row. The handler must still
+// issue a verifiable token, and the JSON must omit the enterprise +
+// permission claim groups entirely — so relying parties parsing the
+// token see only the standard + tenant claims they already know how to
+// handle.
 func TestPhaseA_GrayReleaseMinimalToken(t *testing.T) {
 	const subjectID = "usr_pre_cutover"
 	employment := stubEmploymentReader{

@@ -11,8 +11,8 @@ import (
 )
 
 // AuthIdentitiesAPI exposes the per-user auth-identity listing endpoint.
-// bind / unbind / transfer are deferred to Phase A (JWT self-sign) — they
-// need claims plumbing that doesn't exist in P0-3 yet.
+// bind / unbind / transfer require claims plumbing and are not yet exposed
+// on this surface.
 type AuthIdentitiesAPI struct {
 	Svc AuthIdentityService
 }

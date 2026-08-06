@@ -1,4 +1,4 @@
-// Package tenant — admin-side CRUD + lifecycle ops (Phase C2).
+// Package tenant — admin-side CRUD + lifecycle ops.
 //
 // Admin is the write/lifecycle counterpart to Resolver (which is read-only
 // resolution semantics). It owns the seven operations behind the

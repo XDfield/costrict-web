@@ -19,7 +19,7 @@ const (
 	PlatformScopeReadOnly = "read_only"
 )
 
-// PlatformAdmin records one user's platform-level admin grant (Phase C1).
+// PlatformAdmin records one user's platform-level admin grant.
 //
 // Unlike TenantAdmin (multi-row per user across tenants), PlatformAdmin has a
 // primary key on user_id alone — a user is either a platform admin or not,
@@ -39,7 +39,7 @@ const (
 // platform_admin without first re-assigning); user_id is CASCADE (deleting
 // the admin user revokes their platform grant automatically).
 //
-// C1 does NOT bootstrap any initial platform_admin via migration. Operator
+// No initial platform_admin is bootstrapped via migration. Operator
 // must manually INSERT the first platform_admin after the first user logs in
 // (typically `INSERT INTO platform_admins (user_id, granted_by, scope)
 // VALUES ('usr_xxx', 'usr_xxx', 'full');`). See migration header for

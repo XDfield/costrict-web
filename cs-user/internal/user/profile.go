@@ -105,7 +105,7 @@ func (s *Service) CompleteRegistration(ctx context.Context, subjectID, username,
 
 // UpdateProfile applies user-self edits to display_name only. username is
 // user-side immutable (REGISTRATION_PROFILE_DESIGN §3); admin overrides go
-// through a separate path (R5). Empty display_name is allowed and clears
+// through a separate path. Empty display_name is allowed and clears
 // the field back to NULL.
 func (s *Service) UpdateProfile(ctx context.Context, subjectID, displayName string) (*models.User, error) {
 	if s == nil || s.db == nil {

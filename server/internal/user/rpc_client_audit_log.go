@@ -1,4 +1,4 @@
-// rpc_client_audit_log.go — Phase C4.3 step A.
+// rpc_client_audit_log.go — audit-log list RPC client.
 //
 // 2 RPC methods on *RPCClient that proxy to cs-user's
 // /api/internal/platform/audit-logs and /api/internal/tenants/audit-logs

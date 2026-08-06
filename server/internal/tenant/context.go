@@ -12,13 +12,13 @@
 //     cs_tenant_slug cookie / Host subdomain and stores it via WithSlug.
 //   - user.RPCClient.do / RPCWriter.doCapture read it via SlugFromContext and
 //     set the X-Tenant-Id outbound header so cs-user sees the same signal.
-//   - middleware.TenantContext (Phase B4) extracts tenant_id from the JWT and
+//   - middleware.TenantContext extracts tenant_id from the JWT and
 //     stores it via WithTenantID. The fallback "default" applies when the JWT
-//     carries no tenant_id claim (pre-cutover Casdoor tokens).
+//     carries no tenant_id claim.
 //   - B5's tenantScope(ctx) helper will read TenantIDFromContext to scope
 //     queries automatically (`WHERE tenant_id = ?`).
-//   - middleware.TenantMatch (Phase B3b.2c) cross-checks the JWT's tenant_slug
-//     claim against SlugFromContext for stolen-cookie detection.
+//   - middleware.TenantMatch cross-checks the JWT's tenant_slug claim against
+//     SlugFromContext for stolen-cookie detection.
 package tenant
 
 import "context"
@@ -27,7 +27,7 @@ type ctxKey struct{}
 
 type tenantIDKey struct{}
 
-// actorMetaKey carries ActorMeta (Phase C4.1) on the server side. RPC clients
+// actorMetaKey carries ActorMeta on the server side. RPC clients
 // pull it via ActorMetaFromContext and forward role / platform_scope to
 // cs-user as X-Actor-Tenant-Role / X-Actor-Platform-Scope headers, where
 // cs-user's audit-log writer captures them for compliance rows.
@@ -93,8 +93,8 @@ func TenantIDFromContext(ctx context.Context) string {
 }
 
 // DefaultTenantID is the canonical ID of the bootstrap tenant created by
-// cs-user's A6/B1 migration. Phase A and any unscoped (no JWT / no resolver
-// signal) Phase B request resolves to this.
+// cs-user's A6/B1 migration. Any unscoped request (no JWT / no resolver
+// signal) resolves to this.
 const DefaultTenantID = "default"
 
 // WithActorMeta returns a new ctx carrying the actor role / platform scope.

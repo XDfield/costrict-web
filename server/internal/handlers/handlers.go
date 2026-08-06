@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -412,16 +413,15 @@ func AuthCallback(c *gin.Context) {
 	//
 	// IMPORTANT: the shortcut still MUST run provisionCsUser before
 	// redirecting. A Casdoor-valid cookie does NOT imply a cs-user row
-	// exists — users carrying a legacy Casdoor cookie into the Phase A8
-	// cutover, or arriving from a sibling product that doesn't provision,
-	// would otherwise loop forever (cookie validates → skip provisioning →
-	// middleware by-identity 404 → bounce to /login → cookie still
-	// validates → …). provisionCsUser is idempotent on the happy path
-	// (GetOrCreateUser no-ops when the row already exists) so re-running
-	// it on every callback is cheap; the only behavioural change for
-	// already-provisioned users is the cookie value flipping from the
-	// Casdoor token to the cs-user-signed JWT (the entire point of the
-	// Phase A8 takeover).
+	// exists — users carrying a Casdoor cookie, or arriving from a sibling
+	// product that doesn't provision, would otherwise loop forever
+	// (cookie validates → skip provisioning → middleware by-identity 404 →
+	// bounce to /login → cookie still validates → …). provisionCsUser is
+	// idempotent on the happy path (GetOrCreateUser no-ops when the row
+	// already exists) so re-running it on every callback is cheap; the only
+	// behavioural change for already-provisioned users is the cookie value
+	// flipping from the Casdoor token to the cs-user-signed JWT (the entire
+	// point of the cs-user takeover).
 	if existingToken, err := c.Cookie("zgsmAdminToken"); err == nil && existingToken != "" {
 		if _, userErr := getUserInfoFunc(existingToken); userErr == nil {
 			cookieToken, isNewUser := provisionCsUser(c, existingToken)
@@ -444,11 +444,11 @@ func AuthCallback(c *gin.Context) {
 }
 
 // provisionCsUser runs the cs-user provisioning pipeline (GetUserInfo +
-// tenant-by-email resolution + GetOrCreateUser + Phase A8 ReissueToken)
-// against the supplied Casdoor access token. Returns the cookie-worthy token
-// — cs-user-signed JWT on success, the original accessToken when UserModule
+// tenant-by-email resolution + GetOrCreateUser + ReissueToken) against the
+// supplied Casdoor access token. Returns the cookie-worthy token —
+// cs-user-signed JWT on success, the original accessToken when UserModule
 // is nil, GetUserInfo fails / returns empty, GetOrCreateUser errors, or
-// ReissueToken is off / fails (best-effort 灰度 contract).
+// ReissueToken is off / fails (non-blocking best-effort contract).
 //
 // Callers that hold a verified Casdoor token — both the SSO-shortcut path
 // (existing zgsmAdminToken cookie validates) and the code-exchange path —
@@ -458,12 +458,17 @@ func AuthCallback(c *gin.Context) {
 // as the "cookie validates against Casdoor but app says logged out" loop.
 func provisionCsUser(c *gin.Context, accessToken string) (cookieToken string, isNewUser bool) {
 	// cookieToken holds the value that ends up in the zgsmAdminToken cookie.
-	// Default is the Casdoor access token; Phase A8 overwrites it with a
+	// Default is the Casdoor access token; ReissueToken overwrites it with a
 	// cs-user-signed JWT. ReissueToken runs on every callback; a transport
 	// failure or local-mode misconfig falls back to the Casdoor token so a
 	// cs-user outage can't take login down.
-	// Failures fall back to the Casdoor token — the dual-sign 灰度 window
-	// (Phase A8) is intentionally non-blocking.
+	//
+	// ReissueToken is self-sufficient on the cs-user side — it verifies
+	// the raw Casdoor JWT, provisions the user inline when no row exists,
+	// and returns the verified Profile alongside the signed token.
+	// provisionCsUser runs ReissueToken FIRST and uses the returned Profile
+	// to drive the local mirror GetOrCreateUser without parsing the raw
+	// JWT itself.
 	cookieToken = accessToken
 	if UserModule == nil {
 		return
@@ -481,35 +486,21 @@ func provisionCsUser(c *gin.Context, accessToken string) (cookieToken string, is
 		fmt.Printf("[WARN] GetUserInfo returned empty user during auth callback: userInfo=%+v\n", userInfo)
 		return
 	}
-	claims := &userpkg.JWTClaims{
-		ID:                userInfo.User.Id,
-		Sub:               userInfo.User.Sub,
-		UniversalID:       userInfo.User.UniversalID,
-		Name:              userInfo.User.Name,
-		PreferredUsername: userInfo.User.PreferredUsername,
-		Email:             userInfo.User.Email,
-		Picture:           userInfo.User.Picture,
-		Owner:             userInfo.User.Owner,
-	}
-	if tokenClaims, parseErr := userpkg.ParseJWTClaimsFromAccessToken(accessToken); parseErr == nil {
-		claims = userpkg.MergeJWTClaims(claims, tokenClaims)
-	}
-	// Phase B3b.2b-step2b: §5 Try 2 — when middleware's subdomain
-	// lookup (Try 1) missed, resolve by email domain via cs-user.
-	// Unique hit → set cs_tenant_slug cookie + re-inject slug into
-	// the request context so the upcoming write ops (GetOrCreateUser,
-	// ApplyEnterpriseMapping, ReissueToken) forward the right
-	// X-Tenant-Id to cs-user. Ambiguous → picker redirect
-	// (Phase B3b.2b-step2c — until the picker frontend lands we
-	// log + fall through so login is never blocked). Miss / error
-	// → fall through to default tenant.
+	// §5 Try 2 — when middleware's subdomain lookup (Try 1) missed,
+	// resolve by email domain via cs-user. Unique hit → set
+	// cs_tenant_slug cookie + re-inject slug into the request context
+	// so the upcoming write ops forward the right X-Tenant-Id to
+	// cs-user. Ambiguous → picker redirect (until the picker frontend
+	// lands we log + fall through so login is never blocked). Miss /
+	// error → fall through to default tenant.
 	//
 	// Local-mode (Module.TenantResolver == nil) skips this block —
-	// there's no tenant data on this side (ADR D1).
+	// there's no tenant data on this side (ADR D1). Email is read
+	// from /api/userinfo (still authoritative for tenant matching).
 	try2Ctx := c.Request.Context()
 	if existingSlug := tenant.SlugFromContext(try2Ctx); existingSlug == "" &&
-		claims.Email != "" && UserModule.TenantResolver != nil {
-		res, resErr := UserModule.TenantResolver.ResolveTenantByEmail(try2Ctx, claims.Email)
+		userInfo.User.Email != "" && UserModule.TenantResolver != nil {
+		res, resErr := UserModule.TenantResolver.ResolveTenantByEmail(try2Ctx, userInfo.User.Email)
 		if resErr != nil {
 			fmt.Printf("[WARN] ResolveTenantByEmail failed during auth callback (falling through to default tenant): %v\n", resErr)
 		} else if res != nil {
@@ -529,34 +520,68 @@ func provisionCsUser(c *gin.Context, accessToken string) (cookieToken string, is
 				// UI ships, log + fall through so login succeeds
 				// against the default tenant rather than dead-ending.
 				fmt.Printf("[INFO] tenant resolution ambiguous for email=%s, %d candidate(s); picker not yet implemented, falling through to default tenant\n",
-					claims.Email, len(res.Candidates))
+					userInfo.User.Email, len(res.Candidates))
 			}
 		}
 	}
-	created, isNew, err := UserModule.Writer.GetOrCreateUser(c.Request.Context(), claims)
+
+	// ReissueToken first. On success, the response carries a verified
+	// Profile that drives the local mirror GetOrCreateUser without
+	// re-parsing the raw JWT. On failure (local-mode misconfig, transport,
+	// cs-user 4xx/5xx), fall back to building claims from /api/userinfo +
+	// ParseIdentity RPC enrichment (under USER_SERVICE_BACKEND=local
+	// ParseIdentity returns ErrSelfSignUnavailable and the fallback
+	// proceeds with /api/userinfo fields only — local-mode is deprecated,
+	// see .env.example).
+	result, err := UserModule.Writer.ReissueToken(c.Request.Context(), nil, accessToken)
 	if err != nil {
-		fmt.Printf("[WARN] GetOrCreateUser failed during auth callback: %v\n", err)
+		fmt.Printf("[WARN] ReissueToken failed during auth callback (falling back to JWT parse + Casdoor token): %v\n", err)
+		// Fallback path — used under USER_SERVICE_BACKEND=local (deprecated)
+		// or any cs-user outage. Build claims from /api/userinfo (always
+		// available) and try to enrich with the raw JWT via ParseIdentity
+		// RPC (recovers Phone/Provider/ProviderUserID the userinfo payload
+		// omits). Under local-mode ParseIdentity fails harmlessly and the
+		// fallback proceeds with userinfo-only fields.
+		claims := &userpkg.JWTClaims{
+			ID:                userInfo.User.Id,
+			Sub:               userInfo.User.Sub,
+			UniversalID:       userInfo.User.UniversalID,
+			Name:              userInfo.User.Name,
+			PreferredUsername: userInfo.User.PreferredUsername,
+			Email:             userInfo.User.Email,
+			Picture:           userInfo.User.Picture,
+			Owner:             userInfo.User.Owner,
+		}
+		if parsed, parseErr := UserModule.Writer.ParseIdentity(c.Request.Context(), accessToken); parseErr == nil && parsed != nil && parsed.Profile != nil {
+			claims = userpkg.MergeJWTClaims(claims, parsed.Profile.AsJWTClaims())
+		} else if parseErr != nil && !errors.Is(parseErr, userpkg.ErrSelfSignUnavailable) {
+			fmt.Printf("[WARN] ParseIdentity failed during auth callback fallback (continuing with userinfo-only claims): %v\n", parseErr)
+		}
+		created, isNew, gocErr := UserModule.Writer.GetOrCreateUser(c.Request.Context(), claims)
+		if gocErr != nil {
+			fmt.Printf("[WARN] GetOrCreateUser failed during auth callback (fallback path): %v\n", gocErr)
+			return
+		}
+		if created == nil {
+			return
+		}
+		isNewUser = isNew
+		// cookieToken stays as the Casdoor access token — that's the
+		// entire point of the fallback (cs-user couldn't mint).
 		return
 	}
-	if created == nil {
-		return
-	}
-	isNewUser = isNew
-	// Phase A4b/Slice 2: enterprise mapping is auto-triggered
-	// inside cs-user's GetOrCreateUser using claims.ExternalClaims
-	// (which the Casdoor callback harvests from profile.Raw).
-	// Best-effort — employment mapping is a bonus feature and must
-	// never block login.
-	// cs-user always reissues a self-signed JWT carrying enterprise
-	// claims so the cookie value matches what the verifier (also
-	// cs-user) checks. Best-effort: on any failure (transport,
-	// ErrSelfSignUnavailable from local-mode misconfig, cs-user
-	// 4xx/5xx) we fall back to the Casdoor token rather than
-	// failing login.
-	if newToken, _, err := UserModule.Writer.ReissueToken(c.Request.Context(), nil, accessToken); err != nil {
-		fmt.Printf("[WARN] ReissueToken failed during auth callback (falling back to Casdoor token): %v\n", err)
-	} else {
-		cookieToken = newToken
+	// ReissueToken succeeded — cs-user provisioned the row inline
+	// (IsNew reflects that) and returned the verified Profile. Use the
+	// Profile to drive the local mirror GetOrCreateUser; this is now
+	// best-effort for the LOCAL mirror only (cs-user's authoritative row
+	// already exists). Local mirror failures are logged but never block
+	// login — the cookie is the cs-user-signed token regardless.
+	cookieToken = result.Token
+	isNewUser = result.IsNew
+	if result.Profile != nil {
+		if _, _, mirrorErr := UserModule.Writer.GetOrCreateUser(c.Request.Context(), result.Profile.AsJWTClaims()); mirrorErr != nil {
+			fmt.Printf("[WARN] local mirror GetOrCreateUser failed (cs-user row already provisioned; login continues): %v\n", mirrorErr)
+		}
 	}
 	return
 }
@@ -659,7 +684,7 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
 		return
 	}
-	currentClaims, err := userpkg.ParseJWTClaimsFromAccessToken(currentToken)
+	currentClaims, _, err := parseIdentityClaims(c, currentToken)
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid current session"})
 		return
@@ -676,7 +701,7 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to exchange code for token"})
 		return
 	}
-	claims, err := userpkg.ParseJWTClaimsFromAccessToken(tokenResp.AccessToken)
+	claims, boundExternalKey, err := parseIdentityClaims(c, tokenResp.AccessToken)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse bound identity"})
 		return
@@ -699,10 +724,9 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 	if err := UserModule.Writer.BindIdentityToUser(c.Request.Context(), currentUser.SubjectID, claims, userpkg.BindIdentityOptions{ForceRebind: true}); err != nil {
 		if err.Error() == "identity_already_bound" {
 			fmt.Printf("[bindAuthCallback] branch=identity_already_bound claims.Provider=%q\n", claims.Provider)
-			externalKey := userpkg.BuildExternalKey(claims)
 			mergeToken := encodeMergeState(mergeState{
 				Provider:      claims.Provider,
-				ExternalKey:   externalKey,
+				ExternalKey:   boundExternalKey,
 				UserSubjectID: currentUser.SubjectID,
 				ExpiresAt:     time.Now().Add(5 * time.Minute).Unix(),
 				Nonce:         uuid.NewString(),
@@ -719,7 +743,7 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 			return
 		}
 		fmt.Printf("[ERROR] bindAuthCallback BindIdentityToUser failed: subject_id=%s provider=%q universal_id=%q external_key=%q err=%v\n",
-			currentUser.SubjectID, claims.Provider, claims.UniversalID, userpkg.BuildExternalKey(claims), err)
+			currentUser.SubjectID, claims.Provider, claims.UniversalID, boundExternalKey, err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to bind identity"})
 		return
 	}
@@ -733,6 +757,26 @@ func bindAuthCallback(c *gin.Context, state bindState) {
 		sep = "&"
 	}
 	c.Redirect(http.StatusFound, redirectURL+sep+"bind=success")
+}
+
+// parseIdentityClaims is the bind-identity-callback helper: it forwards
+// the raw Casdoor JWT to cs-user's /api/internal/auth/parse-identity RPC
+// and returns (claims, external_key) sourced entirely from the verified
+// response. Under USER_SERVICE_BACKEND=local (deprecated, see .env.example)
+// the call returns ErrSelfSignUnavailable and bind identity fails.
+//
+// The returned external_key is the value cs-user computed from the SAME
+// verified claims, so callers (merge_token state, error logs) get a
+// single consistent handle.
+func parseIdentityClaims(c *gin.Context, rawJWT string) (*userpkg.JWTClaims, string, error) {
+	result, err := UserModule.Writer.ParseIdentity(c.Request.Context(), rawJWT)
+	if err != nil {
+		return nil, "", err
+	}
+	if result == nil || result.Profile == nil {
+		return nil, "", fmt.Errorf("parse-identity returned empty profile")
+	}
+	return result.Profile.AsJWTClaims(), result.ExternalKey, nil
 }
 
 // Login godoc

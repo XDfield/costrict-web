@@ -1,4 +1,4 @@
-// Package auditlog implements the Phase C4.1 audit-log writer.
+// Package auditlog implements the audit-log writer.
 //
 // The Service.Record method writes a single row to user_center_audit_log
 // capturing the actor + action + target + payload + network context of one
@@ -142,12 +142,12 @@ func (s *Service) Record(ctx context.Context, p RecordParams) error {
 	return nil
 }
 
-// ListParams filters the audit-log query (Phase C4.3). Every field is
+// ListParams filters the audit-log query. Every field is
 // optional — empty string / zero time means "no filter on this dimension".
 // Limit defaults to 100 when non-positive and caps at 500; negative Offset
 // is normalized to 0. Results are newest-first by created_at DESC.
 //
-// TenantID is honored verbatim when set. The Phase C4.3 tenant-scoped
+// TenantID is honored verbatim when set. The tenant-scoped
 // handler forces TenantID from request ctx (resolved from X-Tenant-Id
 // header by middleware.ResolveTenant), so callers cannot spoof a foreign
 // tenant — but the service itself stays scope-agnostic and trusts whatever

@@ -15,10 +15,10 @@ import (
 )
 
 // DefaultTenantID is the canonical ID of the bootstrap tenant created by
-// cs-user's A6/B1 migration. Phase A and any unscoped (no resolver signal)
-// request resolves to this. Read paths fall back to this when ctx carries
-// no tenant — keeps single-tenant behavior correct during the pre-cutover
-// window and for background tasks that have no request ctx.
+// cs-user's tenants migration. Any unscoped (no resolver signal) request
+// resolves to this. Read paths fall back to this when ctx carries no tenant
+// — keeps single-tenant behavior correct for background tasks that have no
+// request ctx.
 const DefaultTenantID = "default"
 
 // ctxKey is unexported so callers can't construct a colliding key. The
@@ -66,10 +66,10 @@ func HasTenant(ctx context.Context) bool {
 
 // IDFromContext returns the canonical tenant_id (tenants.tenant_id PK) for
 // the tenant resolved in ctx, or DefaultTenantID when ctx carries no tenant.
-// This is the helper B5 query scopes call — it always returns a non-empty
-// ID, so `WHERE tenant_id = ?` clauses get a real value and Phase A
-// single-tenant behavior (all rows = "default") stays correct without
-// forcing every caller to handle the "no signal" case.
+// This is the helper query scopes call — it always returns a non-empty
+// ID, so `WHERE tenant_id = ?` clauses get a real value and single-tenant
+// behavior (all rows = "default") stays correct without forcing every
+// caller to handle the "no signal" case.
 func IDFromContext(ctx context.Context) string {
 	if t := FromContext(ctx); t != nil && t.TenantID != "" {
 		return t.TenantID
@@ -81,12 +81,12 @@ func IDFromContext(ctx context.Context) string {
 // using the tenant resolved in ctx (IDFromContext, with DefaultTenantID
 // fallback). Pass to `db.Scopes(tenant.Scope(ctx))` on tenant-scoped tables
 // (users / user_auth_identities / employment_identities — anything carrying
-// the tenant_id column added by B2).
+// the tenant_id column).
 //
 // Single-tenant safety: when no middleware populated the tenant (background
-// tasks, tests, pre-cutover requests), the scope falls back to
-// DefaultTenantID — querying returns the same set as the unscoped pre-B5
-// behavior, so this is safe to apply incrementally without a flag.
+// tasks, tests), the scope falls back to DefaultTenantID — querying returns
+// the default-tenant row set, so this is safe to apply incrementally
+// without a flag.
 //
 // Cross-tenant queries (platform_admin) must NOT use this scope — they need
 // an explicit `CrossTenantScope` or a SECURITY DEFINER function per §10.2.

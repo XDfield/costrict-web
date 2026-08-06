@@ -108,3 +108,6 @@ casdoor/app.conf
 # AI tooling artifacts (local-only, never pushed to remote)
 AGENTS.md
 .trellis/
+
+# Local scratch / verification scripts
+tmp/

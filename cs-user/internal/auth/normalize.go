@@ -1,20 +1,20 @@
 // Package auth: claim normalization.
 //
-// 本文件是 server/internal/authidentity/normalize.go 的等价副本 —— cs-user
-// 作为 platform identity authority 必须自己拥有完整的 Casdoor claims 规范化
+// cs-user 作为 platform identity authority 拥有完整的 Casdoor claims 规范化
 // 规则（provider 推导、phone fallback、idtrust 检测、properties.oauth_GitHub_*
-// 反推、per-provider username/displayName 派生等），不再依赖 server 转交的
-// 派生结果。两侧实现必须保持 byte-for-byte 等价 —— GetOrCreateUser（server）
-// 与 ReissueToken（cs-user）从同一份 Casdoor JWT 必须推出同一个 external_key，
-// 任何分歧都会让 reissue-token 因 lookup 落空而 404。
+// 反推、per-provider username/displayName 派生等）。ReissueToken、ParseIdentity、
+// VerifyToken 三条 RPC 链路都依赖这一份实现，从 Casdoor JWT 推出的 external_key
+// 必须与 GetOrCreateUser / BindIdentityToUser 走的 buildExternalKey 一致 —— 任何
+// 分歧都会让 reissue-token 因 lookup 落空而 404。
 //
-// 副本策略：保留 server 的 normalize.go 原样不动（server middleware 仍在用），
-// cs-user 拥有独立的副本；待 server 的 middleware auth 也通过 cs-user RPC 完成
-// 后，统一删除 server 的副本。两侧实现必须保持 byte-for-byte 等价，迁移期间任
-// 何规则变更都要同步两边。
+// server 端的副本（`server/internal/authidentity/normalize.go`）已删除 —— 本文件
+// 现在是 platform 上 NormalizeClaimsMap 的单一来源。server 通过 cs-user RPC 间接
+// 消费此规则，不再持有本地副本。
 //
-// 与 server 版本的差异：去掉 ParseUnverifiedTokenClaims（依赖 jwt/v4，cs-user
-// 用 jwt/v5 的 ParseWithClaims 直接验签，不需要 unverified 解析）。
+// 历史：在双写期，server 端 authidentity/normalize.go 与本文件逐行复制（diff 仅
+// import + package 名）；当时为了 GET /api/userinfo 等 server 直连 Casdoor 的链路
+// 保留 server 端 unverified 解析能力，故意维持两份副本。cs-user 接管全部
+// identity-verification 职责后 server 不再直连 Casdoor，副本被删除。
 
 package auth
 
