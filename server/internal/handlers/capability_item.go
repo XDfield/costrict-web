@@ -1352,12 +1352,38 @@ func GetItem(c *gin.Context) {
 	if isGitBacked(&item) {
 		raw, herr := readGitBackedItemContent(c, &item)
 		if herr != nil {
+			if gitArchivedDetailMayOmitContent(&item, herr) {
+				// Git lifecycle archives are authoritative metadata states. The
+				// canonical file is expected to be absent, so preserve the empty
+				// content field while still exposing the lifecycle claim.
+				c.JSON(http.StatusOK, buildItemResponseWithGitContent(c, db, item, userID, ""))
+				return
+			}
 			c.JSON(herr.status, herr.body)
 			return
 		}
 		gitContent = string(raw)
 	}
 	c.JSON(http.StatusOK, buildItemResponseWithGitContent(c, db, item, userID, gitContent))
+}
+
+// gitArchivedDetailMayOmitContent is deliberately narrow: only rows already
+// archived by Git with a known lifecycle reason may survive a read-through
+// failure. Active, pending, and transient sync failures must remain errors.
+func gitArchivedDetailMayOmitContent(item *models.CapabilityItem, herr *httpErr) bool {
+	if item == nil || herr == nil || !isGitBacked(item) || item.Status != "archived" || item.GitSyncStatus != "orphaned" || item.GitLifecycleReason == nil {
+		return false
+	}
+	body, ok := herr.body["error_code"]
+	if !ok || body != "GIT_CONTENT_MISSING" {
+		return false
+	}
+	switch *item.GitLifecycleReason {
+	case models.GitLifecycleReasonManifestRemoved, models.GitLifecycleReasonRepositoryDeleted:
+		return true
+	default:
+		return false
+	}
 }
 
 // ListItemAssets godoc

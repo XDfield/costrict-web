@@ -174,7 +174,7 @@ func TestGetItem_LifecycleFieldsAreNotServedToUnauthorizedCallers(t *testing.T) 
 // This test exists so the next change to that behaviour is a deliberate one.
 // The 502 is also a factually wrong statement for `repository_deleted`: it
 // tells the caller to retry a read that can never succeed again.
-func TestGetItem_ArchivedByGitStillFailsBeforeTheClaimIsServed(t *testing.T) {
+func TestGetItem_ArchivedByGitServesLifecycleClaimWithoutContent(t *testing.T) {
 	defer setupTestDB(t)()
 	gitea := setupGitContentFixture(t)
 	gitea.setFile("skill.md", gitContentSkillFile)
@@ -186,20 +186,15 @@ func TestGetItem_ArchivedByGitStillFailsBeforeTheClaimIsServed(t *testing.T) {
 	archiveItemByGit(t, "gc-archived", models.GitLifecycleReasonManifestRemoved, time.Now())
 
 	w := get(newItemRouter("u1"), "/api/items/gc-archived")
-	if w.Code == http.StatusOK {
-		t.Fatalf("BEHAVIOUR CHANGED: the detail endpoint now serves Git-archived rows (%s).\n"+
-			"That is the desired direction — update this test and confirm the response "+
-			"carries gitLifecycleReason.", w.Body.String())
-	}
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("expected 502 from the read-through, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	body := decodeItemBody(t, w.Body.Bytes())
-	if body["error_code"] != "GIT_CONTENT_MISSING" {
-		t.Fatalf("unexpected error_code: %v", body["error_code"])
+	if body["gitLifecycleReason"] != models.GitLifecycleReasonManifestRemoved {
+		t.Fatalf("missing lifecycle reason: %v", body["gitLifecycleReason"])
 	}
-	if _, present := body["gitLifecycleReason"]; present {
-		t.Fatal("the error body already carries the reason; the gap described above is closed")
+	if body["content"] != "" {
+		t.Fatalf("archived missing content must be empty: %v", body["content"])
 	}
 }
 
@@ -208,7 +203,7 @@ func TestGetItem_ArchivedByGitStillFailsBeforeTheClaimIsServed(t *testing.T) {
 // is handed a 5xx that reads as "upstream trouble, come back later". The one
 // field that would say "this is permanent" is the one the response cannot
 // reach.
-func TestGetItem_RepositoryDeletedStillFailsBeforeTheClaimIsServed(t *testing.T) {
+func TestGetItem_RepositoryDeletedServesTerminalLifecycleClaim(t *testing.T) {
 	defer setupTestDB(t)()
 	gitea := setupGitContentFixture(t)
 	gitea.setFile("skill.md", gitContentSkillFile)
@@ -218,16 +213,27 @@ func TestGetItem_RepositoryDeletedStillFailsBeforeTheClaimIsServed(t *testing.T)
 	archiveItemByGit(t, "gc-gone", models.GitLifecycleReasonRepositoryDeleted, time.Now())
 
 	w := get(newItemRouter("u1"), "/api/items/gc-gone")
-	if w.Code == http.StatusOK {
-		t.Fatalf("BEHAVIOUR CHANGED: a deleted repository's item now serves a body (%s). "+
-			"Confirm it carries gitLifecycleReason=repository_deleted and update this test.",
-			w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 	body := decodeItemBody(t, w.Body.Bytes())
-	t.Logf("deleted repository -> HTTP %d error_code=%v (retryable-looking, but terminal)",
-		w.Code, body["error_code"])
-	if _, present := body["gitLifecycleReason"]; present {
-		t.Fatal("the error body already carries the reason; the gap described above is closed")
+	if body["gitLifecycleReason"] != models.GitLifecycleReasonRepositoryDeleted {
+		t.Fatalf("missing terminal lifecycle reason: %v", body["gitLifecycleReason"])
+	}
+	if body["content"] != "" {
+		t.Fatalf("deleted repository content must be empty: %v", body["content"])
+	}
+}
+
+func TestGetItem_ActiveMissingGitContentStillFails(t *testing.T) {
+	defer setupTestDB(t)()
+	gitea := setupGitContentFixture(t)
+	gitea.setFile("skill.md", gitContentSkillFile)
+	seedGitContentItem(t, "gc-active-missing", "skill", "skill.md")
+	delete(gitea.files, "skill.md")
+	w := get(newItemRouter("u1"), "/api/items/gc-active-missing")
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for active missing content, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
