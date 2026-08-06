@@ -55,6 +55,27 @@ config:
   logLevel: "info"
   runMigrations: true
 
+# V4 Git registry bootstrap. Prefer existingSecret in production; value exists
+# only for local development and is never required by the chart.
+botTokenKey:
+  value: ""
+  existingSecret: ""
+  key: cs-bot-token-key
+
+gitServerTemplate:
+  endpoint: ""
+  adminToken:
+    value: ""
+    existingSecret: ""
+    key: admin-token
+  displayName: ""
+  adminUser: ""
+  adminPassword: ""
+
+# Kept explicit because discovery policy is evaluated by both API and worker.
+gitCapability:
+  discoveryExcludedOwners: ""
+
 
 # Database configuration
 database:
@@ -154,8 +175,6 @@ env:
     value: "true"
   - name: PLUGIN_GIT_MIRROR_OWNER
     value: "costrict-plugins-repo"
-  - name: GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS
-    value: ""
 envFrom: []
 
 # Optional: mount an existing ConfigMap as the .env file in the container

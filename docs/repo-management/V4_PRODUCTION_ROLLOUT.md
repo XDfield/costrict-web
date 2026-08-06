@@ -13,24 +13,48 @@
 
 ---
 
-## ⚠️ 1. 三个会让上线静默失败的落差（**上线前必须解决**）
+## ⚠️ 1. 三个会让上线静默失败的配置（**上线前必须解决**）
 
-这三个都是 **charts 里没有、而代码需要**的配置。前两个不解决，功能上线即失效且**不报错**。
+API 和 worker chart 已提供这些一等 values；前两个不配，功能上线即失效且**不报错**。
 
 | # | 变量 | chart | 不配的后果 |
 |---|---|---|---|
-| 1 | **`CS_BOT_TOKEN_KEY`** | ❌ **deploy/ 下完全没有** | **最致命**：`gitBackingWired()` 为 false ⇒ fork/迁移**静默回落 DB 通道**。有一条 stdout 日志可抓（见 §5.1），但很容易被淹没；表现是"功能上了但完全没生效"，我们本地为此排查了数小时 |
-| 2 | **`GIT_SERVER_TEMPLATE_ENDPOINT`** + **`GIT_SERVER_TEMPLATE_ADMIN_TOKEN`** | ❌ 缺失 | 没有任何 git server 记录 ⇒ 所有 Git 操作无处可去。（另有可选的 `_DISPLAY_NAME` / `_ADMIN_USER` / `_ADMIN_PASSWORD`）|
-| 3 | `GIT_CAPABILITY_WORKER_CONCURRENCY` | ❌ 缺失 | 默认 **2**，配合默认 30 秒轮询 ⇒ 吞吐只有 4 job/分钟，而周期巡检每 10 分钟入队至多 50 个：**入 > 出，队列单调增长**。本地实测攒到 355 个 job 后，用户 push 触发的实时同步排到队尾等了一个多小时。建议 **8** |
+| 1 | **`CS_BOT_TOKEN_KEY`** | `api.botTokenKey.existingSecret` | **最致命**：`gitBackingWired()` 为 false ⇒ fork/迁移**静默回落 DB 通道**。有一条 stdout 日志可抓（见 §5.1），但很容易被淹没；表现是"功能上了但完全没生效" |
+| 2 | **`GIT_SERVER_TEMPLATE_ENDPOINT`** + **`GIT_SERVER_TEMPLATE_ADMIN_TOKEN`** | `api.gitServerTemplate.endpoint` + `adminToken.existingSecret` | 没有任何 git server 记录 ⇒ 所有 Git 操作无处可去。（另有可选的 `_DISPLAY_NAME` / `_ADMIN_USER` / `_ADMIN_PASSWORD`）|
+| 3 | `GIT_CAPABILITY_WORKER_CONCURRENCY` | `worker.gitCapability.workerConcurrency`（默认 **8**） | 默认 2 配合默认 30 秒轮询会造成**入 > 出，队列单调增长**；chart 的默认 8 用于覆盖这一保守程序默认值 |
 
 > ⚠️ **`GIT_SERVER_TEMPLATE_*` 只种一半。** 启动种子（`gitserver.BootstrapTemplate`）只写
 > `config.admin_token`（+ 可选 `admin_user`/`admin_password`），**不写 `config.web_url`，也不写
 > `config.webhook_secret`**，而且只建 `is_template=true` 的行、**不建租户绑定**。
 > 这三件事必须在 §6 手工补齐，否则：webhook 全部 401、页面链接全是坏链、租户解析不到 git server。
 
-已在 chart 里的（无需额外动作）：`PLUGIN_GIT_MIRROR_OWNER`、`GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS`、
-`GIT_CAPABILITY_RECONCILE_INTERVAL`、`GIT_CAPABILITY_RECONCILE_BATCH_SIZE`、`GIT_SYSTEM_WEBHOOK_BASE_URL`、
-`GIT_SYSTEM_HOOK_RECONCILE_INTERVAL_SECONDS`。
+生产 values 示例（`existingSecret` 优先；`value` 只适用于本地开发）：
+
+```yaml
+# api-values.yaml
+botTokenKey:
+  existingSecret: costrict-bot-key
+  key: cs-bot-token-key
+gitServerTemplate:
+  endpoint: http://gitea.gitea.svc:3000
+  adminToken:
+    existingSecret: gitea-admin
+    key: token
+  displayName: Production Gitea       # 可选
+  adminUser: gitadmin                 # 可选
+  adminPassword: ""                   # 可选，不建议明文
+gitCapability:
+  discoveryExcludedOwners: costrict-plugins-repo
+
+# worker-values.yaml
+config:
+  concurrency: "5"                   # 映射为 WORKER_CONCURRENCY
+gitCapability:
+  workerConcurrency: "8"
+  discoveryExcludedOwners: costrict-plugins-repo
+```
+
+`env` / `envFrom` 仍保留作逃生口；它们适合已有集中式注入，但不要同时为同一个变量设置一等 value。`CS_BOT_TOKEN_KEY` 只由 api（以及人工运行的迁移 CLI）读取，worker chart 不注入它。
 
 ### 为什么 #1 特别危险
 
@@ -135,6 +159,10 @@ bootstrap 之前跑冒烟必然假失败，理由见 §3）。
 6. 再次验证（§5 完整）
 7. 数据清理（§4.1 `flatten-plugins`）—— **必须排在第 2 步之后**，理由见该节
 ```
+
+Helm chart **不创建 migration Job**。保留 API 的内嵌 migrate（`RUN_MIGRATIONS`）与 worker 的
+AutoMigrate；它们使用同一 PostgreSQL advisory lock，因此并发启动会串行化。发布门禁仍是先确认
+第 1 步 migration 成功，再滚动 api 与 worker，而不是额外引入一套 Job 顺序。
 
 ### ⚠️ migration 必须先于 api（顺序反了，症状会落在一个你没改的功能上）
 
@@ -436,9 +464,9 @@ plugin 是特例：它需要先把上游镜像导进自建 Gitea（`BUNDLE_TO_GI
 - [ ] **Gitea 是魔改版**：`strings <gitea二进制> | grep -c CoStrictJWT` **非 0**（0 = 官方版，见 §2）
 - [ ] **`app.ini` 里 `[costrict] ENABLED = true`**，且 `JWT_JWKS_URL` 指向真正的 JWT 签发方（cs-user `/.well-known/jwks`）
 - [ ] （建议，非必过）Gitea `DEFAULT_BRANCH=main` —— 一致性考虑，不是链路失效根因（§2）
-- [ ] **`CS_BOT_TOKEN_KEY` 已注入 api 与 worker**（推荐 k8s `env:`；envFile/ConfigMap 挂 `/app/.env` 同样有效，见 §1）
-- [ ] `GIT_SERVER_TEMPLATE_ENDPOINT` + `_ADMIN_TOKEN` 已配
-- [ ] `GIT_CAPABILITY_WORKER_CONCURRENCY=8`
+- [ ] **`CS_BOT_TOKEN_KEY` 已注入 api**（推荐 `api.botTokenKey.existingSecret`；env/envFrom 与 envFile 仍可用，见 §1）
+- [ ] `api.gitServerTemplate.endpoint` + `adminToken.existingSecret` 已配
+- [ ] `worker.gitCapability.workerConcurrency=8`
 - [ ] `server/migrations/2026080[2-9]*` 下的 migration **全部**执行成功（当前 20 个，以实际文件为准）
 - [ ] **migration 在 api 之前跑完** —— 反了会让管理员下架 500 且条目不变（§3；`20260806000300`）
 - [ ] api 与 worker **同批**上线

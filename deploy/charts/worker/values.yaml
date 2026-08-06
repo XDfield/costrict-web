@@ -42,7 +42,17 @@ affinity: {}
 # Worker specific configuration
 config:
   logLevel: "info"
+  # Rendered as WORKER_CONCURRENCY. Retains the existing values key for
+  # compatibility with current release overrides.
   concurrency: "5"
+
+# Git capability worker tuning and discovery policy. Eight workers sustain the
+# default reconcile batch; override for the available database/Gitea capacity.
+gitCapability:
+  workerConcurrency: "8"
+  discoveryExcludedOwners: ""
+  reconcileInterval: "10m"
+  reconcileBatchSize: "50"
 
 # Gitea system webhook reconciliation. baseURL is the externally reachable
 # public API base, including the deployment's API ingress path prefix when it
@@ -96,12 +106,6 @@ artifactStorage:
 env:
   - name: PLUGIN_GIT_MIRROR_OWNER
     value: "costrict-plugins-repo"
-  - name: GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS
-    value: ""
-  - name: GIT_CAPABILITY_RECONCILE_INTERVAL
-    value: "10m"
-  - name: GIT_CAPABILITY_RECONCILE_BATCH_SIZE
-    value: "50"
 envFrom: []
 
 livenessProbe:

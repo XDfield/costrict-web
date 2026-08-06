@@ -473,13 +473,14 @@ WHERE content_backend = 'git' AND source_git_repo_id = <旧id>;
 
 | 变量 | 默认 | 谁读 | 走 viper 吗 |
 |---|---|---|---|
-| `CS_BOT_TOKEN_KEY` | — | api（裸 `os.Getenv`） | ❌ |
-| `GIT_SERVER_TEMPLATE_ENDPOINT` | — | api 启动种子 | ❌ |
-| `GIT_SERVER_TEMPLATE_ADMIN_TOKEN` | — | 同上 | ❌ |
+| `CS_BOT_TOKEN_KEY` | —（chart 默认不注入） | api（裸 `os.Getenv`） | ❌ |
+| `GIT_SERVER_TEMPLATE_ENDPOINT` | —（chart 默认不注入） | api 启动种子 | ❌ |
+| `GIT_SERVER_TEMPLATE_ADMIN_TOKEN` | —（chart 默认不注入） | 同上 | ❌ |
 | `GIT_SERVER_TEMPLATE_DISPLAY_NAME` / `_ADMIN_USER` / `_ADMIN_PASSWORD` | — | 同上（可选） | ❌ |
 | `PLUGIN_GIT_MIRROR_OWNER` | `costrict-plugins-repo` | api + worker | ❌ |
 | `GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS` | 空 | api + worker | ❌ |
-| `GIT_CAPABILITY_WORKER_CONCURRENCY` | **2** | worker | ❌ |
+| `WORKER_CONCURRENCY` | chart 默认 **5** | worker | ❌ |
+| `GIT_CAPABILITY_WORKER_CONCURRENCY` | 程序默认 **2**；chart 默认 **8** | worker | ❌ |
 | `GIT_CAPABILITY_RECONCILE_INTERVAL` | **10m**（Go duration） | worker | ❌ |
 | `GIT_CAPABILITY_RECONCILE_BATCH_SIZE` | **50** | worker | ❌ |
 | `WORKER_POLL_INTERVAL_SECONDS` | **30** | worker（**两个池子共用**） | ❌ |
@@ -513,6 +514,19 @@ WHERE content_backend = 'git' AND source_git_repo_id = <旧id>;
 > k8s 的 `env:` / `envFrom:` 仍是**推荐**方式，因为它可观测：`kubectl exec ... env | grep`
 > 只看得到容器 spec 里的变量，**看不到** entrypoint 为应用进程 source 进去的那批 ——
 > 用 envFile 时这条命令会给出假阴性。
+
+### 9.1 Helm 的一等配置
+
+API chart 以 `botTokenKey.existingSecret` 和 `gitServerTemplate.adminToken.existingSecret` 引用现有
+Secret；两个 `value` 字段仅为本地开发保留。`gitServerTemplate.endpoint` 和可选的
+`displayName` / `adminUser` / `adminPassword` 直接渲染为环境变量。worker chart 的
+`config.concurrency` 正确渲染为 `WORKER_CONCURRENCY`，`gitCapability.workerConcurrency` 默认渲染为
+`GIT_CAPABILITY_WORKER_CONCURRENCY=8`。两个 chart 都有 `gitCapability.discoveryExcludedOwners`。
+
+这些 values 不代替 bootstrap：自动种子仍不会写 `git_servers.config.web_url` 或
+`config.webhook_secret`，也不会创建 tenant binding；三项必须按 §6.4 的人工步骤完成。Helm 不创建
+migration Job：现有 API 内嵌 migrate 与 worker AutoMigrate 共用 PostgreSQL advisory lock，按
+`V4_PRODUCTION_ROLLOUT.md` §3 先确认 migration 再滚动两个 deployment。
 
 改任何一个 `GIT_CAPABILITY_*` / `PLUGIN_GIT_MIRROR_OWNER` /
 `GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS` 都**必须重启 worker** —— discovery 跑在 worker 里，

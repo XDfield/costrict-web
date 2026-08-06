@@ -59,8 +59,16 @@ spec:
           env:
             - name: LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
-            - name: CONCURRENCY
+            - name: WORKER_CONCURRENCY
               value: {{ .Values.config.concurrency | quote }}
+            - name: GIT_CAPABILITY_WORKER_CONCURRENCY
+              value: {{ .Values.gitCapability.workerConcurrency | quote }}
+            - name: GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS
+              value: {{ .Values.gitCapability.discoveryExcludedOwners | quote }}
+            - name: GIT_CAPABILITY_RECONCILE_INTERVAL
+              value: {{ .Values.gitCapability.reconcileInterval | quote }}
+            - name: GIT_CAPABILITY_RECONCILE_BATCH_SIZE
+              value: {{ .Values.gitCapability.reconcileBatchSize | quote }}
             - name: DB_HOST
               value: {{ .Values.database.host | quote }}
             - name: DB_PORT

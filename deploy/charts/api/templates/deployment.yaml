@@ -67,6 +67,50 @@ spec:
               value: {{ .Values.config.logLevel | quote }}
             - name: RUN_MIGRATIONS
               value: {{ .Values.config.runMigrations | quote }}
+            {{- with .Values.botTokenKey }}
+            {{- if .existingSecret }}
+            - name: CS_BOT_TOKEN_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .existingSecret }}
+                  key: {{ .key }}
+            {{- else if .value }}
+            - name: CS_BOT_TOKEN_KEY
+              value: {{ .value | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.gitServerTemplate }}
+            {{- with .endpoint }}
+            - name: GIT_SERVER_TEMPLATE_ENDPOINT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .adminToken }}
+            {{- if .existingSecret }}
+            - name: GIT_SERVER_TEMPLATE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .existingSecret }}
+                  key: {{ .key }}
+            {{- else if .value }}
+            - name: GIT_SERVER_TEMPLATE_ADMIN_TOKEN
+              value: {{ .value | quote }}
+            {{- end }}
+            {{- end }}
+            {{- with .displayName }}
+            - name: GIT_SERVER_TEMPLATE_DISPLAY_NAME
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .adminUser }}
+            - name: GIT_SERVER_TEMPLATE_ADMIN_USER
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .adminPassword }}
+            - name: GIT_SERVER_TEMPLATE_ADMIN_PASSWORD
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
+            - name: GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS
+              value: {{ .Values.gitCapability.discoveryExcludedOwners | quote }}
             - name: DB_HOST
               value: {{ .Values.database.host | quote }}
             - name: DB_PORT

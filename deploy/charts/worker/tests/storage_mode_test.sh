@@ -47,6 +47,22 @@ assert_contains "$TEST_DIR/local.yaml" "name: ARTIFACT_STORAGE_PATH"
 assert_not_contains "$TEST_DIR/local.yaml" "name: S3_ENDPOINT"
 assert_not_contains "$TEST_DIR/local.yaml" "name: GIT_SYSTEM_WEBHOOK_BASE_URL"
 assert_env_value "$TEST_DIR/local.yaml" "GIT_SYSTEM_HOOK_RECONCILE_INTERVAL_SECONDS" "300"
+assert_env_value "$TEST_DIR/local.yaml" "WORKER_CONCURRENCY" "5"
+assert_not_contains "$TEST_DIR/local.yaml" "name: CONCURRENCY"
+assert_env_value "$TEST_DIR/local.yaml" "GIT_CAPABILITY_WORKER_CONCURRENCY" "8"
+assert_env_value "$TEST_DIR/local.yaml" "GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS" ""
+
+helm template v4-worker "$CHART_DIR" \
+  --set config.concurrency=12 \
+  --set gitCapability.workerConcurrency=16 \
+  --set gitCapability.discoveryExcludedOwners=mirror \
+  --set gitCapability.reconcileInterval=2m \
+  --set gitCapability.reconcileBatchSize=80 > "$TEST_DIR/v4-worker.yaml"
+assert_env_value "$TEST_DIR/v4-worker.yaml" "WORKER_CONCURRENCY" "12"
+assert_env_value "$TEST_DIR/v4-worker.yaml" "GIT_CAPABILITY_WORKER_CONCURRENCY" "16"
+assert_env_value "$TEST_DIR/v4-worker.yaml" "GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS" "mirror"
+assert_env_value "$TEST_DIR/v4-worker.yaml" "GIT_CAPABILITY_RECONCILE_INTERVAL" "2m"
+assert_env_value "$TEST_DIR/v4-worker.yaml" "GIT_CAPABILITY_RECONCILE_BATCH_SIZE" "80"
 
 helm template webhook-enabled "$CHART_DIR" \
   --set gitSystemWebhook.baseURL=https://cloud.example/cloud-api \
