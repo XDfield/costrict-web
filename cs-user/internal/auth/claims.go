@@ -10,10 +10,10 @@
 //     claims ride in this group without a Casdoor counterpart: short_id (the
 //     Gitea username) and user_id (the Gitea binding-lookup key, same value
 //     as sub) — see the field comments before changing either.
-//  3. Enterprise context (Phase A5 — populated from employment_identities):
+//  3. Enterprise context (populated from employment_identities):
 //     employee_number / job_title / job_level / employment_type /
-//     cost_center / org_path / work_location. Plus tenant_id, reserved for
-//     Phase B (single-tenant now).
+//     cost_center / org_path / work_location. Plus tenant_id (single-tenant
+//     for now).
 //
 // Wire compatibility: server's existing JWTClaims parser
 // (server/internal/user/service.go) already handles group 2 — group 3 fields
@@ -74,7 +74,7 @@ type EnterpriseClaims struct {
 	ProviderUserID string `json:"provider_user_id,omitempty"`
 	Phone          string `json:"phone,omitempty"`
 
-	// --- Enterprise context (Phase A5 — from employment_identities) ---
+	// --- Enterprise context (from employment_identities) ---
 	// EnterpriseUID is the user's stable identifier at the enterprise IdP
 	// (e.g. idtrust id). DisplayName is the per-provider 姓名 (display name).
 	// Both are immutable from the user's perspective — every login
@@ -91,15 +91,15 @@ type EnterpriseClaims struct {
 	OrgPath        string `json:"org_path,omitempty"`
 	WorkLocation   string `json:"work_location,omitempty"`
 
-	// --- Tenant (Phase B populates; Phase A5 reserves) ---
+	// --- Tenant ---
 	TenantID string `json:"tenant_id,omitempty"`
-	// TenantSlug is the URL-friendly tenant key (Phase B). Server's auth
+	// TenantSlug is the URL-friendly tenant key. Server's auth
 	// middleware reads this claim to compare against the runtime-resolved
 	// slug (cookie / subdomain) for cross-tenant detection (B3b.2c). Empty
 	// for Casdoor-issued tokens (pre-cutover) — comparison must skip.
 	TenantSlug string `json:"tenant_slug,omitempty"`
 
-	// --- Permission (Phase C1 — populated from tenant_admins + platform_admins) ---
+	// --- Permission (populated from tenant_admins + platform_admins) ---
 	// TenantRoles lists the user's active roles on their current tenant
 	// (TenantID). Sourced from tenant_admins rows WHERE revoked_at IS NULL.
 	// Empty for users who are not tenant admins (regular tenant members).
