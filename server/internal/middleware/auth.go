@@ -376,6 +376,18 @@ func introspectToken(token string) (*VerifiedUserInfo, error) {
 		return nil, err
 	}
 
+	// Cache skip: when cs-user just reissued a fresh cs-user token (the
+	// Casdoor-JWT fallback path), the browser will overwrite its cookie with
+	// ReissuedToken on this very response — subsequent requests carry the
+	// NEW token, so this OLD-token cache entry is dead weight. Worse, caching
+	// here would amplify a stale entry across the 5-min TTL even after the
+	// user's Casdoor session expired. The fallback is rare (one rewrite per
+	// user per cutover); the fast path (cs-user JWT in / cs-user JWT out)
+	// remains cached.
+	if info.ReissuedToken != "" {
+		return info, nil
+	}
+
 	tokenCacheMu.Lock()
 	tokenCache[cacheKey] = tokenCacheEntry{info: info, expiresAt: now.Add(tokenCacheTTL)}
 	tokenCacheMu.Unlock()
@@ -433,6 +445,13 @@ func introspectTokenViaCSUser(cfg tokenVerifierConfig, token string) (*VerifiedU
 		TenantID    string `json:"tenant_id,omitempty"`
 		TenantSlug  string `json:"tenant_slug,omitempty"`
 		Issuer      string `json:"iss,omitempty"`
+
+		// ReissuedToken / ReissuedExpiresAt are populated ONLY when cs-user
+		// took the Casdoor-JWT fallback path AND the user is known.
+		// Currently parsed but DORMANT — no action is taken (cookie rewrite
+		// disabled). Plumbing retained for re-enablement.
+		ReissuedToken     string    `json:"reissued_token,omitempty"`
+		ReissuedExpiresAt time.Time `json:"reissued_expires_at,omitempty"`
 	}
 	if err := json.Unmarshal(respBody, &verified); err != nil {
 		logger.Warn("[introspectToken] decode cs-user response failed: %v", err)
@@ -456,10 +475,10 @@ func introspectTokenViaCSUser(cfg tokenVerifierConfig, token string) (*VerifiedU
 		TenantID:          verified.TenantID,
 		TenantSlug:        verified.TenantSlug,
 		Issuer:            verified.Issuer,
+		ReissuedToken:     verified.ReissuedToken,
+		ReissuedExpiresAt: verified.ReissuedExpiresAt,
 	}
-	// cs-user VerifyToken only accepts cs-user-signed JWTs. Issuer is
-	// purely informational — no downstream branch switches on it, so we
-	// don't need a defensive default.
+	// Issuer is purely informational — no downstream branch switches on it.
 	return info, nil
 }
 
@@ -569,6 +588,19 @@ type VerifiedUserInfo struct {
 	// the `tenant_roles` JWT array claim emitted by cs-user. nil/empty for
 	// regular tenant members.
 	TenantRoles []string `json:"tenant_roles,omitempty"`
+
+	// ReissuedToken carries a freshly-minted cs-user JWT when cs-user took
+	// the Casdoor-JWT fallback path for a known user. Currently DORMANT —
+	// parsed off the verify response and threaded through VerifiedUserInfo
+	// but no middleware branch acts on it. The active cookie-rewrite was
+	// disabled ("server 先不做 cookie rewrite"); the field plumbing stays
+	// so re-enabling only needs a helper + call sites. Empty on the cs-user
+	// JWT fast path and on every rejection.
+	ReissuedToken string `json:"reissued_token,omitempty"`
+	// ReissuedExpiresAt is the exp claim of ReissuedToken. Always paired
+	// with ReissuedToken; never emitted alone. Currently dormant alongside
+	// ReissuedToken.
+	ReissuedExpiresAt time.Time `json:"reissued_expires_at,omitempty"`
 }
 
 // AuthClaims is the gin-context representation of the verified identity. It is

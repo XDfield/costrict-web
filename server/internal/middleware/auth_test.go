@@ -737,6 +737,41 @@ func TestRequireAuth_IgnoresSubjectResolver_PostPhase52(t *testing.T) {
 	}
 }
 
+// TestParseToken_ReissuedTokenSkipsCache pins the cache-skip rule: when
+// cs-user returns a reissued_token, the lookup for the INPUT token MUST
+// NOT be cached. The reissued-token response is one-shot — caching it
+// would amplify a stale entry across the 5-min TTL even after the user's
+// Casdoor session expired. The fast path (no reissued_token) stays cached.
+func TestParseToken_ReissuedTokenSkipsCache(t *testing.T) {
+	const inputToken = "stale-casdoor-jwt"
+	const reissued = "CS-USER-FRESH-JWT"
+	exp := time.Now().Add(time.Hour).UTC()
+
+	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
+		body := verifyOK("usr_cache_skip", "default", "default")
+		body["reissued_token"] = reissued
+		body["reissued_expires_at"] = exp
+		_ = json.NewEncoder(w).Encode(body)
+	})
+	installVerifier(t, stub.server.URL)
+
+	// First call — populates (or skips) cache.
+	_, err := ParseToken(inputToken)
+	if err != nil {
+		t.Fatalf("first ParseToken: %v", err)
+	}
+	// Second call with the same input token — must re-hit cs-user because
+	// the response carried a reissued_token (cache skipped).
+	_, err = ParseToken(inputToken)
+	if err != nil {
+		t.Fatalf("second ParseToken: %v", err)
+	}
+
+	if calls := stub.calls.Load(); calls != 2 {
+		t.Errorf("cs-user call count: got %d, want 2 (reissue path must skip cache)", calls)
+	}
+}
+
 // ===========================================================================
 // 5. OptionalAuth middleware (integration-style via stub cs-user)
 // ===========================================================================
