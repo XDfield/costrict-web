@@ -345,19 +345,36 @@ func (h *DistributionHandler) RevokeDistribution(c *gin.Context) {
 
 // DismissReceipt godoc
 // @Summary      Dismiss distribution receipt
-// @Description  Dismiss a received distribution from the user's view
+// @Description  Dismiss a received distribution from the user's view. Readonly (enforced) distributions cannot be dismissed by the recipient while they are active or paused.
 // @Tags         distributions
 // @Produce      json
 // @Param        id   path      string  true  "Distribution ID"
 // @Success      200  {object}  object{message=string}
 // @Failure      400  {object}  object{error=string}
+// @Failure      403  {object}  object{error=string,error_code=string}
+// @Failure      404  {object}  object{error=string}
 // @Router       /distributions/{id}/dismiss [post]
 func (h *DistributionHandler) DismissReceipt(c *gin.Context) {
 	distID := c.Param("id")
 	userID := c.GetString(middleware.UserIDKey)
 
 	if err := h.distSvc.DismissReceipt(c.Request.Context(), distID, userID); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		switch {
+		case errors.Is(err, services.ErrReceiptNotDismissible):
+			// F-32: the "forced" semantic of permission_mode=readonly finally
+			// has a backend gate; the frontend already hides the dismiss
+			// button for readonly rows, so this only stops direct API calls.
+			// Structured so a client can branch on the code rather than the
+			// message (same shape as GIT_ACCOUNT_NOT_READY).
+			c.JSON(http.StatusForbidden, gin.H{
+				"error":      "This distribution is enforced (readonly) and cannot be dismissed by the recipient",
+				"error_code": "DISTRIBUTION_READONLY",
+			})
+		case errors.Is(err, services.ErrDistributionNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "Distribution not found"})
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		}
 		return
 	}
 

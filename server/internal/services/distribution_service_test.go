@@ -1005,6 +1005,240 @@ func TestDismissReceipt_DismissesUnfavoritesAndTombstonesAtomically(t *testing.T
 	}
 }
 
+// F-31. Auto-favorite at distribute time is best-effort; when it never
+// succeeded, the recipient's entitlement exists only as the receipt. The old
+// dismiss path expressed removal exclusively through UnfavoriteItemTx, whose
+// compare-and-set fires only when a favorite row is actually deleted — so a
+// receipt-only recipient who dismissed got no tombstone and the device kept
+// the capability forever. The receipt transition itself must be the event
+// source, mirroring the F-22 fix on the revoke side. The three holder shapes
+// are asserted separately because the defect was shape-dependent.
+func TestDismissReceipt_HolderShapesAllLeaveOneTombstone(t *testing.T) {
+	seed := func(t *testing.T, db *gorm.DB, withReceipt, withFavorite bool) {
+		t.Helper()
+		if err := db.Exec(`INSERT INTO capability_items (id, name, favorite_count) VALUES ('item-1','Code Reviewer',?)`,
+			map[bool]int{true: 1, false: 0}[withFavorite]).Error; err != nil {
+			t.Fatalf("seed item: %v", err)
+		}
+		if err := db.Create(&models.ItemDistribution{ID: "d1", ItemID: "item-1", DistributorID: "admin-a", PermissionMode: "dismissible", Status: "active", ScopeType: "user", TargetID: "u1"}).Error; err != nil {
+			t.Fatalf("seed dist: %v", err)
+		}
+		if withReceipt {
+			if err := db.Create(&models.ItemDistributionReceipt{ID: "r1", DistributionID: "d1", UserID: "u1", ReceiptStatus: "read"}).Error; err != nil {
+				t.Fatalf("seed receipt: %v", err)
+			}
+		}
+		if withFavorite {
+			if err := db.Create(&models.ItemFavorite{ID: "f1", ItemID: "item-1", UserID: "u1"}).Error; err != nil {
+				t.Fatalf("seed favorite: %v", err)
+			}
+		}
+	}
+
+	t.Run("receipt-only", func(t *testing.T) {
+		db := setupRevokeFavoriteDB(t)
+		svc := NewDistributionService(db, NewBehaviorService(db), nil)
+		ctx := context.Background()
+		seed(t, db, true, false)
+
+		if err := svc.DismissReceipt(ctx, "d1", "u1"); err != nil {
+			t.Fatalf("dismiss: %v", err)
+		}
+
+		var receiptStatus string
+		if err := db.Model(&models.ItemDistributionReceipt{}).Where("id = 'r1'").
+			Pluck("receipt_status", &receiptStatus).Error; err != nil {
+			t.Fatalf("reload receipt: %v", err)
+		}
+		if receiptStatus != "dismissed" {
+			t.Fatalf("receipt status = %q, want dismissed", receiptStatus)
+		}
+		// The regression: no favorite row existed, UnfavoriteItemTx's CAS never
+		// fired, and before the fix this left ZERO tombstones.
+		tombstone := loadDistributionTombstone(t, db, "item-1", "u1")
+		if tombstone.Reason != models.SyncTombstoneReasonUnfavorited ||
+			tombstone.Source != models.SyncTombstoneSourceFavorite {
+			t.Fatalf("tombstone cause = %s/%s, want unfavorited/favorite (the user let it go)",
+				tombstone.Reason, tombstone.Source)
+		}
+		if tombstone.LifecycleReason != nil {
+			t.Fatalf("unfavorited tombstone carries lifecycle reason %q", *tombstone.LifecycleReason)
+		}
+		if tombstone.EventID == "" {
+			t.Fatal("tombstone has no event id; the client cannot dedup it")
+		}
+
+		// A repeated dismiss is not a new transition: the receipt CAS matches
+		// nothing and the event id must not rotate.
+		first := tombstone.EventID
+		if err := svc.DismissReceipt(ctx, "d1", "u1"); err != nil {
+			t.Fatalf("repeat dismiss: %v", err)
+		}
+		if again := loadDistributionTombstone(t, db, "item-1", "u1"); again.EventID != first {
+			t.Fatalf("a repeated dismiss rotated the event id: %s -> %s", first, again.EventID)
+		}
+	})
+
+	t.Run("favorite-and-receipt", func(t *testing.T) {
+		db := setupRevokeFavoriteDB(t)
+		svc := NewDistributionService(db, NewBehaviorService(db), nil)
+		ctx := context.Background()
+		seed(t, db, true, true)
+
+		if err := svc.DismissReceipt(ctx, "d1", "u1"); err != nil {
+			t.Fatalf("dismiss: %v", err)
+		}
+
+		if got := countFavorites(t, db, "item-1", "u1"); got != 0 {
+			t.Fatalf("favorite survived the dismissal: %d", got)
+		}
+		// Convergence: the favorite path and the receipt path both recorded the
+		// removal inside one transaction — one terminal row, not two.
+		if total := countTombstones(t, db); total != 1 {
+			t.Fatalf("the two write paths left %d tombstones, want 1", total)
+		}
+		tombstone := loadDistributionTombstone(t, db, "item-1", "u1")
+		if tombstone.Reason != models.SyncTombstoneReasonUnfavorited ||
+			tombstone.Source != models.SyncTombstoneSourceFavorite {
+			t.Fatalf("converged tombstone cause = %s/%s, want unfavorited/favorite",
+				tombstone.Reason, tombstone.Source)
+		}
+	})
+
+	t.Run("favorite-only", func(t *testing.T) {
+		// No receipt: dismiss has no transition to perform, so it must error
+		// and touch NOTHING — no favorite removal, no tombstone. A tombstone
+		// here would report a removal that never happened.
+		db := setupRevokeFavoriteDB(t)
+		svc := NewDistributionService(db, NewBehaviorService(db), nil)
+		ctx := context.Background()
+		seed(t, db, false, true)
+
+		if err := svc.DismissReceipt(ctx, "d1", "u1"); err == nil {
+			t.Fatal("dismissing without a receipt reported success")
+		}
+		if got := countFavorites(t, db, "item-1", "u1"); got != 1 {
+			t.Fatalf("favorite touched by a failed dismissal: %d", got)
+		}
+		if total := countTombstones(t, db); total != 0 {
+			t.Fatalf("a failed dismissal wrote %d tombstones", total)
+		}
+	})
+}
+
+// F-32. permission_mode=readonly means the distribution is enforced, but the
+// backend never checked it: any recipient could POST /dismiss directly (the
+// frontend merely hides the button) and — with F-23's correct same-tx
+// behaviour — also shed the enforced favorite. The gate refuses while the
+// distribution still asserts its claim (active AND paused: dismissing inside
+// a pause window would make the later resume skip the receipt, a permanent
+// escape from an enforced distribution). A terminally revoked distribution
+// releases the claim. Admin revoke itself is untouched — it never goes
+// through DismissReceipt (see TestRevokeReadonlyDistribution_*).
+func TestDismissReceipt_ReadonlyReceiptIsNotDismissible(t *testing.T) {
+	seedReadonly := func(t *testing.T, db *gorm.DB, status, receiptStatus string) {
+		t.Helper()
+		if err := db.Exec(`INSERT INTO capability_items (id, name, favorite_count) VALUES ('item-1','Code Reviewer',1)`).Error; err != nil {
+			t.Fatalf("seed item: %v", err)
+		}
+		if err := db.Create(&models.ItemDistribution{ID: "d1", ItemID: "item-1", DistributorID: "admin-a", PermissionMode: "readonly", Status: status, ScopeType: "user", TargetID: "u1"}).Error; err != nil {
+			t.Fatalf("seed dist: %v", err)
+		}
+		if err := db.Create(&models.ItemDistributionReceipt{ID: "r1", DistributionID: "d1", UserID: "u1", ReceiptStatus: receiptStatus}).Error; err != nil {
+			t.Fatalf("seed receipt: %v", err)
+		}
+		if err := db.Create(&models.ItemFavorite{ID: "f1", ItemID: "item-1", UserID: "u1"}).Error; err != nil {
+			t.Fatalf("seed favorite: %v", err)
+		}
+	}
+	receiptStatus := func(t *testing.T, db *gorm.DB) string {
+		t.Helper()
+		var status string
+		if err := db.Model(&models.ItemDistributionReceipt{}).Where("id = 'r1'").
+			Pluck("receipt_status", &status).Error; err != nil {
+			t.Fatalf("reload receipt: %v", err)
+		}
+		return status
+	}
+
+	for _, status := range []string{"active", "paused"} {
+		t.Run(status+" refuses", func(t *testing.T) {
+			db := setupRevokeFavoriteDB(t)
+			svc := NewDistributionService(db, NewBehaviorService(db), nil)
+			seedReadonly(t, db, status, "read")
+
+			err := svc.DismissReceipt(context.Background(), "d1", "u1")
+			if !errors.Is(err, ErrReceiptNotDismissible) {
+				t.Fatalf("dismiss of a readonly %s distribution: err = %v, want ErrReceiptNotDismissible", status, err)
+			}
+			if got := receiptStatus(t, db); got != "read" {
+				t.Fatalf("refused dismissal still moved the receipt to %q", got)
+			}
+			if got := countFavorites(t, db, "item-1", "u1"); got != 1 {
+				t.Fatalf("refused dismissal removed the enforced favorite: %d", got)
+			}
+			if total := countTombstones(t, db); total != 0 {
+				t.Fatalf("refused dismissal wrote %d tombstones", total)
+			}
+		})
+	}
+
+	t.Run("revoked releases the claim", func(t *testing.T) {
+		// A receipt that survived a revoke non-dismissed (legacy data predating
+		// the auto-dismiss on revoke) may be cleaned up: the distribution no
+		// longer asserts anything.
+		db := setupRevokeFavoriteDB(t)
+		svc := NewDistributionService(db, NewBehaviorService(db), nil)
+		seedReadonly(t, db, "revoked", "read")
+
+		if err := svc.DismissReceipt(context.Background(), "d1", "u1"); err != nil {
+			t.Fatalf("dismiss of a revoked readonly distribution: %v", err)
+		}
+		if got := receiptStatus(t, db); got != "dismissed" {
+			t.Fatalf("receipt status = %q, want dismissed", got)
+		}
+	})
+
+	t.Run("already dismissed stays idempotent", func(t *testing.T) {
+		// The gate protects the transition, not the endpoint: a receipt that is
+		// already dismissed (it may predate the gate, or a later switch to
+		// readonly) reports success and rotates nothing.
+		db := setupRevokeFavoriteDB(t)
+		svc := NewDistributionService(db, NewBehaviorService(db), nil)
+		seedReadonly(t, db, "active", "dismissed")
+
+		if err := svc.DismissReceipt(context.Background(), "d1", "u1"); err != nil {
+			t.Fatalf("repeat dismiss under the gate: %v", err)
+		}
+		if total := countTombstones(t, db); total != 0 {
+			t.Fatalf("idempotent no-op wrote %d tombstones", total)
+		}
+	})
+
+	t.Run("missing receipt stays receipt-not-found", func(t *testing.T) {
+		// The refusal must not leak the permission answer for a receipt the
+		// caller does not hold.
+		db := setupRevokeFavoriteDB(t)
+		svc := NewDistributionService(db, NewBehaviorService(db), nil)
+		seedReadonly(t, db, "active", "read")
+
+		err := svc.DismissReceipt(context.Background(), "d1", "someone-else")
+		if err == nil || errors.Is(err, ErrReceiptNotDismissible) {
+			t.Fatalf("dismiss without a receipt: err = %v, want a plain receipt-not-found error", err)
+		}
+	})
+
+	t.Run("unknown distribution is a distinct error", func(t *testing.T) {
+		db := setupRevokeFavoriteDB(t)
+		svc := NewDistributionService(db, NewBehaviorService(db), nil)
+
+		err := svc.DismissReceipt(context.Background(), "no-such-dist", "u1")
+		if !errors.Is(err, ErrDistributionNotFound) {
+			t.Fatalf("dismiss of an unknown distribution: err = %v, want ErrDistributionNotFound", err)
+		}
+	})
+}
+
 // F-23, the failure path the finding is actually about. The old code ran
 // UnfavoriteItem — its OWN transaction — inside this one and discarded its
 // error, so the receipt committed dismissed while the favorite survived.

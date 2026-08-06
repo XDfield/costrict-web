@@ -88,6 +88,10 @@ var (
 	// ErrTargetOutOfScope is returned when a (non-platform-admin) department manager
 	// aims a distribution at a department or user outside the subtree(s) they manage.
 	ErrTargetOutOfScope = errors.New("target is outside your managed departments")
+	// ErrReceiptNotDismissible is returned when a recipient tries to dismiss a
+	// readonly (enforced) distribution that still asserts its claim on them.
+	// Only the distributor/admin revoking the distribution releases that claim.
+	ErrReceiptNotDismissible = errors.New("readonly distribution receipts cannot be dismissed by the recipient")
 )
 
 // CanDistribute reports whether operatorSubjectID may open the distribution flow for
@@ -867,6 +871,10 @@ func (s *DistributionService) RevokeDistribution(ctx context.Context, distID, op
 }
 
 // DismissReceipt allows a recipient to dismiss a distribution from their view.
+// Readonly (enforced) distributions refuse it with ErrReceiptNotDismissible
+// until they are revoked (F-32), and a real dismissal writes the csc removal
+// tombstone on the receipt transition itself (F-31), not only through the
+// favorite path.
 //
 // F-23: the favorite removal runs on the SAME transaction as the receipt
 // update, via UnfavoriteItemTx. The previous code called UnfavoriteItem — which
@@ -877,10 +885,49 @@ func (s *DistributionService) RevokeDistribution(ctx context.Context, distID, op
 // propagate, so a failed favorite removal rolls the dismissal back with it.
 func (s *DistributionService) DismissReceipt(ctx context.Context, distID, userID string) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// F-32: resolve the distribution BEFORE the receipt transition. The
+		// permission gate below needs its mode and status, and the old order
+		// (update first, load second) would have dismissed a readonly receipt
+		// first and discovered the refusal never.
+		var dist models.ItemDistribution
+		if err := tx.Where("id = ?", distID).First(&dist).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrDistributionNotFound
+			}
+			return err
+		}
+
+		// F-32: a readonly (enforced) distribution is not the recipient's to
+		// dismiss while it still asserts its claim. "Still asserts" includes
+		// paused, deliberately: a resume re-favorites only non-dismissed
+		// receipts, so allowing dismissal inside a pause window would let a
+		// recipient permanently escape an enforced distribution. Only a
+		// terminally revoked distribution (whose revoke already dismissed its
+		// receipts) releases the claim. The gate protects the TRANSITION, not
+		// the endpoint: an already-dismissed receipt stays an idempotent
+		// success (it may predate this gate, or a later switch to readonly),
+		// and a missing receipt stays "receipt not found" rather than leaking
+		// the permission answer for a receipt the caller does not hold.
+		if dist.PermissionMode == "readonly" && dist.Status != "revoked" {
+			var existing models.ItemDistributionReceipt
+			if err := tx.Select("receipt_status").
+				Where("distribution_id = ? AND user_id = ?", distID, userID).
+				First(&existing).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return errors.New("receipt not found")
+				}
+				return err
+			}
+			if existing.ReceiptStatus == "dismissed" {
+				return nil
+			}
+			return ErrReceiptNotDismissible
+		}
+
 		// The status predicate is this caller's compare-and-set for the
 		// tombstone event-id rotation rule (see RecordEntitlementRemovalTx):
 		// only a real not-dismissed -> dismissed transition may reach the
-		// unfavorite below. A repeated dismiss matches nothing, changes
+		// removal writes below. A repeated dismiss matches nothing, changes
 		// nothing, and rotates nothing.
 		result := tx.Model(&models.ItemDistributionReceipt{}).
 			Where("distribution_id = ? AND user_id = ? AND receipt_status <> ?", distID, userID, "dismissed").
@@ -903,12 +950,6 @@ func (s *DistributionService) DismissReceipt(ctx context.Context, distID, userID
 			return nil
 		}
 
-		var dist models.ItemDistribution
-		if err := tx.Where("id = ?", distID).First(&dist).Error; err != nil {
-			// A receipt whose distribution cannot be loaded must not be
-			// half-dismissed; previously this error was silently skipped.
-			return err
-		}
 		if s.behaviorSvc != nil {
 			// unfavorited, not distribution_revoked: dismissal is the user
 			// letting the capability go, and "an administrator took it back"
@@ -922,6 +963,34 @@ func (s *DistributionService) DismissReceipt(ctx context.Context, distID, userID
 				models.SyncTombstoneReasonUnfavorited); err != nil && !errors.Is(err, ErrSkillRequired) {
 				return err
 			}
+		}
+
+		// F-31: the receipt transition itself is the removal event, so the
+		// tombstone must not depend on the favorite path above. Auto-favorite
+		// at distribute time is best-effort; for a recipient it never
+		// succeeded for, the entitlement existed ONLY as this receipt,
+		// UnfavoriteItemTx's compare-and-set finds no favorite row to delete,
+		// and without this write the device that installed the capability
+		// while the distribution was active keeps it forever. The reason is
+		// unfavorited (the user let it go), matching the favorite path above
+		// — same user action, same statement to the device, regardless of
+		// whether auto-favorite had succeeded.
+		//
+		// Where the favorite path DID record the removal, this upserts the
+		// same (user, item) row with the same reason inside the same
+		// transaction, so the two writes converge to one terminal tombstone —
+		// the same convergence the revoke side performs one function up
+		// (F-22); the double event-id rotation within one commit is
+		// unobservable. A recipient still entitled through another source (a
+		// favorite ErrSkillRequired kept, another active distribution) is
+		// handled by snapshot supersession: an active item always wins over
+		// its own older tombstone.
+		if err := RecordEntitlementRemovalTx(tx, EntitlementRemoval{
+			UserID: userID,
+			ItemID: dist.ItemID,
+			Reason: models.SyncTombstoneReasonUnfavorited,
+		}); err != nil {
+			return err
 		}
 		return nil
 	})
