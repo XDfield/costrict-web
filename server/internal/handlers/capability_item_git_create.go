@@ -48,9 +48,21 @@ func (h *ItemHandler) CreateGitBackedItem(c *gin.Context) {
 		Tags        []string `json:"tags"`
 		Author      string   `json:"author"`
 		License     string   `json:"license"`
+		Content     string   `json:"content"`
+		SourcePath  string   `json:"sourcePath"`
+		Assets      []struct {
+			RelPath     string `json:"relPath"`
+			TextContent string `json:"textContent"`
+		} `json:"assets"`
+		Visibility string `json:"visibility"`
+		RegistryID string `json:"registryId"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+	if req.Visibility != "" || req.RegistryID != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "visibility and registryId are not supported for git-backed creation", "error_code": "GIT_CREATE_FIELD_UNSUPPORTED"})
 		return
 	}
 
@@ -65,6 +77,23 @@ func (h *ItemHandler) CreateGitBackedItem(c *gin.Context) {
 		slug = slugify(req.Name)
 	}
 	version := firstNonEmpty(strings.TrimSpace(req.Version), "1.0.0")
+	if len(req.Content) > 8*1024*1024 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "content exceeds size limit", "error_code": "GIT_MANIFEST_TOO_LARGE"})
+		return
+	}
+	manifestPath, ok := gitCapabilityManifestPath(req.ItemType)
+	if !ok || (strings.TrimSpace(req.SourcePath) != "" && req.SourcePath != manifestPath) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "sourcePath must match the canonical manifest path", "error_code": "GIT_SOURCE_PATH_INVALID"})
+		return
+	}
+	extra := make([]GitCapabilityFile, 0, len(req.Assets))
+	for _, asset := range req.Assets {
+		if len(asset.TextContent) > 4*1024*1024 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "asset exceeds size limit", "error_code": "GIT_EXTRA_FILE_REJECTED"})
+			return
+		}
+		extra = append(extra, GitCapabilityFile{Path: asset.RelPath, Content: []byte(asset.TextContent)})
+	}
 
 	resolvedTagIDs, err := resolveAssignableTags(h.tagSvc, req.Tags, userID, callerIsPlatformAdmin(c, h.db))
 	if err != nil && errors.Is(err, services.ErrInvalidTagSlug) {
@@ -88,6 +117,8 @@ func (h *ItemHandler) CreateGitBackedItem(c *gin.Context) {
 		Tags:        req.Tags,
 		Author:      req.Author,
 		License:     req.License,
+		Content:     req.Content,
+		ExtraFiles:  extra,
 	})
 	if herr != nil {
 		c.JSON(herr.status, herr.body)
