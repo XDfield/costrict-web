@@ -71,24 +71,58 @@ psql -c "\dt plugin_flatten_migration_*"
 > 不在也能跑 —— 命令启动时会用等价的幂等 DDL 自建（`ensurePluginFlattenTables`）。
 > 但如果这里是空的，说明 goose 没跑完，**先去查 goose，别绕过去**。
 
-### 2.2 api 确实是新的
+### 2.2 api 确实是新的 —— **必须逐 pod 问，不能只问一次**
 
-问**正在跑的那个 api**，不要问镜像标签（标签会骗人，尤其是复用 tag 重新部署时）：
+问**正在跑的那些 api**，不要问镜像标签（标签会骗人，尤其是复用 tag 重新部署时）。
+
+⚠️ **通过 LB/Ingress 只 curl 一次是假绿**：它只命中一个副本。
+只要有**一个**旧 pod 还在跑，它就还在写 `parent_plugin_id`，
+而它写出来的行不在任何一次 run 的计划里 —— 审计上无迹可寻，rollback 也管不到。
+
+所以要跳过 Service，逐 pod 直连：
 
 ```bash
-curl -s https://<api-host>/swagger/doc.json \
-  | grep -c 'DEPRECATED (flat capability model)'
+NS=costrict
+# api 和 worker 都要查：四条写者分布在两种进程里（下表）
+for kind in api worker; do
+  for pod in $(kubectl -n $NS get pod -l app=costrict-web-$kind -o name); do
+    n=$(kubectl -n $NS exec "$pod" -- \
+          sh -c 'curl -s localhost:8080/swagger/doc.json | grep -c "DEPRECATED (flat capability model)"' 2>/dev/null || echo ERR)
+    echo "$kind $pod -> $n"
+  done
+done
 ```
 
-判据：**2**（`parentPluginId` 和 `excludeSubSkills` 两个 query 参数各一处）。
-拿到 **0** 说明这个 api 的 Swagger 还是旧的 ⇒ 部的是旧镜像，回到 §1。
+判据：**每一个 api pod 都返回 2**（`parentPluginId` 和 `excludeSubSkills` 两个 query 参数各一处）。
+任何一个返回 0 或 ERR ⇒ 该副本是旧的或没起来，**回到 §1，不要继续**。
+另外核对 `kubectl -n $NS get deploy -o wide` 的 replicas 与你实际问到的 pod 数一致 ——
+少问一个和问到假绿是同一件事。
+
+> worker 没有 Swagger 端点，所以 worker 副本用镜像 digest 比对：
+> ```bash
+> kubectl -n $NS get pod -l app=costrict-web-worker \
+>   -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.containerStatuses[0].imageID}{"\n"}{end}' | sort -u -k2
+> ```
+> 判据：**只有一行 digest**，且等于 api 的 digest（同一次构建）。
 
 > 为什么用 Swagger 而不是 `strings <binary> | grep reconcileParentPluginLinks`：
 > 那是个不可靠的判据 —— 未导出符号在 strip 过的构建里可能本来就查不到，
 > 于是"旧镜像"和"新镜像"都会给你 0，一个永远通过的检查比没有检查更糟。
 > Swagger 是这个进程真正在提供的服务内容，骗不了人。
 
-**这一条只是快速筛查，真正的判据是下一条的行为验证。**
+**这一条只是快速筛查，真正的判据是下一条的行为验证 —— 而 §2.3 只覆盖四条写者中的一条。**
+
+### 2.2b 四条写者要各自验一遍（**§2.3 只验了第一条**）
+
+| 写者 | 跑在哪 | 判据 |
+|---|---|---|
+| catalog ingest 的 `bundled_in` 二次连接 | worker / `migrate ingest-upstream` | §2.3（观察一轮 ingest） |
+| archive 上传的子项提升 | api | 传一个**含 `skills/*/SKILL.md` 的 plugin zip**，上传后 `SELECT count(*) FROM capability_items WHERE parent_plugin_id = '<新 plugin id>'` = **0** |
+| fork plugin 时的子项复制 | api | 对一个**已有子项的** plugin 点 fork，fork 出的行 `parent_plugin_id IS NULL`，且没有新建任何子行 |
+| Git 未绑定仓库的递归发现 | worker | 在 Gitea 建一个只放 `skills/foo/SKILL.md` 的仓库，等一轮 reconcile，`capability_items` 不新增行（会记 `GitCapabilityIdentificationUnknown`，这是预期） |
+
+四条**全部**通过才算 AC-FP15 的闸门成立。只做 §2.3 就 apply，等于只确认了 6716 条里那一类的来源被堵住，
+另外三条路径可能还在开着。
 
 ### 2.3 观察一轮 catalog ingest，确认不再新建子项（**最硬的判据**）
 
@@ -225,20 +259,62 @@ distributions on candidates   0
 - 下发数只算 live（`status='active' AND revoked_at IS NULL`）—— 已撤销的没有消费者可影响。
 - 这两个数**大到你意外**的时候要停：说明真有人在用这些子项，需要产品先知会。
 
+#### 设备侧会收到明确的移除指令（不是靠"消失"）
+
+归档会让这些行退出快照的 active 集合。而 snapshot v2 里**缺席不是删除信号**
+（截断的分页、失败的请求，在客户端看来和"这条没了"长得一模一样），
+所以 apply 会在**同一个事务**里为每个持有者写一条 tombstone：
+`reason=admin_archived` / `source=moderation`。
+
+- 只有**真的发生了 `active → archived`** 的行才写（CAS 命中才算），
+  `unlink_only`（不改状态）和 CAS 失败的行都不写。
+- 收藏行 / 下发回执**不删**，tombstone 是"关系结束了"的记录，不是关系本身。
+- rollback 把行改回 active 之后**不删 tombstone** —— 快照里"当前 active 的条目"
+  本来就压过它自己的旧 tombstone，删了反而会让还没轮询的设备永远收不到那条指令。
+
+apply 之后核对（`<run-id>` 换成你的）：
+
+```sql
+-- 归档行的持有者应当全部拿到 tombstone
+SELECT count(*) FROM capability_sync_tombstones t
+JOIN plugin_flatten_migration_rows r ON r.item_id = t.item_id
+WHERE r.run_id = '<run-id>' AND r.row_state = 'applied' AND r.after_status = 'archived'
+  AND t.reason = 'admin_archived';
+```
+
+判据：**等于 §4.5 里"归档行上的不同持有者人数"**（同时收藏又被下发的人只算一次）。
+本地基线是 **1**（唯一那条收藏落在一条 `derived_catalog` 行上）。
+
+> `reason` 用的是 `admin_archived` 而不是一个专门的"迁移归档"原因：
+> 原因集合按合约是**开放**的（客户端遇到不认识的 reason 照样移除），
+> 新增一个更诚实的名字是**合约变更**，需要任务负责人拍板 + 一条 CHECK 迁移。
+> 在现有五个里，`admin_archived`/`moderation` 是唯一每一项事实都成立的：
+> 运维主动跑的（`--confirm`）、状态确实变成 `archived`、关系保留、重新上架即恢复。
+> 其余四个都是**假话**（`git_archived` 还会被 Git 灰度开关吞掉、
+> `unfavorited` 是在告诉用户是他自己取消的、`item_deleted` 声称硬删了一条还在的行）。
+
 ### 4.6 artifact 自校验
 
 ```bash
 python3 -c "
 import json;d=json.load(open('flatten-plan-YYYYMMDD.json'))
 print('rows', len(d['rows']), 'candidates', d['totals']['candidates'], 'digest', d['planDigest'])
+assert d['schemaVersion'] == 2, 'artifact 是旧版本的，apply 会拒绝'
 assert len(d['rows']) == d['totals']['candidates'], '行数与汇总不符'
 print('OK')"
 ```
 
 判据：行数 == `candidates` == 数据库计数，三者相等。
 
-> digest 只覆盖 identity + CAS 谓词 + 目标态，**故意不含** `conflict` / `rowState` ——
-> 那两个字段在 apply 过程中会变，含进去的话续跑时就校验不过了，而续跑正是最需要校验的时刻。
+> digest 覆盖**除 `conflict` / `rowState` 之外的每一个字段**（schema v2）。
+> 那两个是 apply 过程中会变的**结果**字段，含进去的话续跑时就校验不过了，
+> 而续跑正是最需要校验的时刻。
+>
+> v1 的 digest 是"列出覆盖了哪些字段"，那份清单漏了 `contentBackend` / `sourceType`
+> ——**它们是 CAS 谓词的一部分**，改掉它们就能改变 apply 愿意写哪些活行，而 digest 照样通过；
+> provenance 那一堆证据列（registry / catalog / bundled_in / fork / parent）也全没覆盖。
+> v2 改成"除结果字段外全覆盖"，并且 `totals` 由工具**从 rows 重算比对**
+> （`--artifact` 校验时自动做），所以本节人工核对的那几个数不可能被单独篡改。
 
 ---
 
@@ -253,11 +329,13 @@ go run ./cmd/migrate flatten-plugins apply --run=<run-id> --report-limit=0
 判据：打印
 
 ```
-DRY RUN: run <run-id> has 6738 pending row(s) ready to apply. Re-run with --confirm.
+DRY RUN: run <run-id> has 6738 pending row(s) ready to apply in 14 batch(es) of 500. Re-run with --confirm.
 ```
 
-`pending` 数应该等于 `archive_and_unlink + unlink_only`（= `candidates − ambiguous`）。
-**空跑不写任何东西**，可以随便跑。
+- `pending` 数应该等于 `archive_and_unlink + unlink_only`（= `candidates − ambiguous`）。
+- **批数/批大小是空跑告诉你的，不要自己算**：`--batch-size` 不给的话用的是 plan 时冻结进 run 的那个值（默认 200，也就是 34 批），
+  给了就以你给的为准。这一行是你唯一能在真跑之前看到"实际会怎么切批"的地方 —— 空跑时带上你真跑要用的那个 `--batch-size`。
+- **空跑不写任何东西**，可以随便跑。
 
 ### 5.2 真跑
 
@@ -270,13 +348,34 @@ go run ./cmd/migrate flatten-plugins apply \
 ```
 
 - `--artifact` 在 apply 时是**校验**用的：文件与库里的 run 不符会直接拒绝，一行不写。
-- `--batch-size` 每批一个有界事务。500 在本地 6739 行上是秒级。
+- `--batch-size` 每批一个有界事务。6738 行 = 14 批。
+
+**实测耗时**（隔离 schema，6738 行的完整规模，本地 PG16，`--batch-size=500`）：
+
+| 阶段 | 耗时 |
+|---|---|
+| `plan` | ~1.9s |
+| `apply` | **~12.2s**（其中约 9s 是逐行写 tombstone 的持有者查询） |
+
+单个事务因此约 0.9s，锁不会长时间占着。真实库若在同一集群内（RTT 更低）不预期更慢；
+**如果你看到的是分钟级**，先确认不是跨广域网连库。
 
 输出：
 
 ```
-run <run-id>: applied=6735 skipped=3 status=applied
+run <run-id>: applied=6735 alreadyAtTarget=0 skipped=3 status=applied
 ```
+
+三个计数的含义不同，别混着看：
+
+| 计数 | 含义 | 能不能 rollback |
+|---|---|---|
+| `applied` | **本次** CAS 命中、本次写的 | 能 |
+| `alreadyAtTarget` | CAS 没命中，但活行已经是目标态 —— 是**别人**改的 | **不能**（rollback 不会碰） |
+| `skipped` | CAS 没命中且活行是第三种状态 —— 冲突，原样保留 | 不适用（没改过） |
+
+`alreadyAtTarget` **非 0 就要查**：正常流程下它应该是 0。非 0 说明 plan 到 apply 之间
+有别的东西在改这些行（旧 api 还在跑？另一个 run 并发在跑？），回到 §1 与 §2.2。
 
 ### 5.3 中途崩了怎么办
 
@@ -300,16 +399,40 @@ SELECT row_state, count(*) FROM plugin_flatten_migration_rows
 WHERE run_id = '<run-id>' GROUP BY 1;
 ```
 
-期望：`applied` + `skipped` == `candidates`，**`pending` 和 `failed` 必须是 0**。
+期望：`applied` + `already_at_target` + `skipped` == `candidates`，**`pending` 和 `failed` 必须是 0**。
+
+⚠️ **别用全库等式。** 早先这里写的是
+"`archived + unlinked=true` 的全库行数 == `applied`"，那是个**会假红**的判据：
+
+- 全库里本来就有历史归档 + 已解链的行，跟本次迁移无关；
+- `unlink_only` 的行是"解链但**不**归档"，它算进 `applied` 却不满足 `archived`；
+- 库是活的，你跑这条 SQL 的同时还有别的写入。
+
+正确的做法是**只核对这个 run 计划里的那些行**，逐行比对活状态与计划的目标态：
 
 ```sql
-SELECT status, (parent_plugin_id IS NULL) AS unlinked, count(*)
-FROM capability_items GROUP BY 1,2 ORDER BY 3 DESC;
+-- 每一条 applied 的行，活状态必须等于它的 after_* 目标态
+SELECT count(*) AS mismatched
+FROM plugin_flatten_migration_rows r
+JOIN capability_items c ON c.id = r.item_id
+WHERE r.run_id = '<run-id>' AND r.row_state = 'applied'
+  AND NOT (c.status = r.after_status
+           AND c.parent_plugin_id IS NOT DISTINCT FROM r.after_parent_plugin_id);
 ```
 
-判据：
-- `archived + unlinked=true` 的行数 == `applied`
-- 仍带 `parent_plugin_id` 的行数 == `ambiguous` + apply 期冲突数
+判据：**`mismatched = 0`**。（不为 0 = apply 之后有人又改了这些行，逐条查。）
+
+```sql
+-- 每一条 skipped 的行，必须原样保持它的 before_* 态
+SELECT count(*) AS unexpectedly_changed
+FROM plugin_flatten_migration_rows r
+JOIN capability_items c ON c.id = r.item_id
+WHERE r.run_id = '<run-id>' AND r.row_state = 'skipped'
+  AND c.status = r.after_status
+  AND c.parent_plugin_id IS NOT DISTINCT FROM r.after_parent_plugin_id;
+```
+
+判据：**`unexpectedly_changed = 0`** —— 跳过的行不该长成目标态。
 
 ### 6.2 一行都没被删（**这条必查**）
 
@@ -319,7 +442,26 @@ SELECT count(*) FROM item_favorites;        -- 与 apply 前一致
 SELECT count(*) FROM item_distributions;    -- 与 apply 前一致
 ```
 
-**三个数一个都不能变。** 变了就是出了本迁移设计之外的事，立即停并上报。
+**三个数一个都不能变。**
+
+⚠️ 这三条**必须在一个静止的库上跑**（apply 前后各一次，中间没有 ingest / 没有用户写入），
+否则正常的线上写入就会让它们对不上，而且一加一减还可能**净额抵消**，让你以为没事。
+在测试环境的做法：apply 前后各跑一次，并同时记下 `SELECT max(created_at)`；
+两次之间 `max(created_at)` 不变，行数比对才有意义。
+
+变了就是出了本迁移设计之外的事，立即停并上报。
+
+只想确认"本迁移没删东西"的话，用这条更精确、也不怕并发的：
+
+```sql
+-- 计划里的每一条 item 都还在
+SELECT count(*) AS vanished
+FROM plugin_flatten_migration_rows r
+LEFT JOIN capability_items c ON c.id = r.item_id
+WHERE r.run_id = '<run-id>' AND c.id IS NULL;
+```
+
+判据：**`vanished = 0`**。
 
 ### 6.3 列表数"对不上"是预期的，要能解释清楚
 
@@ -399,6 +541,23 @@ WHERE run_id = '<run-id>' AND conflict <> '';
 > `partial` 专指还有 `pending`。冲突数在 `totals.apply_conflicts` 里单独计
 > （不能只看 `state_skipped`，那里还混着计划期就跳过的 ambiguous 行）。
 
+#### 关于"重新 plan 一个新 run"（第二轮的一个坑，已修但要知道）
+
+fork 类行的判据是"它 fork 的那个源，是不是包内子项"，而 apply 干的事正是**把包内子项解链**。
+所以第一次 apply 之后再 plan，源行的 `parent_plugin_id` 已经是 NULL 了。
+
+工具现在会额外查**本迁移自己的 run 记录**（`plugin_flatten_migration_rows` 里
+`row_state='applied'` 且 `classification` 是 `derived_*` 的行），把"曾经是包内子项"也算作证据，
+所以第二轮 plan 仍会把这些 fork 判成 `derived_fork`，reason 里会写
+"which an earlier flatten run has since retired"。
+
+⚠️ 由此产生两条硬约束：
+
+1. **两张工具表在整个清理周期内不能删**（§7.4 本来就要求留着，这里多一个理由：
+   删了它们，第二轮 plan 就会把残留的 fork 全判成 `ambiguous`，永久卡在需要人工决策）。
+2. `unlink_only`（`independent`）行的解链**不算**证据 —— 它们本来就不是包内子项。
+   这是有意为之，不要"顺手放宽"。
+
 ### 6.5 ambiguous 行的处置（**唯一留给人的决定**）
 
 apply 不碰它们。按 reason 选处置：
@@ -465,10 +624,17 @@ go run ./cmd/migrate flatten-plugins rollback-apply \
 
 1. **只恢复原 run 里 `row_state=applied` 的行。** 跳过的行迁移根本没改过，
    "恢复"它们等于写一个迁移从未造成的状态。
+   `already_at_target` 的行同理 —— 那是**别人**改成目标态的，迁移没碰过，所以也不在恢复范围内。
 2. **CAS 打在迁移后的状态上。** 迁移之后有人正当改过的行会**被跳过并报冲突**，不会被覆盖回去。
    本地实测：迁移后手工把 2 条归档行改回 active，rollback 就跳过这 2 条（`applied=6733 skipped=2`）。
-3. **有 30 天兼容窗口。** 超期 `rollback-plan` 直接报错，要 `--force`。
+3. **有 30 天兼容窗口，窗口从"被回滚的那次迁移的 plan 时间"算起**，不是从 rollback plan 自己的时间算起。
+   `rollback-plan` 和 `rollback-apply` 两处用的是同一个起点，所以
+   "第 29 天 plan、第 58 天 apply"不能绕过它（早先能）。超期两处都报错，要 `--force`。
    `--force` **只能**越过时间窗口，**不能**越过 digest 不符或 CAS 失败 —— 那两个是正确性，不是策略。
+4. **`rollback-apply` 只吃 rollback run，`apply` 只吃 migrate run。** 粘错 id 会直接报错并告诉你该用哪个命令
+   （两个 id 在同一次操作里都在手边，早先粘错会把迁移**正着**再跑一遍）。
+5. **rollback 不删 tombstone。** 行恢复成 active 之后，快照里"当前 active"本来就压过它自己的旧 tombstone；
+   删掉反而会让还没轮询的设备永远收不到那条移除指令。
 
 ### 7.4 rollback 之后
 
@@ -489,9 +655,9 @@ go run ./cmd/migrate flatten-plugins status --run=<run-id> --report-limit=0
 # 完整流程
 flatten-plugins plan --artifact=X.json --report-limit=-1 --created-by=me
   → §4 审阅（总数 / 五分类 / independent / ambiguous / 收藏下发 / artifact 自校验）
-flatten-plugins apply --run=R --report-limit=0                       # 空跑
-flatten-plugins apply --run=R --confirm --artifact=X.json            # 真跑
-  → §6 校验（归档数 / 三张表行数不变 / 冲突逐条看）
+flatten-plugins apply --run=R --batch-size=500 --report-limit=0       # 空跑（带上真跑要用的 batch-size）
+flatten-plugins apply --run=R --confirm --batch-size=500 --artifact=X.json   # 真跑
+  → §6 校验（逐行比对目标态 / 计划行没消失 / 冲突逐条看 / tombstone 数对得上）
 flatten-plugins rollback-plan  --run=R  --artifact=Y.json            # 需要时
 flatten-plugins rollback-apply --run=RB --confirm --artifact=Y.json
 ```
@@ -505,12 +671,21 @@ flatten-plugins rollback-apply --run=RB --confirm --artifact=Y.json
 | 项 | 环境 | 结果 |
 |---|---|---|
 | plan 真实数据 | 真实 `costrict_db`，`search_path=<scratch>,public` | 6739 候选，分类分布如 §3；共享 schema **零写入**，跑完 drop scratch |
-| plan 可复现 | 同上，多次 + 跨 schema | digest 恒为 `bf3a0454…`，分布一致 |
+| plan 可复现 | 同上，多次 + 跨 schema | 分布一致（digest 在 schema v2 下会与旧记录不同，见 §4.6） |
 | apply | 隔离 schema，**真实 6739 行的完整副本** | `applied=6735 skipped=3`，注入的 3 处并发改动全部被 CAS 拒绝并原样保留 |
 | rollback | 同上 | `applied=6733 skipped=2`，迁移后改过的 2 行未被覆盖；最终计数逐项对上 |
 | 无硬删 | 同上 | `capability_items` / `item_favorites` / `item_distributions` 行数全程不变 |
 | 崩溃续跑 | 隔离 schema 单测 | 手工提交一批后置 `applying`，续跑不重复触碰已完成行，收敛为 `applied` |
 | CAS 非空测 | 变异测试 | 把 `AND status = ?` 改成 `AND (status = ? OR TRUE)`，测试立即红并报"并发改动被覆盖" |
-| 篡改防护 | 单测 | 改库里的计划行 / 改 artifact 文件，apply 都在写第一行之前拒绝 |
+| 篡改防护 | 单测 | 改库里的计划行 / 改 artifact 文件 / 改 artifact 的 totals，apply 都在写第一行之前拒绝 |
+| 设备移除指令 | 隔离 schema 单测 | 归档行的三类持有者（收藏 / 下发回执 / 两者都有）各拿到一条 tombstone；`unlink_only` 与 CAS 失败的行**零**tombstone；重跑不轮换 event id |
+| 变异测试（tombstone） | 同上 | 去掉 tombstone 写入 → 3 个用例立即红；把闸门改成无条件写 → `unlink_only` 用例立即红 |
 
-**没验过的**：生产规模下的耗时（本地 6739 行秒级；真实库若量级相同，不预期有差异）。
+> §9 从这一版起**不再是唯一证据**：上表全部条目已经是 `.github/workflows/test.yml` 里
+> 带 postgres service 的常规用例（`go test ./cmd/migrate/ -run TestPluginFlatten`），
+> 每个 PR 都会跑，而且 CI 里显式断言"一个都不许 SKIP"。
+> 这一节留作交接时的量级参考。
+
+**耗时**：见 §5.2 的实测表（6738 行完整规模：plan ~1.9s、apply ~12.2s）。
+
+**没验过的**：生产集群内的实际耗时（本地测得的是同机 Docker PG16；同集群 RTT 更低，不预期更慢）。

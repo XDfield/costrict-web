@@ -13,9 +13,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/costrict/costrict-web/server/internal/models"
+	"github.com/costrict/costrict-web/server/internal/services"
+	migrations "github.com/costrict/costrict-web/server/migrations"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -82,12 +86,28 @@ type pluginFlattenArtifact struct {
 	Rows          []pluginFlattenPlanRow `json:"rows"`
 }
 
-// pluginFlattenPlanDigest is the artifact's integrity contract, and it covers
-// exactly the fields apply and rollback act on — identity, the compare-and-set
-// predicate, and the intended end state. Mutable outcome fields (`conflict`,
-// `rowState`) are excluded on purpose: they change as the run progresses, and a
-// digest that moved during apply could not be verified on resume, which is the
-// moment verification matters most.
+// pluginFlattenPlanDigest is the artifact's integrity contract.
+//
+// # What it covers, and why the rule is stated as an exclusion
+//
+// Everything except `conflict` and `rowState`. Those two are the run's OUTCOME:
+// they change as apply progresses, and a digest that moved during apply could
+// not be verified on resume — the moment verification matters most.
+//
+// The v1 digest instead listed the fields it covered, and the list was wrong.
+// `contentBackend` and `sourceType` are part of the compare-and-set predicate in
+// applyPluginFlattenBatch, so editing them in the stored plan (or in the
+// artifact) changed which live rows apply would agree to write, while the digest
+// still verified. The provenance columns — registry, catalog entry dir,
+// bundled_in, the fork/parent identity — are the evidence the classification
+// rests on and the evidence an operator signs off on in runbook §4, and they
+// were not covered either. An enumerate-what-is-covered rule invites exactly
+// that omission every time a column is added; enumerate-what-is-excluded does
+// not.
+//
+// The counts are covered too: `favoriteCount`/`distributionCount` are the
+// consumer-impact numbers the sign-off gate is built on, so understating them
+// must not verify.
 func pluginFlattenPlanDigest(schemaVersion int, mode string, rows []pluginFlattenPlanRow) string {
 	h := sha256.New()
 	fmt.Fprintf(h, "v%d\n%s\n%d\n", schemaVersion, mode, len(rows))
@@ -95,15 +115,27 @@ func pluginFlattenPlanDigest(schemaVersion int, mode string, rows []pluginFlatte
 	copy(ordered, rows)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ItemID < ordered[j].ItemID })
 	for _, r := range ordered {
-		fmt.Fprintf(h, "%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1e",
-			r.ItemID,
-			derefOr(r.BeforeParentPluginID, "<nil>"),
-			r.BeforeStatus,
-			derefOr(r.AfterParentPluginID, "<nil>"),
-			r.AfterStatus,
-			r.Classification,
-			r.Action,
-			r.SourceManifestSHA,
+		fmt.Fprintf(h,
+			"%d\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f"+
+				"%s\x1f%d\x1f%s\x1f%s\x1f%s\x1f%s\x1f%t\x1f%s\x1f%s\x1f%d\x1f%d\x1f"+
+				"%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1e",
+			// Identity and batching order.
+			r.Seq, r.ItemID, r.ItemType, r.ItemSlug, r.RegistryID,
+			// Compare-and-set predicate columns that are NOT before_* (these two
+			// are the ones v1 missed).
+			r.SourceType, r.ContentBackend,
+			// Provenance evidence.
+			r.CatalogEntryDir, r.BundledIn, r.SourcePath, r.SourceManifestSHA,
+			r.GitServerID, r.GitRepoID, r.GitRepoPath, r.GitEntryKey,
+			derefOr(r.ForkedFromItemID, "<nil>"),
+			derefOr(r.ParentItemID, "<nil>"), r.ParentExists, r.ParentItemType, r.ParentSourceType,
+			// Consumer impact, i.e. the sign-off numbers.
+			r.FavoriteCount, r.DistributionCount,
+			// Before-state predicate and intended end state.
+			r.BeforeStatus, derefOr(r.BeforeParentPluginID, "<nil>"),
+			r.AfterStatus, derefOr(r.AfterParentPluginID, "<nil>"),
+			// Verdict and its justification.
+			r.Classification, r.Action, r.Reason,
 		)
 	}
 	return hex.EncodeToString(h.Sum(nil))
@@ -130,6 +162,7 @@ func pluginFlattenTotals(rows []pluginFlattenPlanRow) map[string]int {
 		"action_" + flattenActionSkip:             0,
 		"state_" + flattenRowPending:              0,
 		"state_" + flattenRowApplied:              0,
+		"state_" + flattenRowAlreadyAtTarget:      0,
 		"state_" + flattenRowSkipped:              0,
 		"state_" + flattenRowFailed:               0,
 		"favorites_on_candidates":                 0,
@@ -152,93 +185,123 @@ func pluginFlattenTotals(rows []pluginFlattenPlanRow) map[string]int {
 	return totals
 }
 
+// pluginFlattenMigrationFile is the sole definition of the two tool tables.
+const pluginFlattenMigrationFile = "20260806000400_create_plugin_flatten_migration_runs.sql"
+
 // ensurePluginFlattenTables creates the run/row tables when the goose migration
 // has not run yet. Subcommands return before prepareSchema, matching how the
-// existing backfills guard their own dependencies; the DDL is identical to the
-// 20260806000400 migration and idempotent.
+// existing backfills guard their own dependencies.
+//
+// It runs the Up block of the real migration file rather than a copy of it. The
+// copy this replaces had already drifted — two indexes and every column comment
+// were missing from it — which is the failure mode
+// .trellis/spec/server/backend/database-guidelines.md's "one source of truth for
+// schema" rule exists to prevent, and it is self-inflicted: nothing forces two
+// hand-maintained texts to stay equal, so they do not. Reading the migration
+// also means the PostgreSQL tests below exercise the DDL production actually
+// gets, instead of certifying a second one that only tests ever see.
 func ensurePluginFlattenTables(db *gorm.DB) error {
-	statements := []string{
-		`CREATE TABLE IF NOT EXISTS plugin_flatten_migration_runs (
-			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			schema_version INTEGER NOT NULL DEFAULT 1,
-			mode TEXT NOT NULL,
-			status TEXT NOT NULL DEFAULT 'planned',
-			source_run_id UUID REFERENCES plugin_flatten_migration_runs(id),
-			batch_size INTEGER NOT NULL DEFAULT 200,
-			plan_digest VARCHAR(64) NOT NULL DEFAULT '',
-			totals JSONB NOT NULL DEFAULT '{}'::jsonb,
-			created_by TEXT NOT NULL DEFAULT '',
-			notes TEXT NOT NULL DEFAULT '',
-			planned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			started_at TIMESTAMPTZ,
-			finished_at TIMESTAMPTZ,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			CONSTRAINT chk_plugin_flatten_runs_mode CHECK (mode IN ('migrate','rollback')),
-			CONSTRAINT chk_plugin_flatten_runs_status
-				CHECK (status IN ('planned','applying','applied','partial','rolled_back')),
-			CONSTRAINT chk_plugin_flatten_runs_digest_format
-				CHECK (plan_digest = '' OR plan_digest ~ '^[0-9a-f]{64}$'),
-			CONSTRAINT chk_plugin_flatten_runs_source
-				CHECK ((mode = 'rollback') = (source_run_id IS NOT NULL))
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_plugin_flatten_runs_status
-			ON plugin_flatten_migration_runs (status, planned_at DESC)`,
-		`CREATE TABLE IF NOT EXISTS plugin_flatten_migration_rows (
-			run_id UUID NOT NULL REFERENCES plugin_flatten_migration_runs(id) ON DELETE CASCADE,
-			seq BIGINT NOT NULL,
-			item_id UUID NOT NULL,
-			item_type TEXT NOT NULL DEFAULT '',
-			item_slug TEXT NOT NULL DEFAULT '',
-			registry_id TEXT NOT NULL DEFAULT '',
-			source_type TEXT NOT NULL DEFAULT '',
-			content_backend TEXT NOT NULL DEFAULT '',
-			catalog_entry_dir TEXT NOT NULL DEFAULT '',
-			bundled_in TEXT NOT NULL DEFAULT '',
-			source_path TEXT NOT NULL DEFAULT '',
-			source_manifest_sha TEXT NOT NULL DEFAULT '',
-			git_server_id TEXT NOT NULL DEFAULT '',
-			git_repo_id BIGINT NOT NULL DEFAULT 0,
-			git_repo_path TEXT NOT NULL DEFAULT '',
-			git_entry_key TEXT NOT NULL DEFAULT '',
-			forked_from_item_id UUID,
-			parent_item_id UUID,
-			parent_exists BOOLEAN NOT NULL DEFAULT false,
-			parent_item_type TEXT NOT NULL DEFAULT '',
-			parent_source_type TEXT NOT NULL DEFAULT '',
-			favorite_count INTEGER NOT NULL DEFAULT 0,
-			distribution_count INTEGER NOT NULL DEFAULT 0,
-			before_status TEXT NOT NULL,
-			before_parent_plugin_id UUID,
-			after_status TEXT NOT NULL,
-			after_parent_plugin_id UUID,
-			classification TEXT NOT NULL,
-			action TEXT NOT NULL,
-			reason TEXT NOT NULL DEFAULT '',
-			conflict TEXT NOT NULL DEFAULT '',
-			row_state TEXT NOT NULL DEFAULT 'pending',
-			applied_at TIMESTAMPTZ,
-			PRIMARY KEY (run_id, item_id),
-			CONSTRAINT chk_plugin_flatten_rows_classification
-				CHECK (classification IN ('derived_catalog','derived_archive','derived_fork','independent','ambiguous')),
-			CONSTRAINT chk_plugin_flatten_rows_action
-				CHECK (action IN ('archive_and_unlink','unlink_only','restore','skip')),
-			CONSTRAINT chk_plugin_flatten_rows_state
-				CHECK (row_state IN ('pending','applied','skipped','failed')),
-			CONSTRAINT chk_plugin_flatten_rows_reason
-				CHECK (action <> 'skip' OR reason <> '')
-		)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_plugin_flatten_rows_seq
-			ON plugin_flatten_migration_rows (run_id, seq)`,
-		`CREATE INDEX IF NOT EXISTS idx_plugin_flatten_rows_pending
-			ON plugin_flatten_migration_rows (run_id, seq) WHERE row_state = 'pending'`,
+	statements, err := pluginFlattenMigrationStatements()
+	if err != nil {
+		return err
 	}
 	for _, ddl := range statements {
 		if err := db.Exec(ddl).Error; err != nil {
-			return fmt.Errorf("ensure plugin flatten tables: %w", err)
+			return fmt.Errorf("ensure plugin flatten tables (%.60s...): %w", ddl, err)
 		}
 	}
 	return nil
+}
+
+// pluginFlattenMigrationStatements extracts the Up block of the migration and
+// splits it into individual statements.
+//
+// Splitting is done here rather than handing the whole block to one Exec because
+// multi-statement execution depends on which wire protocol the driver picks, and
+// a DDL bootstrap must not depend on that. The splitter understands the two
+// things this file actually contains that hold a semicolon: `--` line comments
+// and single-quoted literals (the COMMENT ON strings). It is deliberately not a
+// general SQL parser — it is asserted against this one file by test.
+func pluginFlattenMigrationStatements() ([]string, error) {
+	raw, err := migrations.FS.ReadFile(pluginFlattenMigrationFile)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", pluginFlattenMigrationFile, err)
+	}
+	body := string(raw)
+	start := strings.Index(body, "-- +goose Up")
+	if start < 0 {
+		return nil, fmt.Errorf("%s has no Up block", pluginFlattenMigrationFile)
+	}
+	body = body[start+len("-- +goose Up"):]
+	if end := strings.Index(body, "-- +goose Down"); end >= 0 {
+		body = body[:end]
+	}
+
+	var clean strings.Builder
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "-- +goose") {
+			continue
+		}
+		clean.WriteString(line)
+		clean.WriteByte('\n')
+	}
+
+	statements := splitSQLStatements(clean.String())
+	if len(statements) == 0 {
+		return nil, fmt.Errorf("%s Up block contains no statements", pluginFlattenMigrationFile)
+	}
+	return statements, nil
+}
+
+// splitSQLStatements cuts on top-level semicolons, ignoring those inside `--`
+// comments and single-quoted literals. Blank/comment-only fragments are dropped.
+func splitSQLStatements(sql string) []string {
+	var out []string
+	var current strings.Builder
+	inString, inComment := false, false
+	runes := []rune(sql)
+	for i := 0; i < len(runes); i++ {
+		c := runes[i]
+		switch {
+		case inComment:
+			if c == '\n' {
+				inComment = false
+				current.WriteRune(c)
+			}
+			continue
+		case inString:
+			current.WriteRune(c)
+			if c == '\'' {
+				// '' is an escaped quote, not the end of the literal.
+				if i+1 < len(runes) && runes[i+1] == '\'' {
+					current.WriteRune(runes[i+1])
+					i++
+					continue
+				}
+				inString = false
+			}
+			continue
+		case c == '-' && i+1 < len(runes) && runes[i+1] == '-':
+			inComment = true
+			i++
+			continue
+		case c == '\'':
+			inString = true
+			current.WriteRune(c)
+			continue
+		case c == ';':
+			if stmt := strings.TrimSpace(current.String()); stmt != "" {
+				out = append(out, stmt)
+			}
+			current.Reset()
+			continue
+		}
+		current.WriteRune(c)
+	}
+	if stmt := strings.TrimSpace(current.String()); stmt != "" {
+		out = append(out, stmt)
+	}
+	return out
 }
 
 func persistPluginFlattenRun(db *gorm.DB, run pluginFlattenRunRecord, rows []pluginFlattenPlanRow) error {
@@ -300,13 +363,22 @@ var errPluginFlattenDigestMismatch = errors.New("plan digest does not match the 
 // against that file too). An operator who edited the artifact, or who is
 // pointing at a plan that was regenerated under them, is stopped before the
 // first row moves rather than halfway through.
-func applyPluginFlatten(db *gorm.DB, opts pluginFlattenOptions, out io.Writer) error {
+func applyPluginFlatten(db *gorm.DB, opts pluginFlattenOptions, expectedMode string, out io.Writer) error {
 	if err := ensurePluginFlattenTables(db); err != nil {
 		return err
 	}
 	run, err := loadPluginFlattenRun(db, opts.RunID)
 	if err != nil {
 		return err
+	}
+	// `apply` and `rollback-apply` share this function, and a run carries its own
+	// direction, so without this check pasting a migrate run id after
+	// `rollback-apply` (both ids are on the operator's screen during the same
+	// operation) silently runs the migration forwards under a command that says
+	// it undoes it.
+	if run.Mode != expectedMode {
+		return fmt.Errorf("run %s is a %s run; use %s instead",
+			run.ID, run.Mode, pluginFlattenApplySubcommand(run.Mode))
 	}
 	if run.SchemaVersion != pluginFlattenSchemaVersion {
 		return fmt.Errorf("run %s has schema version %d; this binary understands %d",
@@ -340,10 +412,24 @@ func applyPluginFlatten(db *gorm.DB, opts pluginFlattenOptions, out io.Writer) e
 		}
 	}
 
+	// The compatibility window is a property of the MIGRATION being undone, not
+	// of the paperwork that undoes it. Measuring the rollback run's own age let
+	// the window be walked around in two steps — rollback-plan on day 29,
+	// rollback-apply on day 58 — and neither step asked for --force, while the
+	// thing actually being reverted was two months old and the deprecated parent
+	// link had been absent from responses for two releases.
 	if run.Mode == flattenModeRollback && !opts.Force {
-		if age := time.Since(run.PlannedAt); age > pluginFlattenDefaultRollbackWindow {
+		windowStart := run.PlannedAt
+		if run.SourceRunID != nil {
+			source, err := loadPluginFlattenRun(db, *run.SourceRunID)
+			if err != nil {
+				return fmt.Errorf("load source run of rollback %s: %w", run.ID, err)
+			}
+			windowStart = source.PlannedAt
+		}
+		if age := time.Since(windowStart); age > pluginFlattenDefaultRollbackWindow {
 			return fmt.Errorf(
-				"rollback run %s was planned %s ago, past the %s compatibility window; re-plan it or pass --force",
+				"the migration rollback run %s reverses was planned %s ago, past the %s compatibility window; pass --force to roll it back anyway",
 				run.ID, age.Round(time.Hour), pluginFlattenDefaultRollbackWindow)
 		}
 	}
@@ -354,9 +440,23 @@ func applyPluginFlatten(db *gorm.DB, opts pluginFlattenOptions, out io.Writer) e
 			pending = append(pending, r)
 		}
 	}
+	// An explicit --batch-size wins over the size frozen into the run at plan
+	// time. The flag used to be accepted and ignored here, which is worse than
+	// rejecting it: the operator reads the runbook's batch arithmetic, passes the
+	// number, and gets a different one. Resolved before the dry run so the dry
+	// run can report the batching that --confirm will actually use.
+	batch := run.BatchSize
+	if opts.BatchSizeSet && opts.BatchSize > 0 {
+		batch = opts.BatchSize
+	}
+	if batch <= 0 {
+		batch = pluginFlattenDefaultBatchSize
+	}
+	batchCount := (len(pending) + batch - 1) / batch
+
 	if !opts.Confirm {
-		fmt.Fprintf(out, "DRY RUN: run %s has %d pending row(s) ready to apply. Re-run with --confirm.\n",
-			run.ID, len(pending))
+		fmt.Fprintf(out, "DRY RUN: run %s has %d pending row(s) ready to apply in %d batch(es) of %d. Re-run with --confirm.\n",
+			run.ID, len(pending), batchCount, batch)
 		reportPluginFlattenRows(out, rows, opts)
 		return nil
 	}
@@ -367,18 +467,15 @@ func applyPluginFlatten(db *gorm.DB, opts pluginFlattenOptions, out io.Writer) e
 		return fmt.Errorf("mark run applying: %w", err)
 	}
 
-	batch := run.BatchSize
-	if batch <= 0 {
-		batch = pluginFlattenDefaultBatchSize
-	}
-	applied, skipped := 0, 0
+	applied, alreadyAtTarget, skipped := 0, 0, 0
 	for start := 0; start < len(pending); start += batch {
 		end := start + batch
 		if end > len(pending) {
 			end = len(pending)
 		}
-		batchApplied, batchSkipped, err := applyPluginFlattenBatch(db, run.ID, pending[start:end])
+		batchApplied, batchAlready, batchSkipped, err := applyPluginFlattenBatch(db, run.ID, pending[start:end])
 		applied += batchApplied
+		alreadyAtTarget += batchAlready
 		skipped += batchSkipped
 		if err != nil {
 			// The committed batches stand and their rows are marked; the run
@@ -386,7 +483,8 @@ func applyPluginFlatten(db *gorm.DB, opts pluginFlattenOptions, out io.Writer) e
 			// rolling everything back is deliberate: an interrupted cleanup
 			// that lies about how far it got is worse than one that stops.
 			_ = finishPluginFlattenRun(db, run.ID, flattenRunPartial)
-			return fmt.Errorf("apply batch starting at %d (applied=%d skipped=%d): %w", start, applied, skipped, err)
+			return fmt.Errorf("apply batch starting at %d (applied=%d alreadyAtTarget=%d skipped=%d): %w",
+				start, applied, alreadyAtTarget, skipped, err)
 		}
 	}
 
@@ -394,7 +492,8 @@ func applyPluginFlatten(db *gorm.DB, opts pluginFlattenOptions, out io.Writer) e
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "run %s: applied=%d skipped=%d status=%s\n", run.ID, applied, skipped, final)
+	fmt.Fprintf(out, "run %s: applied=%d alreadyAtTarget=%d skipped=%d status=%s\n",
+		run.ID, applied, alreadyAtTarget, skipped, final)
 	rows, err = loadPluginFlattenRows(db, run.ID)
 	if err != nil {
 		return err
@@ -411,9 +510,22 @@ func applyPluginFlatten(db *gorm.DB, opts pluginFlattenOptions, out io.Writer) e
 // FROM` rather than `=` because the parent link is nullable and `NULL = NULL` is
 // unknown — with `=`, an already-unlinked row would silently never match and be
 // reported as a conflict forever.
-func applyPluginFlattenBatch(db *gorm.DB, runID string, rows []pluginFlattenPlanRow) (int, int, error) {
-	applied, skipped := 0, 0
+//
+// # Why the Git lifecycle guard is not bypassed here
+//
+// This is raw SQL, so models.guardGitLifecycleStatusWrite (the only enforcement
+// point for "Git may not silently reclaim a row a human hid") does not fire. It
+// does not need to: a plan that archives a row also pins `content_backend` and
+// `source_type` in the predicate above, and the classifier only ever produces
+// `archive_and_unlink` for a row with NO Git identity at all — any Git identity,
+// complete or partial, is either unlink-only or skipped. A row that acquired one
+// between plan and apply fails the predicate. The reachability argument is what
+// makes the missing hook safe; if the classification rules ever change, this
+// comment is the thing that has to be re-checked.
+func applyPluginFlattenBatch(db *gorm.DB, runID string, rows []pluginFlattenPlanRow) (int, int, int, error) {
+	applied, alreadyAtTarget, skipped := 0, 0, 0
 	err := db.Transaction(func(tx *gorm.DB) error {
+		removedAt := time.Now()
 		for _, r := range rows {
 			res := tx.Exec(`UPDATE capability_items
 				SET status = ?, parent_plugin_id = ?
@@ -430,6 +542,9 @@ func applyPluginFlattenBatch(db *gorm.DB, runID string, rows []pluginFlattenPlan
 				return fmt.Errorf("row %s: %w", r.ItemID, res.Error)
 			}
 			if res.RowsAffected == 1 {
+				if err := recordPluginFlattenRemovalTx(tx, r, removedAt); err != nil {
+					return err
+				}
 				if err := tx.Exec(`UPDATE plugin_flatten_migration_rows
 					SET row_state = ?, conflict = '', applied_at = now()
 					WHERE run_id = ? AND item_id = ?`,
@@ -439,18 +554,21 @@ func applyPluginFlattenBatch(db *gorm.DB, runID string, rows []pluginFlattenPlan
 				applied++
 				continue
 			}
-			// Zero rows matched. Either the row already holds the target state
-			// (a resumed run re-touching a row whose marker did not commit) or
-			// somebody changed it. Distinguishing the two is what keeps a rerun
-			// a no-op instead of a false conflict.
+			// Zero rows matched. Either the row already holds the target state or
+			// somebody changed it into something else. Distinguishing the two is
+			// what keeps a rerun a no-op instead of a false conflict — but it is
+			// NOT the same as "this run wrote it": the data write and the marker
+			// below commit in one transaction, so a row this run changed can never
+			// come back here. Already-at-target is therefore always somebody
+			// else's write, gets its own state, and is not rollback-eligible.
 			conflict, err := describePluginFlattenConflict(tx, r)
 			if err != nil {
 				return err
 			}
 			state := flattenRowSkipped
 			if conflict == "" {
-				state = flattenRowApplied
-				applied++
+				state = flattenRowAlreadyAtTarget
+				alreadyAtTarget++
 			} else {
 				skipped++
 			}
@@ -464,9 +582,68 @@ func applyPluginFlattenBatch(db *gorm.DB, runID string, rows []pluginFlattenPlan
 		return nil
 	})
 	if err != nil {
-		return applied, skipped, err
+		return applied, alreadyAtTarget, skipped, err
 	}
-	return applied, skipped, nil
+	return applied, alreadyAtTarget, skipped, nil
+}
+
+// recordPluginFlattenRemovalTx writes the per-holder tombstones for a row this
+// batch just took off the shelf.
+//
+// # Why this exists
+//
+// Archiving a row removes it from the snapshot's active set, and under the
+// snapshot-v2 contract absence is explicitly NOT a removal instruction: csc
+// treats a missing item as a no-op, by design, because a truncated page or a
+// failed request looks exactly like one. So an archive with no tombstone leaves
+// the capability installed on every holder's machine forever, with nothing
+// anywhere reporting a fault. That is review finding F-27, and this command was
+// a second archiving writer that reintroduced it — invisibly, because today's v1
+// clients still infer removal from absence, and that inference is precisely what
+// this task family is removing. The bomb's fuse is the v2 gate.
+//
+// # Why the call is gated on the compare-and-set, not on the plan
+//
+// EventID rotation is the client's dedup key and must rotate on a real removal
+// and never otherwise (services.RecordEntitlementRemovalTx explains what each
+// mistake costs). `res.RowsAffected == 1` is the proof that this statement, in
+// this transaction, moved the row — the same proof adminitem.setItemStatusTx
+// gets from its own `WHERE status = 'active'`. A row that was already archived,
+// or that a third party archived, does not come through here.
+//
+// # Why the transition test is `active -> hidden` and not `-> archived`
+//
+// `active` is exactly the snapshot's active set, so a row in any other status
+// was already absent from every holder's entitlements and moving it ends
+// nothing. models.IsCapabilityHiddenStatus on the destination is the single
+// definition of "off the shelf" used by the moderation paths; asking the same
+// question a different way here is how one of the two ends up not asking it.
+//
+// # Why the reason is admin_archived
+//
+// The set is open by contract, and the honest name for this cause would be its
+// own — "a data migration retired a package-derived row". Minting one is a
+// contract change (a CHECK constraint, a const, and a line of documentation that
+// says what it means), and that decision belongs to the task owner rather than
+// to this fix. Among the five reasons that exist, admin_archived/moderation is
+// the only one whose every factual claim is true here: an operator deliberately
+// ran this (`--confirm`, `--created-by`), the row's status is now `archived`,
+// the favorite/receipt rows are preserved, and reactivating the item supersedes
+// the tombstone under the same item id. Each alternative is an outright lie with
+// a cost attached — `git_archived` requires a Git event that did not happen AND
+// is suppressed while the Git rollout flag is off, so the removal would be
+// silently swallowed; `unfavorited` tells the user they did this themselves;
+// `distribution_revoked` points them at a distribution that never existed; and
+// `item_deleted` claims a hard delete of a row that is still there and is
+// rollback-restorable. Imprecise in one word beats false in the whole sentence.
+func recordPluginFlattenRemovalTx(tx *gorm.DB, r pluginFlattenPlanRow, removedAt time.Time) error {
+	if r.BeforeStatus != "active" || !models.IsCapabilityHiddenStatus(r.AfterStatus) {
+		return nil
+	}
+	if _, err := services.RecordAdminArchiveTombstonesTx(tx, r.ItemID, removedAt); err != nil {
+		return fmt.Errorf("record removal tombstones for %s: %w", r.ItemID, err)
+	}
+	return nil
 }
 
 // describePluginFlattenConflict explains why a compare-and-set matched nothing.
@@ -479,13 +656,18 @@ func describePluginFlattenConflict(tx *gorm.DB, r pluginFlattenPlanRow) (string,
 		ContentBackend string
 		SourceType     string
 	}
-	err := tx.Table("capability_items").
+	// RowsAffected, not a zero-value probe. "No row came back" and "the row came
+	// back with empty columns" are different facts, and conflating them is the
+	// shape .trellis/spec/server/backend/error-handling.md names as conflating
+	// not-found with everything else: a row whose status somehow read empty would
+	// be reported to the operator as deleted.
+	res := tx.Table("capability_items").
 		Select("COALESCE(status,'') AS status, parent_plugin_id::text AS parent_plugin_id, content_backend, source_type").
-		Where("id = ?", r.ItemID).Scan(&live).Error
-	if err != nil {
-		return "", fmt.Errorf("row %s: read live state: %w", r.ItemID, err)
+		Where("id = ?", r.ItemID).Scan(&live)
+	if res.Error != nil {
+		return "", fmt.Errorf("row %s: read live state: %w", r.ItemID, res.Error)
 	}
-	if live.Status == "" && live.ParentPluginID == nil && live.ContentBackend == "" {
+	if res.RowsAffected == 0 {
 		return "row no longer exists", nil
 	}
 	if live.Status == r.AfterStatus &&
@@ -540,9 +722,12 @@ func finishPluginFlattenRun(db *gorm.DB, runID, status string) error {
 // run whose before-state is the POST-migration state and whose after-state is
 // the original.
 //
-// Only rows the migration actually applied are eligible. A row it skipped was
-// never changed, so "restoring" it would write a state the migration never
-// caused — the classic rollback that damages more than the thing it undoes.
+// Only rows the migration actually applied are eligible — `flattenRowApplied`
+// specifically, which by construction means this run's compare-and-set claimed
+// the row. A row it skipped, and a row that was `already_at_target` because
+// somebody else had made the same change, were never changed BY THE MIGRATION,
+// so "restoring" them would write a state the migration never caused — the
+// classic rollback that damages more than the thing it undoes.
 func planPluginFlattenRollback(db *gorm.DB, opts pluginFlattenOptions, out io.Writer) (string, error) {
 	if err := ensurePluginFlattenTables(db); err != nil {
 		return "", err
@@ -651,14 +836,14 @@ func loadPluginFlattenRun(db *gorm.DB, runID string) (pluginFlattenRunRecord, er
 		CreatedBy     string
 		PlannedAt     time.Time
 	}
-	err := db.Table("plugin_flatten_migration_runs").
+	res := db.Table("plugin_flatten_migration_runs").
 		Select(`id::text AS id, schema_version, mode, status, source_run_id::text AS source_run_id,
 		        batch_size, plan_digest, totals, created_by, planned_at`).
-		Where("id = ?::uuid", runID).Scan(&row).Error
-	if err != nil {
-		return pluginFlattenRunRecord{}, fmt.Errorf("load run %s: %w", runID, err)
+		Where("id = ?::uuid", runID).Scan(&row)
+	if res.Error != nil {
+		return pluginFlattenRunRecord{}, fmt.Errorf("load run %s: %w", runID, res.Error)
 	}
-	if row.ID == "" {
+	if res.RowsAffected == 0 {
 		return pluginFlattenRunRecord{}, fmt.Errorf("run %s not found", runID)
 	}
 	totals := map[string]int{}
@@ -718,6 +903,11 @@ func readPluginFlattenArtifact(path string) (pluginFlattenArtifact, error) {
 	if err := json.Unmarshal(raw, &artifact); err != nil {
 		return pluginFlattenArtifact{}, fmt.Errorf("decode artifact: %w", err)
 	}
+	if artifact.SchemaVersion != pluginFlattenSchemaVersion {
+		return pluginFlattenArtifact{}, fmt.Errorf(
+			"artifact %s has schema version %d; this binary understands %d",
+			path, artifact.SchemaVersion, pluginFlattenSchemaVersion)
+	}
 	// Recompute rather than trust the file's own header: an edited artifact whose
 	// planDigest field was left alone must not pass.
 	if got := pluginFlattenPlanDigest(artifact.SchemaVersion, artifact.Mode, artifact.Rows); got != artifact.PlanDigest {
@@ -725,7 +915,37 @@ func readPluginFlattenArtifact(path string) (pluginFlattenArtifact, error) {
 			"%w: artifact %s declares %s but its rows hash to %s",
 			errPluginFlattenDigestMismatch, path, artifact.PlanDigest, got)
 	}
+	// The totals are derived, so they are checked by recomputation rather than by
+	// the digest. They are also the ONLY thing runbook §4 asks a human to read
+	// before approving: classification mix, action mix, and the favorite /
+	// distribution impact. A file whose rows verify but whose summary understates
+	// how many people are affected would pass a digest check and fail the actual
+	// purpose of having one.
+	if err := comparePluginFlattenTotals(artifact.Totals, pluginFlattenTotals(artifact.Rows)); err != nil {
+		return pluginFlattenArtifact{}, fmt.Errorf("artifact %s: %w", path, err)
+	}
 	return artifact, nil
+}
+
+// comparePluginFlattenTotals reports the first counter that disagrees, naming it.
+func comparePluginFlattenTotals(declared, recomputed map[string]int) error {
+	keys := make([]string, 0, len(recomputed))
+	for k := range recomputed {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if declared[k] != recomputed[k] {
+			return fmt.Errorf("totals disagree with its own rows: %s declared %d, rows say %d",
+				k, declared[k], recomputed[k])
+		}
+	}
+	for k, v := range declared {
+		if _, known := recomputed[k]; !known {
+			return fmt.Errorf("totals carry an unknown counter %s=%d", k, v)
+		}
+	}
+	return nil
 }
 
 func reportPluginFlattenPlan(out io.Writer, runID, digest string, totals map[string]int, rows []pluginFlattenPlanRow, opts pluginFlattenOptions) {
@@ -850,13 +1070,14 @@ func runPluginFlattenCommand(db *gorm.DB, args []string) error {
 		case strings.HasPrefix(arg, "--created-by="):
 			opts.CreatedBy = strings.TrimPrefix(arg, "--created-by=")
 		case strings.HasPrefix(arg, "--batch-size="):
-			n, err := strconvAtoi(strings.TrimPrefix(arg, "--batch-size="))
+			n, err := parseFlattenInt(strings.TrimPrefix(arg, "--batch-size="))
 			if err != nil {
 				return fmt.Errorf("invalid --batch-size: %w", err)
 			}
 			opts.BatchSize = n
+			opts.BatchSizeSet = true
 		case strings.HasPrefix(arg, "--report-limit="):
-			n, err := strconvAtoi(strings.TrimPrefix(arg, "--report-limit="))
+			n, err := parseFlattenInt(strings.TrimPrefix(arg, "--report-limit="))
 			if err != nil {
 				return fmt.Errorf("invalid --report-limit: %w", err)
 			}
@@ -871,12 +1092,12 @@ func runPluginFlattenCommand(db *gorm.DB, args []string) error {
 		_, err := planPluginFlatten(db, opts, os.Stdout)
 		return err
 	case "apply":
-		return applyPluginFlatten(db, opts, os.Stdout)
+		return applyPluginFlatten(db, opts, flattenModeMigrate, os.Stdout)
 	case "rollback-plan":
 		_, err := planPluginFlattenRollback(db, opts, os.Stdout)
 		return err
 	case "rollback-apply":
-		return applyPluginFlatten(db, opts, os.Stdout)
+		return applyPluginFlatten(db, opts, flattenModeRollback, os.Stdout)
 	case "status":
 		return statusPluginFlatten(db, opts, os.Stdout)
 	case "help", "-h", "--help":
@@ -909,18 +1130,36 @@ Flags
   --artifact=<path>     Write the checksummed plan (plan/rollback-plan), or
                         verify it against the stored run (apply).
   --confirm             Actually write. Absent, apply is a dry run.
-  --force               Override the rollback compatibility window. It cannot
-                        override a digest mismatch or a failed compare-and-set.
-  --batch-size=<n>      Rows per applying transaction (default 200).
+  --force               Override the rollback compatibility window, which is
+                        measured from when the MIGRATION being reverted was
+                        planned. It cannot override a digest mismatch or a
+                        failed compare-and-set.
+  --batch-size=<n>      Rows per applying transaction (default 200). Frozen into
+                        the run at plan time; passing it to apply overrides it
+                        for that invocation.
   --report-limit=<n>    Per-row lines to print; -1 for all (default 20).
   --created-by=<who>    Recorded on the run.
 `)
 }
 
-func strconvAtoi(s string) (int, error) {
-	var n int
-	if _, err := fmt.Sscanf(strings.TrimSpace(s), "%d", &n); err != nil {
+// parseFlattenInt is strict on purpose. fmt.Sscanf, which this replaces, stops
+// at the first non-digit and reports success, so `--batch-size=200x` and
+// `--report-limit=5abc` were silently accepted as 200 and 5. On a tool where one
+// flag decides how much data moves per transaction, "I clearly meant something
+// else" must be an error, not a truncation.
+func parseFlattenInt(s string) (int, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
 		return 0, fmt.Errorf("%q is not a number", s)
 	}
 	return n, nil
+}
+
+// pluginFlattenApplySubcommand names the command that executes a run of the
+// given mode, so a mode mismatch tells the operator what to type instead.
+func pluginFlattenApplySubcommand(mode string) string {
+	if mode == flattenModeRollback {
+		return "rollback-apply"
+	}
+	return "apply"
 }

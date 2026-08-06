@@ -19,6 +19,18 @@
 --
 -- Nothing here hard-deletes: the migration archives and unlinks, and both tables
 -- are retained through the compatibility window and operator sign-off.
+--
+-- THIS FILE IS THE ONLY DEFINITION OF THESE TWO TABLES.
+-- `migrate flatten-plugins` reads it from the embedded migration FS and runs
+-- the Up block itself when goose has not reached this version yet
+-- (cmd/migrate.ensurePluginFlattenTables). It used to keep a hand-copied second
+-- copy of this DDL, which had already drifted by two indexes and every column
+-- comment before anyone noticed. Do not reintroduce a second copy.
+--
+-- Because the same text runs against a table that may already exist, every
+-- statement below is idempotent AND converging: `CREATE TABLE IF NOT EXISTS`
+-- alone would silently keep an older CHECK definition, so the constraints that
+-- have changed since the first draft are re-stated with DROP/ADD.
 
 -- +goose Up
 -- +goose StatementBegin
@@ -134,8 +146,14 @@ CREATE TABLE IF NOT EXISTS plugin_flatten_migration_rows (
             'independent', 'ambiguous')),
     CONSTRAINT chk_plugin_flatten_rows_action
         CHECK (action IN ('archive_and_unlink', 'unlink_only', 'restore', 'skip')),
+    -- `applied` means THIS run's compare-and-set claimed the row.
+    -- `already_at_target` means the predicate matched nothing but the live row
+    -- already held the intended end state — someone else's write, not this
+    -- run's. Rollback restores only `applied`, so the two must not share a
+    -- value: reverting a change the migration never made is the classic
+    -- rollback that damages more than it undoes.
     CONSTRAINT chk_plugin_flatten_rows_state
-        CHECK (row_state IN ('pending', 'applied', 'skipped', 'failed')),
+        CHECK (row_state IN ('pending', 'applied', 'already_at_target', 'skipped', 'failed')),
     -- A skipped-by-plan row must carry its reason; a conflict must too. An
     -- unexplained skip is the one outcome an operator cannot act on.
     CONSTRAINT chk_plugin_flatten_rows_reason
@@ -150,10 +168,20 @@ CREATE INDEX IF NOT EXISTS idx_plugin_flatten_rows_pending
 CREATE INDEX IF NOT EXISTS idx_plugin_flatten_rows_item
     ON plugin_flatten_migration_rows (item_id);
 
+-- Converge a table created by an earlier draft of this file. `CREATE TABLE IF
+-- NOT EXISTS` above is a no-op on an existing table, so a CHECK that gained a
+-- value would never reach it.
+ALTER TABLE plugin_flatten_migration_rows
+    DROP CONSTRAINT IF EXISTS chk_plugin_flatten_rows_state;
+ALTER TABLE plugin_flatten_migration_rows
+    ADD CONSTRAINT chk_plugin_flatten_rows_state
+    CHECK (row_state IN ('pending', 'applied', 'already_at_target', 'skipped', 'failed'));
+
 COMMENT ON TABLE plugin_flatten_migration_rows IS 'Row-level plan and outcome for one plugin flatten run; before_* columns are the compare-and-set predicate';
 COMMENT ON COLUMN plugin_flatten_migration_rows.before_parent_plugin_id IS 'Parent link inventoried at plan time; apply refuses the row if the live value has moved';
 COMMENT ON COLUMN plugin_flatten_migration_rows.classification IS 'Provenance verdict; ambiguous is always paired with action=skip';
 COMMENT ON COLUMN plugin_flatten_migration_rows.conflict IS 'Why a pending row became skipped at apply time, e.g. a concurrent change';
+COMMENT ON COLUMN plugin_flatten_migration_rows.row_state IS 'pending -> applied (this run wrote it) | already_at_target (someone else had) | skipped | failed; only applied is rollback-eligible';
 
 -- +goose StatementEnd
 

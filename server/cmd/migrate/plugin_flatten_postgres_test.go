@@ -98,6 +98,42 @@ func newPluginFlattenPostgresDB(t *testing.T) *gorm.DB {
 			status VARCHAR(32) DEFAULT 'active',
 			revoked_at TIMESTAMPTZ
 		)`,
+		`CREATE TABLE item_distribution_receipts (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			distribution_id UUID NOT NULL,
+			user_id TEXT NOT NULL,
+			receipt_status VARCHAR(32) NOT NULL DEFAULT 'unread',
+			forked_item_id UUID,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		// The real 20260805000200 + 20260806000300 shape, including the cause
+		// CHECK: the point of the tombstone tests below is that the migration
+		// writes a row the production constraint accepts, so a fixture without
+		// the constraint would prove nothing.
+		`CREATE TABLE capability_sync_tombstones (
+			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+			user_id VARCHAR(191) NOT NULL,
+			item_id UUID NOT NULL,
+			reason VARCHAR(32) NOT NULL,
+			lifecycle_reason VARCHAR(32),
+			source VARCHAR(32) NOT NULL,
+			event_id VARCHAR(64) NOT NULL,
+			removed_at TIMESTAMPTZ NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			CONSTRAINT uq_capability_sync_tombstones_user_item UNIQUE (user_id, item_id),
+			CONSTRAINT uq_capability_sync_tombstones_event UNIQUE (event_id),
+			CONSTRAINT chk_capability_sync_tombstones_cause CHECK (
+				(reason = 'git_archived' AND source = 'git_lifecycle'
+					AND lifecycle_reason IS NOT NULL
+					AND lifecycle_reason IN ('manifest_removed','default_branch_missing','repository_deleted'))
+				OR (reason = 'unfavorited' AND source = 'favorite' AND lifecycle_reason IS NULL)
+				OR (reason = 'distribution_revoked' AND source = 'distribution' AND lifecycle_reason IS NULL)
+				OR (reason = 'admin_archived' AND source = 'moderation' AND lifecycle_reason IS NULL)
+				OR (reason = 'item_deleted' AND source = 'catalog' AND lifecycle_reason IS NULL)
+			)
+		)`,
 	} {
 		if err := db.Exec(ddl).Error; err != nil {
 			t.Fatalf("create fixture table: %v", err)
@@ -107,6 +143,26 @@ func newPluginFlattenPostgresDB(t *testing.T) *gorm.DB {
 		t.Fatalf("ensure flatten tables: %v", err)
 	}
 	return db
+}
+
+// tombstonesFor returns (reason, source) per user for one item.
+func tombstonesFor(t *testing.T, db *gorm.DB, itemID string) map[string][2]string {
+	t.Helper()
+	var rows []struct {
+		UserID string
+		Reason string
+		Source string
+	}
+	if err := db.Table("capability_sync_tombstones").
+		Select("user_id, reason, source").
+		Where("item_id = ?::uuid", itemID).Scan(&rows).Error; err != nil {
+		t.Fatalf("read tombstones for %s: %v", itemID, err)
+	}
+	out := make(map[string][2]string, len(rows))
+	for _, r := range rows {
+		out[r.UserID] = [2]string{r.Reason, r.Source}
+	}
+	return out
 }
 
 type flattenFixture struct {
@@ -353,14 +409,14 @@ func TestPluginFlatten_ApplyRetiresOnlyDerivedRowsAndRerunIsNoop(t *testing.T) {
 	runID, _ := planFor(t, db, "")
 
 	// Dry-run apply must still write nothing.
-	if err := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, ReportLimit: 0}, io.Discard); err != nil {
+	if err := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, ReportLimit: 0}, flattenModeMigrate, io.Discard); err != nil {
 		t.Fatalf("dry-run apply: %v", err)
 	}
 	if status, parent := liveItem(t, db, fxCatalog1); status != "active" || parent == nil {
 		t.Fatalf("dry-run apply changed data: status=%s parent=%v", status, parent)
 	}
 
-	if err := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, Confirm: true, ReportLimit: 0}, io.Discard); err != nil {
+	if err := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, Confirm: true, ReportLimit: 0}, flattenModeMigrate, io.Discard); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 
@@ -409,7 +465,7 @@ func TestPluginFlatten_ApplyRetiresOnlyDerivedRowsAndRerunIsNoop(t *testing.T) {
 	}
 
 	// Rerun: no pending work, no further change.
-	if err := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, Confirm: true, ReportLimit: 0}, io.Discard); err != nil {
+	if err := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, Confirm: true, ReportLimit: 0}, flattenModeMigrate, io.Discard); err != nil {
 		t.Fatalf("rerun apply: %v", err)
 	}
 	rows, err := loadPluginFlattenRows(db, runID)
@@ -441,7 +497,7 @@ func TestPluginFlatten_ConcurrentChangeIsSkippedNotOverwritten(t *testing.T) {
 		t.Fatalf("concurrent unlink: %v", err)
 	}
 
-	if err := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, Confirm: true, ReportLimit: 0}, io.Discard); err != nil {
+	if err := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, Confirm: true, ReportLimit: 0}, flattenModeMigrate, io.Discard); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 
@@ -500,9 +556,9 @@ func TestPluginFlatten_CrashBetweenBatchesResumesByRunID(t *testing.T) {
 
 	// Simulate the process dying after the first batch committed: apply one
 	// batch by hand, then leave the run in `applying`.
-	applied, skipped, err := applyPluginFlattenBatch(db, runID, pending[:1])
-	if err != nil || applied != 1 || skipped != 0 {
-		t.Fatalf("first batch: applied=%d skipped=%d err=%v", applied, skipped, err)
+	applied, already, skipped, err := applyPluginFlattenBatch(db, runID, pending[:1])
+	if err != nil || applied != 1 || already != 0 || skipped != 0 {
+		t.Fatalf("first batch: applied=%d already=%d skipped=%d err=%v", applied, already, skipped, err)
 	}
 	if err := db.Exec(`UPDATE plugin_flatten_migration_runs SET status = ?, started_at = now() WHERE id = ?::uuid`,
 		flattenRunApplying, runID).Error; err != nil {
@@ -512,7 +568,7 @@ func TestPluginFlatten_CrashBetweenBatchesResumesByRunID(t *testing.T) {
 	firstAppliedAt := rowAppliedAt(t, db, runID, pending[0].ItemID)
 
 	// Resume.
-	if err := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, Confirm: true, ReportLimit: 0}, io.Discard); err != nil {
+	if err := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, Confirm: true, ReportLimit: 0}, flattenModeMigrate, io.Discard); err != nil {
 		t.Fatalf("resume apply: %v", err)
 	}
 	if got := rowAppliedAt(t, db, runID, pending[0].ItemID); !got.Equal(firstAppliedAt) {
@@ -562,7 +618,7 @@ func TestPluginFlatten_ApplyRefusesTamperedPlan(t *testing.T) {
 		runID, fxCatalog1).Error; err != nil {
 		t.Fatalf("tamper: %v", err)
 	}
-	err := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, Confirm: true, ReportLimit: 0}, io.Discard)
+	err := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, Confirm: true, ReportLimit: 0}, flattenModeMigrate, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "digest") {
 		t.Fatalf("apply accepted a tampered plan: %v", err)
 	}
@@ -602,7 +658,7 @@ func TestPluginFlatten_ArtifactVerificationRejectsEdits(t *testing.T) {
 	}
 	err = applyPluginFlatten(db, pluginFlattenOptions{
 		RunID: runID, ArtifactPath: artifact, Confirm: true, ReportLimit: 0,
-	}, io.Discard)
+	}, flattenModeMigrate, io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "digest") {
 		t.Fatalf("apply accepted an edited artifact: %v", err)
 	}
@@ -617,7 +673,7 @@ func TestPluginFlatten_RollbackRestoresOnlyUnchangedAppliedRows(t *testing.T) {
 	db := newPluginFlattenPostgresDB(t)
 	seedFlattenWorld(t, db)
 	runID, _ := planFor(t, db, "")
-	if err := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, Confirm: true, ReportLimit: 0}, io.Discard); err != nil {
+	if err := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, Confirm: true, ReportLimit: 0}, flattenModeMigrate, io.Discard); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 
@@ -654,7 +710,7 @@ func TestPluginFlatten_RollbackRestoresOnlyUnchangedAppliedRows(t *testing.T) {
 	}
 
 	// Dry-run rollback writes nothing.
-	if err := applyPluginFlatten(db, pluginFlattenOptions{RunID: rollbackID, ReportLimit: 0}, io.Discard); err != nil {
+	if err := applyPluginFlatten(db, pluginFlattenOptions{RunID: rollbackID, ReportLimit: 0}, flattenModeRollback, io.Discard); err != nil {
 		t.Fatalf("rollback dry-run: %v", err)
 	}
 	if status, parent := liveItem(t, db, fxCatalog1); status != "archived" || parent != nil {
@@ -663,7 +719,7 @@ func TestPluginFlatten_RollbackRestoresOnlyUnchangedAppliedRows(t *testing.T) {
 
 	if err := applyPluginFlatten(db, pluginFlattenOptions{
 		RunID: rollbackID, ArtifactPath: rollbackArtifact, Confirm: true, ReportLimit: 0,
-	}, io.Discard); err != nil {
+	}, flattenModeRollback, io.Discard); err != nil {
 		t.Fatalf("rollback apply: %v", err)
 	}
 
@@ -696,7 +752,7 @@ func TestPluginFlatten_RollbackWindowIsEnforced(t *testing.T) {
 	db := newPluginFlattenPostgresDB(t)
 	seedFlattenWorld(t, db)
 	runID, _ := planFor(t, db, "")
-	if err := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, Confirm: true, ReportLimit: 0}, io.Discard); err != nil {
+	if err := applyPluginFlatten(db, pluginFlattenOptions{RunID: runID, Confirm: true, ReportLimit: 0}, flattenModeMigrate, io.Discard); err != nil {
 		t.Fatalf("apply: %v", err)
 	}
 	if err := db.Exec(`UPDATE plugin_flatten_migration_runs SET planned_at = now() - interval '400 days' WHERE id = ?::uuid`,
