@@ -7,7 +7,7 @@
 | 创建日期 | 2026-07-07 |
 | 维护原则 | 渐进式演进——每个 Phase 可独立启动、独立验收、独立回滚；Phase 之间允许暂停数周做观察期 |
 
-> **[修正 2026-08-04]** Phase 1（fork Gitea + JWT 中间件）**已完成并在用**（魔改版 `zgsm-ai/gitea` 的 CoStrictJWT，pre-receive 硬配额 hook 除外）；Phase 2（costrict-web 自签 JWT 用户中心）**已被反向决策**——JWT 验证委托 cs-user introspection（main `a863ca2`）。相关表述以 V4 主文档「修正记录（Errata · 2026-08-04）」为准。
+> **[修正 2026-08-04 · 2026-08-06 再修正]** Phase 1（fork Gitea + JWT 中间件）**已完成并在用**（魔改版 `zgsm-ai/gitea` 分支 `dev-v1.27.0` 的 CoStrictJWT）；~~pre-receive 硬配额 hook 除外~~ —— **2026-08-06 修正：全局 pre-receive 硬配额 hook 同样已实现**（`routers/private/hook_pre_receive.go` 的 `enforceCoStrictQuota` + `modules/costrict/quota/`，受 `[costrict] QUOTA_ENABLED` 开关；规则源当前是 POC 的 `MemorySource`，`gitea_ext.quota_rules` PG 直读仍是生产替换项）。此前判「除外」是因为去 costrict-web 的库里找 `gitea_ext.quota_rules` 表、又拿本地跑的官方版 Gitea 做观察，两处都找错了地方。Phase 2（costrict-web 自签 JWT 用户中心）**已被反向决策**——JWT 验证委托 cs-user introspection（main `a863ca2`）。相关表述以 V4 主文档「修正记录（Errata · 2026-08-04）」为准。
 
 ---
 

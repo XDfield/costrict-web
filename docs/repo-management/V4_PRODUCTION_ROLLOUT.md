@@ -67,10 +67,49 @@ bootstrap 之前跑冒烟必然假失败，理由见 §3）。
 | 项 | 说明 |
 |---|---|
 | **线上 Gitea** | 必须先有一个可用实例，且有 admin token。V4 的所有内容都存在这里 |
-| Gitea 版本 | 官方镜像即可（本地验证用 1.24.x）。**不需要**魔改版——代码只调标准 API |
-| `ROOT_URL` | Gitea 的 `ROOT_URL` 必须是**用户浏览器可达**的地址，否则它生成的 `html_url` 全是坏链 |
-| 默认分支 | **建议**把 Gitea 的 `DEFAULT_BRANCH` 保持 `main`（与平台自建仓库一致，少一层认知负担），但它**不是**链路失效的根因 —— 见下方说明 |
-| 网络 | api 与 worker 的 pod 必须能出站访问 Gitea；Gitea 必须能回调 api（webhook） |
+| **Gitea 版本** | **必须是魔改版 `github.com/zgsm-ai/gitea`**（分支 `dev-v1.27.0`），**不能用官方镜像** —— 见下方说明 |
+| **`[costrict] ENABLED`** | 魔改版 `app.ini` 里必须显式 `ENABLED = true`（**默认 false**），否则 fork 面全是 no-op，表现与官方版无异 |
+| `ROOT_URL`     | Gitea 的 `ROOT_URL` 必须是**用户浏览器可达**的地址，否则它生成的 `html_url` 全是坏链 |
+| 默认分支       | **建议**把 Gitea 的 `DEFAULT_BRANCH` 保持 `main`（与平台自建仓库一致，少一层认知负担），但它**不是**链路失效的根因 —— 见下方说明 |
+| 网络           | api 与 worker 的 pod 必须能出站访问 Gitea；Gitea 必须能回调 api（webhook） |
+
+> ### ⚠️ 关于 Gitea 版本：必须用魔改版
+>
+> **[修正 2026-08-06]** 本文档与 `V4_OPERATIONS.md` 此前写着「官方镜像即可，不需要魔改版 ——
+> 代码只调标准 API」。**那个结论是错的**，依据只覆盖了 `internal/gitsync/`（后端 → Gitea 这一面），
+> **漏掉了「用户浏览器 → Gitea」这一面**。
+>
+> V4 的核心 UX 是 **「Cloud 只展示，编辑一律跳 Gitea」**（用户决策 U3）。用户在 Gitea 上
+> **没有密码**（账号由 sync worker 用 admin token 自动开通），登进 Gitea 网页**只有 `CoStrictJWT` 一条路**。
+> 用官方镜像的结果是：**后端全通、冒烟全绿，但用户点「去 Gitea 编辑」登不进去** ——
+> 失败发生在用户侧，**监控和冒烟都看不到**。
+>
+> 魔改版相对官方多出的能力（均已在 `zgsm-ai/gitea` `dev-v1.27.0` 核实）：
+>
+> | 位置 | 能力 |
+> |---|---|
+> | `modules/costrict/jwt/jwt.go` + `services/auth/jwt.go` | **`CoStrictJWT` 认证方法** —— 用户带 costrict 身份直接登录 Gitea 网页（JWKS 验签 + 缓存）；注册在 `routers/web/web.go` 与 `routers/api/v1/api.go` 两条 auth 链上 |
+> | `routers/private/hook_pre_receive.go` 的 `enforceCoStrictQuota` + `modules/costrict/quota/` | **V4 §7.4 的 pre-receive 硬配额**，受 `[costrict] QUOTA_ENABLED` 开关；关闭时是 no-op |
+> | `routers/private/costrict.go` + `routers/private/internal.go` | 私有端点：`/costrict/healthz`、`/costrict/quota-invalidate`、`/costrict/jwks-invalidate` |
+> | `modules/setting/costrict.go` | `[costrict]` 配置段（`ENABLED` / `JWT_JWKS_URL` / `JWT_ISSUER` / `BINDING_CHECK_URL` / `QUOTA_*`） |
+>
+> **判别命令**：
+>
+> ```bash
+> strings <gitea二进制> | grep -c CoStrictJWT     # 0 = 官方版；非 0 = 魔改版
+> # 容器里：docker exec <gitea容器> sh -c 'strings /usr/local/bin/gitea | grep -c CoStrictJWT'
+> # 魔改版还可直接探活（需 internal token）：GET <gitea>/api/internal/costrict/healthz
+> #   返回体含 quota_enabled / jwks_url
+> ```
+>
+> **本地测试例外**：只验后端链路（fork → webhook → sync → read-through）时官方镜像能跑通，
+> 因为那一面确实只用标准 API。**但那样就验不到用户登录这一段** —— 别把「本地用官方版跑通了」
+> 当成「生产可以用官方版」。本地 `:3001` 目前跑的就是官方 1.24.6（`grep -c CoStrictJWT` = 0）。
+>
+> **`CoStrictJWT` 生效还依赖三个条件**（缺任一都是「镜像对了但用户还是登不进」）：
+> `[costrict] ENABLED = true`；`JWT_JWKS_URL` 指向**真正签发 JWT 的那个服务**（当前是
+> **cs-user 的 `/.well-known/jwks`**，注意无 `.json` 后缀，与 fork 源码注释里的示例不同）；
+> JWT 里带非空 `short_id` claim 且 Gitea 用户名与之**逐字相等**（sync worker 就是按 ShortID 建号的）。
 
 > **关于 `DEFAULT_BRANCH`：全局值不参与 webhook 判定。**
 > ingress 比的是**同一个 payload 内部的两个字段**（`payload.Ref != "refs/heads/"+payload.Repo.DefaultBranch`，
@@ -321,6 +360,8 @@ plugin 是特例：它需要先把上游镜像导进自建 Gitea（`BUNDLE_TO_GI
 **顺序即门禁**：bootstrap（后四条配置项）必须在冒烟之前完成，理由见 §3。
 
 - [ ] 线上 Gitea 就绪，admin token 可用，`ROOT_URL` 浏览器可达
+- [ ] **Gitea 是魔改版**：`strings <gitea二进制> | grep -c CoStrictJWT` **非 0**（0 = 官方版，见 §2）
+- [ ] **`app.ini` 里 `[costrict] ENABLED = true`**，且 `JWT_JWKS_URL` 指向真正的 JWT 签发方（cs-user `/.well-known/jwks`）
 - [ ] （建议，非必过）Gitea `DEFAULT_BRANCH=main` —— 一致性考虑，不是链路失效根因（§2）
 - [ ] **`CS_BOT_TOKEN_KEY` 已注入 api 与 worker**（推荐 k8s `env:`；envFile/ConfigMap 挂 `/app/.env` 同样有效，见 §1）
 - [ ] `GIT_SERVER_TEMPLATE_ENDPOINT` + `_ADMIN_TOKEN` 已配
@@ -332,6 +373,10 @@ plugin 是特例：它需要先把上游镜像导进自建 Gitea（`BUNDLE_TO_GI
 - [ ] **`tenant_git_server_binding` 已建**（种子不会建）—— **漏了这条，下一步冒烟必然假失败**
 - [ ] system webhook 已挂且能收到 push
 - [ ] **冒烟：用一个没 fork 过的 (用户, 源 item) 组合 fork，返回 `contentBackend: "git"`**（不通过就停）
+- [ ] **冒烟：用一个真实用户身份登录 Gitea 网页成功**（走「去 Gitea 编辑」入口，看到自己的仓库）
+      —— **不能**用 admin token、**不能**用 `gitadmin` 手动账号代替。
+      这一段整轮 V4 验收**从未验过**：所有 Gitea 操作要么走后端 admin token，要么由 `gitadmin` 手工完成，
+      两条路都绕开了 `CoStrictJWT`。失败时后端全绿，只有真人点一次才看得见（排查见 `V4_TROUBLESHOOTING.md` F15）
 - [ ] 存量 DB-backed 项零回归
 - [ ] 前端已部署
 - [ ] 明确本期**不迁移存量**（或已定分批计划）

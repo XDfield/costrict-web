@@ -532,8 +532,29 @@ lsof -nP -iTCP:8080 -sTCP:LISTEN     # api；lsof -ti 会把出站连接也算�
 lsof -nP -iTCP:8082 -sTCP:LISTEN     # cs-user（端口必须显式设 8082，默认 8081 撞 multica）
 ```
 
-Gitea 官方镜像即可（本地验证用 1.24.x），**不需要魔改版** —— `internal/gitsync/` 调的全是标准端点
-（`admin/hooks`、`admin/users`、`orgs`、`repos`、`repositories/{id}`、`teams`、user tokens）。
+> ⚠️ **[修正 2026-08-06] 这里原先写着「官方镜像即可，不需要魔改版」，那是错的。**
+> 生产**必须**用魔改版 `github.com/zgsm-ai/gitea`，理由见 `V4_PRODUCTION_ROLLOUT.md` §2。
+
+本地**只验后端链路**时可以用官方镜像（1.24.x 实测可跑）—— `internal/gitsync/` 调的全是标准端点
+（`admin/hooks`、`admin/users`、`orgs`、`repos`、`repositories/{id}`、`teams`、user tokens），
+后端→Gitea 这一面确实不依赖 fork。
+
+**但官方镜像验不到「用户浏览器 → Gitea」那一段**：V4 的核心 UX 是「Cloud 只展示，编辑跳 Gitea」（U3），
+而用户在 Gitea 上**没有密码**，靠魔改版的 `CoStrictJWT` 才登得进去。官方镜像下用户点「去 Gitea 编辑」
+会撞到登录页，且**后端一切正常，冒烟和监控都不会报**。所以：
+
+- 只验后端（fork → webhook → sync → read-through）：官方镜像够用，但要清楚**没验用户登录**
+- 验完整 UX / 任何要复现生产行为的场景：必须用魔改版
+
+判别当前跑的是哪个：
+
+```bash
+strings <gitea二进制> | grep -c CoStrictJWT     # 0 = 官方版；非 0 = 魔改版
+# 容器里：docker exec <gitea容器> sh -c 'strings /usr/local/bin/gitea | grep -c CoStrictJWT'
+```
+
+魔改版还要求 `app.ini` 里 `[costrict] ENABLED = true`（**默认 false**，`modules/setting/costrict.go:69`），
+否则整个 fork 面（auth method + hook + 内部端点）全是 no-op —— 镜像对了但开关没开，表现与官方版完全一样。
 
 `DEFAULT_BRANCH` **建议**保持 `main`（平台自建的能力仓库显式用 `main`，保持一致少一层认知负担），
 但它**不是**同步链路失效的根因：webhook ingress 比的是同一个 payload 内部的

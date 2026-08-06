@@ -81,6 +81,7 @@ SELECT status, count(*) FROM git_capability_sync_jobs GROUP BY status ORDER BY 2
 | 站内编辑 / 重传 / publish 被 409 拒绝 | [F12](#f12-写入被-409-拒绝) |
 | push 了但队列里连 job 都没有 | [F13](#f13-webhook-根本没进队列) |
 | 页面链接点开 404 / 打不开 | [F14](#f14-仓库链接是坏链) |
+| 点「去 Gitea 编辑」后登不进 Gitea / 被要求输密码 | [F15](#f15-用户点去-gitea-编辑后登不进去--被要求输密码) |
 
 ---
 
@@ -746,6 +747,92 @@ FROM git_servers;
 
 `source_repo_url` 是在 fork/provision **当时**算好写死的，改 `git_servers.web_url` 不会追溯修正存量行。
 批量修正需要绕开 GORM 守卫（`source_repo_url` 在保护列表里），见 `V4_OPERATIONS.md` §6。
+
+---
+
+## F15. 用户点「去 Gitea 编辑」后登不进去 / 被要求输密码
+
+用户从 Cloud 详情页跳到 Gitea，落到 Gitea 登录页；或者提示需要用户名密码，而**用户从来没有 Gitea 密码**
+（账号是 sync worker 用 admin token 自动开的）。
+
+> ### ⚠️ 这一类故障**监控和冒烟都不会报**
+>
+> 后端 → Gitea 那一面（fork / webhook / sync / read-through）走的是 **admin token**，
+> 和用户登录**完全不共用**认证路径。所以你会看到：`contentBackend: "git"` 正常、webhook 正常、
+> 队列干净、健康检查全绿 —— 唯独**真人点进去用不了**。
+> 只有 `V4_PRODUCTION_ROLLOUT.md` §9 那条「用真实用户身份登录 Gitea 网页」能抓到它。
+
+### 原因（按出现概率排序）
+
+#### 1. 跑的是**官方版 Gitea**，缺 `CoStrictJWT`
+
+最常见。用户在 Gitea 上没有密码，登进网页**只有魔改版 `github.com/zgsm-ai/gitea` 的
+`CoStrictJWT` 认证方法这一条路**（`services/auth/jwt.go`，注册在 `routers/web/web.go`
+与 `routers/api/v1/api.go` 两条 auth 链上）。官方版没有它 ⇒ 必然登不进。
+
+```bash
+strings <gitea二进制> | grep -c CoStrictJWT     # 0 = 官方版（就是这个原因）
+# 容器里：docker exec <gitea容器> sh -c 'strings /usr/local/bin/gitea | grep -c CoStrictJWT'
+```
+
+**修法：把镜像换成魔改版。** 没有别的绕法 —— 给用户发密码、共用 `gitadmin` 都不是方案。
+
+> 历史成因：本套文档一度写着「官方镜像即可，不需要魔改版」，依据是「`internal/gitsync/` 只调标准端点」。
+> 那个依据只覆盖后端出站，**不覆盖用户浏览器入站**。已于 2026-08-06 修正，见
+> `V4_PRODUCTION_ROLLOUT.md` §2。
+
+#### 2. 镜像是魔改版，但 `[costrict] ENABLED` 没打开
+
+`CoStrictConfig.Enabled` **默认 false**（`modules/setting/costrict.go:69`），且它 gate 住整个 fork 面。
+关闭时 `CoStrictJWT.Verify` 直接 `return nil, nil` 退给下一个认证方法 ⇒ **表现与官方版一模一样**。
+
+```ini
+[costrict]
+ENABLED = true
+```
+
+#### 3. `JWT_JWKS_URL` 指错了签发方
+
+fork 拿 JWKS 验签。当前 JWT 的**实际签发方是 cs-user**，端点是 **`/.well-known/jwks`（无 `.json` 后缀）**；
+fork 源码注释里的示例 `https://costrict-web/.well-known/jwks.json` 是早期「costrict-web 自签」方案的遗留，
+那个方向已被反向决策（main `a863ca2` 改为委托 cs-user）。配错的表现是 401 或 500，不是静默放行
+——`Verify` 在 verifier 初始化失败 / JWKS 拉不到时是 **fail closed**。
+
+```bash
+# 魔改版自带探活端点（需 internal token），直接回显当前配置
+curl -H "Authorization: Bearer $GITEA_INTERNAL_TOKEN" \
+  <gitea>/api/internal/costrict/healthz
+# → {"quota_enabled":..., "jwks_url":"..."}
+```
+
+改完 JWKS 后可用 `POST /api/internal/costrict/jwks-invalidate` 立即失效缓存，不必重启。
+
+#### 4. `short_id` claim 为空，或与 Gitea 用户名对不上
+
+fork 把 **Gitea 用户名当作 ShortID 逐字匹配**（不加 `u-` 前缀、不转小写）：
+
+- `short_id` 为空 → 报 `costrict_jwt: empty short_id claim (user pending backfill?)`。
+  老用户没回填 `short_id` 就是这个；修法是跑 cs-user 的 backfill CLI。
+- `short_id` 有值但 Gitea 里没有同名用户 → 返回 **503 + `Retry-After: 5`**，
+  日志 `[costrict_jwt] verified JWT for %q but Gitea user %q missing — sync worker lag?`。
+  fork **故意不自动建号**（sync worker 是唯一写者）；持续 503 说明 provision 没跑成，查 `user_git_binding`。
+
+#### 5. `BINDING_CHECK_URL` 配了但绑定还没 synced
+
+fork 会回调 costrict-web 查 `user_git_binding.sync_status`，非 `synced` 时返回
+**503 `user-gitea binding not yet synced` + `Retry-After: 5`**。通常 1 秒内自愈；
+持续不好就是 provision 卡住，按 F5 / `user_git_binding` 查。
+
+### 分诊顺序
+
+```
+strings | grep -c CoStrictJWT
+ ├─ 0        → 原因 1：换魔改版镜像（到此为止，其余都不用看）
+ └─ 非 0     → curl /api/internal/costrict/healthz
+      ├─ 连不上 / 404   → 原因 2：ENABLED 没开
+      ├─ jwks_url 不对  → 原因 3
+      └─ 都对           → 看 Gitea 日志里的 [costrict_jwt] 行 → 原因 4 / 5
+```
 
 ---
 
