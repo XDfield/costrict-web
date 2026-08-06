@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/costrict/costrict-web/server/internal/database"
+	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
@@ -372,6 +373,150 @@ func TestSyncTombstonesMigration_GitTombstoneCannotOmitItsLifecycleReason(t *tes
 		t.Error("a reused event id must be rejected")
 	}
 	tx.Exec("ROLLBACK TO SAVEPOINT dup_event")
+}
+
+func TestSyncTombstonesMigration_RejectsLegacyCrossProductBeforeChangingConstraints(t *testing.T) {
+	tx := isolatedMigrationTx(t, "sync_tombstones_preflight_test", nil,
+		"20260805000200_create_capability_sync_tombstones.sql")
+
+	const itemID = "11111111-1111-1111-1111-111111111111"
+	const insert = `INSERT INTO capability_sync_tombstones
+		(user_id, item_id, reason, lifecycle_reason, source, event_id, removed_at)
+		VALUES ('u-legacy', ?, 'git_archived', NULL, 'favorite', 'evt-legacy', now())`
+	if err := tx.Exec(insert, itemID).Error; err != nil {
+		t.Fatalf("seed old-constraint cross-product row: %v", err)
+	}
+
+	migration, err := readGooseUp("20260805000700_constrain_capability_sync_tombstone_triples.sql")
+	if err != nil {
+		t.Fatalf("read triple constraint migration: %v", err)
+	}
+	sqlTx, ok := tx.Statement.ConnPool.(*sql.Tx)
+	if !ok {
+		t.Fatalf("migration transaction pool = %T, want *sql.Tx", tx.Statement.ConnPool)
+	}
+	if err := tx.Exec("SAVEPOINT preflight").Error; err != nil {
+		t.Fatalf("create preflight savepoint: %v", err)
+	}
+	err = func() error {
+		_, err := sqlTx.ExecContext(context.Background(), migration)
+		return err
+	}()
+	if err == nil {
+		t.Fatal("legacy cross-product row must reject the migration")
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		t.Fatalf("preflight error = %T %v, want PostgreSQL diagnostic", err, err)
+	}
+	if pgErr.Code != "23514" {
+		t.Fatalf("preflight SQLSTATE = %q, want 23514", pgErr.Code)
+	}
+	if !strings.Contains(pgErr.Message, "has 1 rows that do not match a legal reason/source/lifecycle_reason triple") {
+		t.Fatalf("preflight message = %q, want row count and triple diagnosis", pgErr.Message)
+	}
+	if !strings.Contains(pgErr.Hint, "Do not delete tombstones to bypass this check") {
+		t.Fatalf("preflight hint = %q, want non-destructive repair guidance", pgErr.Hint)
+	}
+	if err := tx.Exec("ROLLBACK TO SAVEPOINT preflight").Error; err != nil {
+		t.Fatalf("roll back failed preflight: %v", err)
+	}
+	if err := tx.Exec("RELEASE SAVEPOINT preflight").Error; err != nil {
+		t.Fatalf("release preflight savepoint: %v", err)
+	}
+
+	var oldConstraints, causeConstraint, rows int64
+	if err := tx.Raw(`SELECT COUNT(*)
+		FROM pg_constraint
+		WHERE conrelid = 'capability_sync_tombstones'::regclass
+		  AND conname IN (
+				'chk_capability_sync_tombstones_reason',
+				'chk_capability_sync_tombstones_source',
+				'chk_capability_sync_tombstones_lifecycle_reason'
+		  )`).Scan(&oldConstraints).Error; err != nil {
+		t.Fatalf("count old constraints after rejected migration: %v", err)
+	}
+	if oldConstraints != 3 {
+		t.Fatalf("old constraints after rejected migration = %d, want 3", oldConstraints)
+	}
+	if err := tx.Raw(`SELECT COUNT(*)
+		FROM pg_constraint
+		WHERE conrelid = 'capability_sync_tombstones'::regclass
+		  AND conname = 'chk_capability_sync_tombstones_cause'`).Scan(&causeConstraint).Error; err != nil {
+		t.Fatalf("count triple constraint after rejected migration: %v", err)
+	}
+	if causeConstraint != 0 {
+		t.Fatalf("triple constraint after rejected migration = %d, want 0", causeConstraint)
+	}
+	if err := tx.Raw(`SELECT COUNT(*) FROM capability_sync_tombstones
+		WHERE user_id = 'u-legacy' AND item_id = ? AND reason = 'git_archived'
+		  AND lifecycle_reason IS NULL AND source = 'favorite' AND event_id = 'evt-legacy'`, itemID).Scan(&rows).Error; err != nil {
+		t.Fatalf("read legacy row after rejected migration: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("legacy row after rejected migration = %d, want unchanged row", rows)
+	}
+
+	if err := tx.Exec(`UPDATE capability_sync_tombstones
+		SET source = 'git_lifecycle', lifecycle_reason = 'manifest_removed'
+		WHERE user_id = 'u-legacy' AND item_id = ?`, itemID).Error; err != nil {
+		t.Fatalf("repair legacy row: %v", err)
+	}
+	if err := tx.Exec(migration).Error; err != nil {
+		t.Fatalf("rerun migration after repair: %v", err)
+	}
+	if err := tx.Raw(`SELECT COUNT(*)
+		FROM pg_constraint
+		WHERE conrelid = 'capability_sync_tombstones'::regclass
+		  AND conname = 'chk_capability_sync_tombstones_cause'`).Scan(&causeConstraint).Error; err != nil {
+		t.Fatalf("count triple constraint after successful rerun: %v", err)
+	}
+	if causeConstraint != 1 {
+		t.Fatalf("triple constraint after successful rerun = %d, want 1", causeConstraint)
+	}
+}
+
+func TestSyncTombstonesMigration_PreflightAllowsCleanUpgrade(t *testing.T) {
+	tx := isolatedMigrationTx(t, "sync_tombstones_clean_upgrade_test", nil,
+		"20260805000200_create_capability_sync_tombstones.sql")
+
+	const itemID = "22222222-2222-2222-2222-222222222222"
+	if err := tx.Exec(`INSERT INTO capability_sync_tombstones
+		(user_id, item_id, reason, lifecycle_reason, source, event_id, removed_at)
+		VALUES ('u-clean', ?, 'git_archived', 'repository_deleted', 'git_lifecycle', 'evt-clean', now())`, itemID).Error; err != nil {
+		t.Fatalf("seed clean old-constraint row: %v", err)
+	}
+	migration, err := readGooseUp("20260805000700_constrain_capability_sync_tombstone_triples.sql")
+	if err != nil {
+		t.Fatalf("read triple constraint migration: %v", err)
+	}
+	if err := tx.Exec(migration).Error; err != nil {
+		t.Fatalf("apply triple constraint migration to clean history: %v", err)
+	}
+
+	var oldConstraints, causeConstraint int64
+	if err := tx.Raw(`SELECT COUNT(*)
+		FROM pg_constraint
+		WHERE conrelid = 'capability_sync_tombstones'::regclass
+		  AND conname IN (
+				'chk_capability_sync_tombstones_reason',
+				'chk_capability_sync_tombstones_source',
+				'chk_capability_sync_tombstones_lifecycle_reason'
+		  )`).Scan(&oldConstraints).Error; err != nil {
+		t.Fatalf("count old constraints after clean upgrade: %v", err)
+	}
+	if oldConstraints != 0 {
+		t.Fatalf("old constraints after clean upgrade = %d, want 0", oldConstraints)
+	}
+	if err := tx.Raw(`SELECT COUNT(*)
+		FROM pg_constraint
+		WHERE conrelid = 'capability_sync_tombstones'::regclass
+		  AND conname = 'chk_capability_sync_tombstones_cause'`).Scan(&causeConstraint).Error; err != nil {
+		t.Fatalf("count triple constraint after clean upgrade: %v", err)
+	}
+	if causeConstraint != 1 {
+		t.Fatalf("triple constraint after clean upgrade = %d, want 1", causeConstraint)
+	}
 }
 
 func TestSnapshotGenerationMigration_AllocatesStrictlyIncreasingPerPrincipal(t *testing.T) {

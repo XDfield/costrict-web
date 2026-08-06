@@ -40,6 +40,44 @@
 -- +goose Up
 -- +goose StatementBegin
 
+-- PostgreSQL validates an ADD CONSTRAINT against existing rows. Do that
+-- validation explicitly before removing the older checks, so an operator gets
+-- a count and a repair path instead of an opaque ALTER TABLE 23514. Goose runs
+-- this migration transactionally, so the exception leaves both the data and
+-- the old constraints untouched.
+DO $$
+DECLARE
+    invalid_tombstone_count BIGINT;
+BEGIN
+    SELECT COUNT(*)
+    INTO invalid_tombstone_count
+    FROM capability_sync_tombstones
+    WHERE NOT (
+        (reason = 'git_archived'
+            AND source = 'git_lifecycle'
+            AND lifecycle_reason IS NOT NULL
+            AND lifecycle_reason IN (
+                'manifest_removed',
+                'default_branch_missing',
+                'repository_deleted'
+            ))
+        OR (reason = 'unfavorited'
+            AND source = 'favorite'
+            AND lifecycle_reason IS NULL)
+        OR (reason = 'distribution_revoked'
+            AND source = 'distribution'
+            AND lifecycle_reason IS NULL)
+    );
+
+    IF invalid_tombstone_count > 0 THEN
+        RAISE EXCEPTION
+            'capability_sync_tombstones has % rows that do not match a legal reason/source/lifecycle_reason triple',
+            invalid_tombstone_count
+            USING ERRCODE = 'check_violation',
+                  HINT = 'Repair each tombstone through its owning lifecycle, favorite, or distribution workflow, then rerun this migration. Do not delete tombstones to bypass this check.';
+    END IF;
+END $$;
+
 ALTER TABLE capability_sync_tombstones
     DROP CONSTRAINT IF EXISTS chk_capability_sync_tombstones_reason;
 ALTER TABLE capability_sync_tombstones
