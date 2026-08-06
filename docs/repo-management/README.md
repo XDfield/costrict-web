@@ -44,7 +44,7 @@
 | **`V4_TROUBLESHOOTING.md`** | 症状 → 原因 → 确认方法 → 修法。含错误码全表与诊断 SQL | 值班 |
 | **`V4_OPERATIONS.md`** | webhook 重放（含 HMAC）、单仓 resync、队列管理、`git_servers` 改法、环境变量全表 | 运维 |
 | **`GRAYSCALE_MIGRATION_PLAN.md`** | 两套怎么共存、存量按什么节奏迁、灰度什么时候算结束 | 产品 + 运维 |
-| **`CAPABILITY_GIT_E2E_RUNBOOK.md`** | AC1–AC19 人工怎么跑、哪些地方会假绿 | 验收执行人 |
+| **`CAPABILITY_GIT_E2E_RUNBOOK.md`** | 人工怎么跑 E2E、哪些地方会假绿。**当前只写了 AC1 / 2 / 2b / 3 / 4 / 5b / 6 / 10 / 19**，不是 AC1–AC19 全覆盖 | 验收执行人 |
 | **`BUNDLE_TO_GITEA_IMPORT.md`** | plugin mirror 批量导入脚本用法、导入前必配的 discovery 排除 | 执行导入的人 |
 | `CAPABILITY_GIT_REGISTRY_IMPLEMENTATION_HANDOFF.md` | 当前实现检查点（已完成 / 已推迟） | 实现者 |
 
@@ -61,8 +61,10 @@
 
 1. **稳定身份四元组** = `git_server_id` + `git_repo_id` + `manifest_path`(`source_repo_path`) + `entry_key`。
    owner/name 改名不影响它，数字 repo id 才是身份。
-2. **git 行的 `content` 列为空**，内容每次请求实时 read-through 自 Gitea，**不缓存**。
+2. **git 行的 `content` 列不再被写入、也不再被读**，内容每次请求实时 read-through 自 Gitea，**不缓存**。
    Gitea 不可达就报错（fail-closed），**不回落 DB 旧值**。
+   ⚠️ 但列里**可能还有残值**（只有 migrate 与 fork 会主动清空；discovery 期的行不会）——
+   本地实测 538 条 git 行里 14 条 `content` 非空。它不是内容来源，是清理对象。
 3. **版本锚点是 `git_sha`**；对外的 version 投影成 `<version>+<git_sha[:7]>`。
    因为 csc 判断更新只比 version 字符串，而 V4 语义是「改正文不改版本号」。
    ⇒ SQL 里的 version 和 API 返回的 version 不一样，是对的。
@@ -70,9 +72,14 @@
    **三个盲区**：`tx.Exec` 裸 SQL、`tx.Table()`、`UpdateColumn(s)`/`SkipHooks`。
    （`db.Save(&[]T{})` 传 slice 曾经是第四个，现已由 `BeforeCreate` 堵上。）
 5. **discovery 跑在 worker 里**。只重启 api 看不到任何同步行为的变化。
-6. **`CS_BOT_TOKEN_KEY` 等一批变量必须是真实进程环境变量**，写进 `.env` 无效
-   （viper 从不写 `os.Environ`，而这些调用点用裸 `os.Getenv`）。缺它 ⇒ fork **静默**回落 DB，启动零日志。
-7. **重启服务只能按 PID 杀**：`pkill -f "exe/api$"` 会连 cs-user 一起杀（两个二进制都叫 `api`）。
+6. **`CS_BOT_TOKEN_KEY` 等一批变量不走 viper**（调用点是裸 `os.Getenv`），所以本地 `go run` 时
+   只写 `.env` 无效；**但容器里挂 `/app/.env` 是有效的** —— entrypoint 会 source + export。
+   缺它 ⇒ fork **静默**回落 DB；启动时有一行 stdout 日志可 grep（`CS_BOT_TOKEN_KEY not configured`），
+   但它不进 `app.log`，**真 fork 一次才是可靠判据**。详见 `V4_TROUBLESHOOTING.md` F1。
+7. **验证 git backing 必须换一个没 fork 过的 (用户, 源 item) 组合** —— fork 有一次性短路，
+   第二次直接返回旧行（200），会让人误判「配全了还是不生效」。
+   且**冒烟必须排在 bootstrap 之后**（`tenant_git_server_binding` 没建时结果恒为 `db`）。
+8. **重启服务只能按 PID 杀**：`pkill -f "exe/api$"` 会连 cs-user 一起杀（两个二进制都叫 `api`）。
    存活判断用 `lsof -nP -iTCP:<port> -sTCP:LISTEN`（`lsof -ti` 会把出站连接也算成占用）。
 
 ---

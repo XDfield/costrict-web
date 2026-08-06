@@ -10,7 +10,8 @@
 
 ```bash
 API=http://127.0.0.1:8080                  # costrict-web api
-PSQL='psql -h 127.0.0.1 -U postgres -d costrict_db'   # 生产改成 kubectl exec ... psql
+PSQL='psql -h 127.0.0.1 -U costrict -d costrict_db'   # 生产改成 kubectl exec ... psql
+# 用户名是 costrict：本地实测 -U postgres 会 FATAL: role "postgres" does not exist
 GITEA=http://127.0.0.1:3001                # Gitea 浏览器可达地址
 ```
 
@@ -33,6 +34,9 @@ WHERE id = '<item-id>';
 ```
 
 `content_backend='db'` 的行**与 V4 无关**，别在这份文档里继续找。
+
+> `git_lifecycle_reason` 列在这里只是为了将来 —— 它**当前恒为 NULL**（写入方未接线，见附录 A）。
+> 判断「是谁下架的」用 `git_sync_status`。
 
 ### 0.2 worker 是不是活着
 
@@ -82,41 +86,67 @@ SELECT status, count(*) FROM git_capability_sync_jobs GROUP BY status ORDER BY 2
 
 ## F1. fork 成功但 `contentBackend` 仍是 `"db"`
 
-**这是本轮最耗时的一个坑，且没有任何日志提示。**
+**这是本轮最耗时的一个坑。** 有一条 stdout 日志可抓（见下方「如何确认」），
+但它只在 rpc 后端下打印、且不进 `app.log`，很容易被当成「什么都没打」。
 
 ### 可能原因
 
 `CS_BOT_TOKEN_KEY` 没有以**真实进程环境变量**的形式注入。
 
-链路是：`loadBotTokenKey()` 用**裸 `os.Getenv`** 读它（`server/cmd/api/main.go:1376`）→ 失败则
-`aesForProvision == nil` → `InitUserSpaceService` 整段不执行（`main.go:225-227`）→
-`gitBackingWired()` 为 false（`handlers/capability_item_git_provision.go:380`，判据是
+链路是：`loadBotTokenKey()` 用**裸 `os.Getenv`** 读它（`server/cmd/api/main.go`）→ 失败则
+`aesForProvision == nil` → `InitUserSpaceService` 整段不执行 →
+`gitBackingWired()` 为 false（`handlers/capability_item_git_provision.go`，判据是
 `gitsyncDB != nil && gitsyncResolver != nil && gitsyncCrypt != nil`）→ fork 走
-`unavailable()` 分支（`handlers/capability_item_fork_git.go:249`）。
+`unavailable()` 分支（`handlers/capability_item_fork_git.go`）。
 
 而 `unavailable()` 对 **DB-backed 源**是**静默回落 DB fork**（返回 nil, nil），只有源本身已经是
 git-backed 时才会报 503 `GIT_BACKING_UNAVAILABLE`。所以最常见的表现就是：**功能上了、一切 200、就是没生效。**
 
-> ⚠️ 写进 `server/.env` 是**无效的**。`config.Load()` 把 `.env` 喂给 viper，而 **viper 从不写
-> `os.Environ`**。同样只认真实环境变量的还有：`PLUGIN_GIT_MIRROR_OWNER`、
-> `GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS`、`GIT_SERVER_TEMPLATE_*`、
-> `GIT_CAPABILITY_WORKER_CONCURRENCY`、`GIT_CAPABILITY_RECONCILE_*`、
+> ⚠️ **本地 `go run` 时**写进 `server/.env` 是无效的：`config.Load()` 把 `.env` 喂给 viper，
+> 而 **viper 从不写 `os.Environ`**，这些调用点读的是裸 `os.Getenv`。
+> 同类的还有：`PLUGIN_GIT_MIRROR_OWNER`、`GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS`、
+> `GIT_SERVER_TEMPLATE_*`、`GIT_CAPABILITY_WORKER_CONCURRENCY`、`GIT_CAPABILITY_RECONCILE_*`、
 > `GIT_SYSTEM_HOOK_RECONCILE_INTERVAL_SECONDS`。
 > （`GIT_SYSTEM_WEBHOOK_BASE_URL` 走 config/viper，是这批里的例外。）
+>
+> **但容器里挂 `.env` 是有效的**：`server/docker-entrypoint.sh` 对
+> `${COSTRICT_ENV_FILE:-/app/.env}` 做 `set -a; . "$env_file"; set +a` 后才 exec 应用，
+> `Dockerfile` / `Dockerfile.worker` 都走这个 entrypoint，api chart 还提供
+> `envFile.existingConfigMap` 专门把 ConfigMap 挂到 `/app/.env`。
+> 经这条路注入的变量，裸 `os.Getenv` 读得到。**别因为「用的是 ConfigMap」就直接判定没生效。**
 
 ### 如何确认
 
 ```bash
-# 1. 进程里到底有没有这个变量
-kubectl -n costrict exec deploy/costrict-web-api -- sh -c 'env | grep -c "^CS_BOT_TOKEN_KEY="'   # 必须是 1
-# 本地
-cd server && set -a && source .env && set +a && go run ./cmd/api
-
-# 2. 唯一可靠的判据：真 fork 一次
+# 1. 唯一可靠的判据：真 fork 一次
 curl -sS -X POST "$API/api/items/<某个db-backed的id>/fork" \
   -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{}' \
   | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("contentBackend"), d.get("sourceRepoUrl"))'
 ```
+
+⚠️ **必须换一个没 fork 过的 (用户, 源 item) 组合。** fork 有「一人一源只能 fork 一次」的短路，
+命中时直接返回已有那行（200 而非 201）。用之前失败那次留下的 DB-backed 行重试，
+结果永远是 `"db"`，会让人以为「配全了还是不生效」。
+
+```bash
+# 2. 辅助：启动日志（log.Printf → stdout，不进 server/logs/app.log）
+kubectl -n costrict logs deploy/costrict-web-api | grep CS_BOT_TOKEN_KEY
+#   teamns: CS_BOT_TOKEN_KEY not configured (...); team-namespace API disabled
+
+# 3. 辅助：进程环境（仅在用 k8s env:/envFrom: 注入时可靠）
+kubectl -n costrict exec deploy/costrict-web-api -- sh -c 'env | grep -c "^CS_BOT_TOKEN_KEY="'
+
+# 本地
+cd server && set -a && source .env && set +a && go run ./cmd/api
+```
+
+关于这两条辅助判据的限制：
+
+- **日志**只在 `USER_SERVICE_BACKEND=rpc`（`rpcClient.Configured()` 分支）下打印。
+  生产必然满足 —— 空 `USER_SERVICE_URL` 会让 api 启动即 Fatal。grep 不到既可能是配好了，
+  也可能是你在 `app.log` 里 grep 的（那是 zap，这行不在里面）。
+- **`kubectl exec ... env`** 在 envFile / ConfigMap 挂载方式下会**假阴性**：exec 起的新进程
+  环境来自容器 spec，不含 entrypoint 为应用进程 source 进去的那批。数到 0 不代表没生效。
 
 ### 怎么修
 
@@ -156,7 +186,7 @@ fork 是错误码最密集的一条路径。**先看 `error_code`，别看 HTTP 
 | `GIT_FORK_NAME_TAKEN` | 409 | **用户 namespace 里已有同名仓库，且它不是本源的 fork** | 让用户改名/删仓，或换 fork slug |
 | `GIT_REPO_NAME_TAKEN` | 409 | provision 路径：同名仓库存在但**没有本能力项的 ownership marker**（或是 private、或树里有别的 manifest） | 同上 |
 | `fork_slug_race` | 409 | **DB 侧** slug 唯一键冲突（`repo_id + item_type + slug`），并发请求抢到了同一个 slug | 直接重试即可 |
-| `fork_slug_conflict` | 409 | 候选 slug 全被占（`-1`…`-N` 都试完了） | 让用户自己指定 slug |
+| `fork_slug_conflict` | 409 | 候选 slug 全被占。候选是 `<src>-fork-<hash8>` 本身（**首个候选无后缀**），其后是 `-2`…`-10`，共 10 个 | 让用户自己指定 slug |
 | `GIT_SOURCE_HAS_ASSETS` | 409 | 源是 DB-backed 且带 `capability_assets`。**写侧本轮只支持单文件 provision**（读侧支持多文件） | 走 `migrate capability-to-git`，它接管整棵树 |
 | `GIT_SOURCE_CONTENT_EMPTY` | 409 | 源 DB-backed 但 `content` 是空的，没东西可发布 | 数据问题，先查这行为什么空 |
 | `GIT_SOURCE_MANIFEST_INVALID` | 409 | Gitea 上找到了源仓库，但里面没有这条能力项的合法 manifest | 查 mirror 是不是传错了，见 `BUNDLE_TO_GITEA_IMPORT.md` §4 |
@@ -188,8 +218,9 @@ fork 这条路径**不会**顺手建账号 —— 它拿不到权威的 `short_i
 **这是设计行为，不是 bug。** git 行的 `content` 列不再是真相，读不到就必须报错，
 绝不能拿列里的残值冒充成功（`services/git_capability_content.go` 头部注释）。
 
-四条读路径会 read-through：详情、`/items/{id}/download`、`/registry/{repo}/{type}/{slug}/*file`、
-`/items/{id}/assets`。**列表接口故意不 read-through**（它把 content 置空，零出站）——
+四条读路径会 read-through：详情（`GetItem`）、`/items/{id}/download`、
+`/registry/{repo}/{itemType}/{slug}/*file`、`/items/{id}/assets`。
+**列表接口故意不 read-through**（它把 content 置空，零出站；`?favorited=true` 也一样）——
 所以「列表 200 但详情 502」是正确形态，不是矛盾。
 
 ### 五个错误码分别意味什么
@@ -252,21 +283,35 @@ curl -sS -H "Authorization: token $GITEA_ADMIN_TOKEN" \
 
 ### 怎么修
 
-worker 已经能自己识别并下架这类行：一次同步跑到 `GetRepoByID` 返回 404，就会把绑定的行
-`status='archived'`、`git_sync_status='orphaned'`、`git_lifecycle_reason='repository_deleted'`。
+worker 已经能自己识别并下架这类行：一次同步跑到 `GetRepoByID` 返回 404，
+`archiveGitCapabilitiesForMissingRepository` 就会把绑定的行置 `status='archived'`、
+`git_sync_status='orphaned'`（并更新 `git_last_synced_at` / 清空 `git_sync_error`）。
 所以第一步是**让它跑一次**（见 `V4_OPERATIONS.md` §4 单仓 resync）。
 
-`git_lifecycle_reason` 决定能不能自动恢复（`models.IsRecoverableGitLifecycleReason`）：
+> ⚠️ **`git_lifecycle_reason` 目前恒为 NULL —— 别拿它做判断。**
+> 列和索引由 migration 建好了，`models.IsRecoverableGitLifecycleReason` 也写好了，
+> 但**写入方属于尚未接线的 Phase C**：`git_capability_sync_service.go` 的三条归档路径
+> 全文没有一次写 lifecycle 字段，`IsRecoverableGitLifecycleReason` **零生产调用方**
+> （只有定义）。本地库实测该列 100% 为 NULL。
 
-| reason | 含义 | 仓库恢复后会自动复活吗 |
+**决定能不能自动复活的实际字段是 `git_sync_status`**（`gitCapabilityActivateStatus` /
+`gitCapabilityArchiveSyncStatus`）：manifest 回来时，**只有带 `orphaned` 标记的行会被重新激活**，
+人工 archive 的行（`git_sync_status='synced'`）不会被 push 复活，`banned` 无条件不复活。
+
+下面这张表描述的**行为是对的**，但它的成因是「Git 有没有重新看到同一个仓库身份」，不是 lifecycle 字段：
+
+| 归档原因（概念，不是当前可查的列） | 含义 | 仓库/文件恢复后会自动复活吗 |
 |---|---|---|
-| `manifest_removed` | 文件从默认分支消失 | **会** |
-| `default_branch_missing` | 默认分支没了 | **会** |
-| `repository_deleted` | 仓库整个没了 | **不会**（重建的仓库是新 id，是另一个身份） |
+| manifest 从默认分支消失 | 文件没了，仓库还在 | **会**（行带 `orphaned`，下次 push 重新激活） |
+| 默认分支没了 | 分支被删 | **会**（同上） |
+| 仓库整个被删 | `GetRepoByID` 404 | **不会** —— 重建的仓库是**新的数字 id**，稳定身份四元组认不出它是同一个 |
 
-`repository_deleted` 是终态，只能人工处置：要么接受这些行永久归档，要么把它们重新指向新仓库
+第三种是终态，只能人工处置：要么接受这些行永久归档，要么把它们重新指向新仓库
 （需要同时改 `source_git_repo_id` / `source_repo_url` / `git_sha`，并且**必须绕开 GORM 守卫**，
 见 `V4_OPERATIONS.md` §6）。
+
+区分方法：查 `git_capability_repositories` 里这条绑定还在不在、拿 `git_repo_id` 直接
+`GET /api/v1/repositories/<id>` 打一次（见上方「如何确认」）。
 
 ---
 
@@ -487,7 +532,7 @@ curl -sS -o /dev/null -w '%{http_code}\n' "$CS_USER/health"
 ```
 
 > api **启动时就 fast-fail**：`USER_SERVICE_URL` 或 `USER_SERVICE_INTERNAL_TOKEN` 为空
-> 直接 `logger.Fatal` 退出（`cmd/api/main.go:340-345`）。所以「api 起来了但全 503」
+> 直接 `logger.Fatal` 退出（`cmd/api/main.go`，`cfg.UserService.BaseURL == ""` 分支）。所以「api 起来了但全 503」
 > 只可能是 cs-user 本身不通，不可能是没配 —— 没配的话 api 根本起不来。
 > ⇒ 本地想跳过 cs-user 是不行的，**必须真的把它跑起来，不要加 auth 开关**。
 
@@ -519,7 +564,7 @@ FROM capability_items WHERE id = '<item-id>';
 ```
 
 `status='archived'` + `git_sync_status='orphaned'` ⇒ **是 Git 把它下架的**，不是人。
-`git_lifecycle_reason` 说明原因（见 F4 的表）。
+（`git_lifecycle_reason` 当前恒为 NULL，写入方未接线 —— 见 F4 的说明，别据它判断。）
 
 规则（`services/git_capability_sync_service.go:60-103`）：
 
@@ -531,8 +576,19 @@ FROM capability_items WHERE id = '<item-id>';
 - 残留情形（已知并接受）：管理员去 archive 一个**已经是 orphaned** 的行，标记不会被清除
   （`git_sync_status` 是 Git 独占的列），manifest 回来时它仍会复活。
 
-同时，用户侧会收到一条 `capability_sync_tombstones`（`reason='git_archived'`、
+设计上，用户侧应收到一条 `capability_sync_tombstones`（`reason='git_archived'`、
 `source='git_lifecycle'`），csc 靠它把本地副本卸载掉 —— **缺失不等于删除**，只有 tombstone 才授权卸载。
+
+> ⚠️ **git 归档的 tombstone 当前未接线，别指望能查到。** 三处叠加：
+> 1. 写入方 `services.RecordGitArchiveTombstonesTx` **零生产调用方**（只有测试调），
+>    其自身注释写明「reserved for the Phase C lifecycle writer」。目前**唯一有真实调用方的
+>    是 unfavorite 路径**（`unfavoriteItemTx` → `RecordEntitlementRemovalTx`）。
+> 2. 即使写了，投递端点 `GET /api/sync/v2/snapshot` 受 `CSC_SNAPSHOT_V2_ENABLED` 门禁，
+>    **默认 false**（关闭时该路由 404，是「回落 v1」信号）。
+> 3. 生命周期传播另受 `CSC_SNAPSHOT_LIFECYCLE_PROPAGATION_ENABLED` 门禁，**默认 false**。
+>
+> 本地库实测 `capability_sync_tombstones` **0 行**。
+> ⇒ 现阶段「item 被 Git 下架后设备本地副本没被卸载」是**预期行为**，不是故障。
 
 ```sql
 SELECT user_id, item_id, reason, source, lifecycle_reason, removed_at
@@ -549,7 +605,10 @@ Gitea 的 system webhook 是**服务器级**的：push 到**任何**仓库都会
 worker 拿到一个**没有已绑定能力行**的仓库时，会走 `discoverGitCapabilities` ——
 **扫全树，把每一个能被识别的 manifest 都建成一条新的 `capability_items` 行**。
 
-本地实测：一个 plugin mirror 仓库能一口气造出 8 / 15 / 28 条行。按 309 个 mirror 仓库估算是**数千条**。
+本地**实测**：3 个 mirror 仓库各产生 **1 条**重复 plugin 行。
+另外三个大仓库的 8 / 15 / 28 条是对 bundle 目录树里可分类 manifest 的**静态统计（推导，未逐个推上去验证）**。
+按 309 个 MATCH 仓库估算，全量导入会额外产生**数千条**行 —— 结论方向成立，
+但请把 8/15/28 当作推导上限，不是实测结果（口径与 `BUNDLE_TO_GITEA_IMPORT.md` §验证状态一致）。
 
 ### 防御在哪里
 
@@ -557,7 +616,7 @@ worker 拿到一个**没有已绑定能力行**的仓库时，会走 `discoverGi
 
 1. **webhook ingress**（`handlers/git_capability_webhook.go:163`）——
    owner 被排除**且**该仓库没有任何已绑定的 git 行时，直接 202 `reason=discovery_owner_excluded`，**不入队**。
-2. **worker 同步**（`services/git_capability_sync_service.go:235`）——
+2. **worker 同步**（`services/git_capability_sync_service.go` 里的同名调用）——
    `len(boundItems) == 0` 且 owner 被排除时直接返回，不做 discovery。
 
 排除集合 = **`PLUGIN_GIT_MIRROR_OWNER`（默认 `costrict-plugins-repo`，恒定包含）**
@@ -617,7 +676,7 @@ tx.Set(models.GitSyncBypassSetting, true)     // = "capability:gitsync"
 > **已被堵上的第四个**：`db.Save(&[]CapabilityItem{...})` 传 slice。
 > GORM 会把 slice destination 变成 `Create` + `ON CONFLICT UpdateAll`，`BeforeUpdate` 确实从不触发——
 > 但现在 `BeforeCreate` → `guardGitOwnedCapabilityUpsert` 接住了它
-> （`models/capability_item_git_guard.go:144`）。**旧文档里「四个盲区」的说法已过时。**
+> （`models/capability_item_git_guard.go` 的 `guardGitOwnedCapabilityUpsert`）。**旧文档里「四个盲区」的说法已过时。**
 
 上述前 3 个盲区的写法，落到 git 行上都是**静默写坏数据**。所以裸 SQL 的调用点必须自带
 `content_backend = 'db'` 谓词。
@@ -635,7 +694,7 @@ push 之后 `git_capability_sync_jobs` 里连一条对应的行都没有。
 | Gitea 上有没有挂 system webhook | `curl -H "Authorization: token $GITEA_ADMIN_TOKEN" "$GITEA/api/v1/admin/hooks"` |
 | `GIT_SYSTEM_WEBHOOK_BASE_URL` 配了没 | 空 ⇒ worker 的 reconciler 直接禁用，日志有 `Git system webhook reconciliation disabled` |
 | 目标 URL 对不对 | 必须是 `<base>/api/internal/git-sync/<git_server_id>` |
-| **默认分支对不对** | ingress 只认 `ref == "refs/heads/" + repository.default_branch`，否则 202 `reason=non_default_branch`。**Gitea 的 `DEFAULT_BRANCH` 配成 master 会让整条链路静默失效** |
+| **推的是不是默认分支** | ingress 只认 `ref == "refs/heads/" + repository.default_branch`，否则 202 `reason=non_default_branch`。⚠️ 比的是**同一个 payload 内部的两个字段**，两个都由 Gitea 按该仓库实际情况给出 —— 仓库默认分支是 `master` 时两者同为 `master`，照样入队。**Gitea 全局 `DEFAULT_BRANCH` 不参与比较，不是失效根因**；真正的原因是「push 的是 feature 分支」或「该仓库的默认分支被改过」 |
 | 签名对不对 | 签名错 ⇒ **401**，body 是 `invalid webhook signature`。注意 server 不存在 / 被禁用 / 没配 secret **也返回同一个 401**（故意不泄露配置存在性） |
 | `webhook_secret` 配了没 | `SELECT config->>'webhook_secret' IS NOT NULL FROM git_servers WHERE server_id='<id>'` |
 | event 类型 | 非 push ⇒ 202 `ignored`（故意的：让 Gitea 别重投） |
@@ -709,14 +768,22 @@ FROM git_servers;
 | `error` | 同步失败，看 `git_sync_error` |
 | `orphaned` | **本行是被 Git 自己下架的**（区别于人工 archive），manifest 回来可自动复活 |
 
-### `capability_items.git_lifecycle_reason`
+### `capability_items.git_lifecycle_reason` — ⚠️ **当前恒为 NULL，未接线**
 
-| 值 | 可自动恢复 |
+列与索引已由 migration 建好，常量与 `models.IsRecoverableGitLifecycleReason` 也已定义，
+但**生产代码里没有任何写入方**（归档路径只写 `status` / `git_sync_status` / `git_last_synced_at` /
+`git_sync_error`），判定函数**零生产调用方**。写入方属于尚未落地的 Phase C。本地库实测该列 100% NULL。
+
+⇒ **不要**把 NULL 读成「Git 没有主张归档」——已经被 Git 归档的行，这一列同样是 NULL。
+**判断归档来源看 `git_sync_status`**：`orphaned` = Git 自己下架的，`synced` + `status='archived'` = 人工下架。
+
+下面是这些常量**将来**的语义，现在还查不到：
+
+| 值 | 可自动恢复（设计语义） |
 |---|---|
 | `manifest_removed` | ✅ |
 | `default_branch_missing` | ✅ |
 | `repository_deleted` | ❌ 终态 |
-| `NULL` | Git 没有主张归档 |
 
 ### `git_capability_sync_jobs.status`
 
@@ -797,11 +864,16 @@ ORDER BY revision_no DESC LIMIT 20;
 
 ---
 
-## 附录 C：容易踩空的六件事
+## 附录 C：容易踩空的八件事
 
 1. **`git_sha` 为空 + `pending` 不是故障**，是排队。判据是队列单调下降，不是瞬时快照。
 2. **`error` 才是失败**；`orphaned` 是「Git 自己下架的」，不是错误。
 3. **列表 200 但详情 502 是正确的** —— 列表故意不 read-through。
 4. **SQL 里的 `version` 和 API 返回的 `version` 不一样是正确的** —— 后者是带短 SHA 的投影。
 5. **改 discovery 相关的环境变量必须重启 worker**，只重启 api 什么都不会变。
-6. **`.env` 对绝大多数 `GIT_*` / `CS_BOT_TOKEN_KEY` 无效**，必须是真实进程环境变量。
+6. **本地 `go run` 时 `.env` 对绝大多数 `GIT_*` / `CS_BOT_TOKEN_KEY` 无效**（viper 不写 `os.Environ`）；
+   但**容器里挂 `/app/.env` 是有效的**（entrypoint 会 source + export）。
+   连带：`kubectl exec ... env | grep` 在 envFile 方式下不可靠，判据回到真 fork 一次。见 F1。
+7. **`git_lifecycle_reason` 恒为 NULL**（写入方未接线）；判归档来源看 `git_sync_status`。见 F4。
+8. **同一个 (用户, 源 item) 只能 fork 一次**，第二次直接返回旧行（200）。
+   验证 git backing 时务必换组合，否则会拿到第一次失败留下的 DB-backed 结果。

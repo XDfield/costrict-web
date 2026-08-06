@@ -37,13 +37,24 @@
 cd server && set -a && source .env && set +a && go run ./cmd/api
 ```
 
-**只写进 `.env` 是无效的**：`config.Load()` 把 `.env` 喂给 viper，而 **viper 从不写 `os.Environ`**，
-多处代码用裸 `os.Getenv`。受影响的至少有：
+**本地 `go run` 时只写进 `.env` 是无效的**：`config.Load()` 把 `.env` 喂给 viper，
+而 **viper 从不写 `os.Environ`**，多处代码用裸 `os.Getenv`。受影响的至少有：
 
-- `CS_BOT_TOKEN_KEY` —— 缺它 ⇒ `gitBackingWired()` 为 false ⇒ **fork 静默回落 DB**，且启动日志无任何提示
+- `CS_BOT_TOKEN_KEY` —— 缺它 ⇒ `gitBackingWired()` 为 false ⇒ **fork 静默回落 DB**
 - `PLUGIN_GIT_MIRROR_OWNER` / `GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS`
 
+> 缺 `CS_BOT_TOKEN_KEY` 时 api **会**打一行 `teamns: CS_BOT_TOKEN_KEY not configured (...)`
+> （`log.Printf` → stdout，不进 `server/logs/app.log`）。它是辅助信号，不是判据。
+> 容器部署下挂 `/app/.env` 是有效的（entrypoint 会 source + export），这条只适用于本地裸跑。
+
 **开跑前的冒烟**：fork 一次，确认返回 `contentBackend: "git"`。不是 git 就别往下跑，后面全是假结果。
+
+⚠️ 冒烟有两个前置，漏一个就会得到「配全了还是 db」的假失败：
+
+1. **`tenant_git_server_binding` 必须已存在**。解析器查不到绑定就返回 `ErrTenantMissingGitServer`，
+   fork 对 DB-backed 源**静默回落**，症状与「没配 `CS_BOT_TOKEN_KEY`」一模一样。
+2. **换一个没 fork 过的 (用户, 源 item) 组合**。fork 有「一人一源只能 fork 一次」的短路，
+   命中时直接返回旧行（200 而非 201）—— 拿第一次失败留下的 DB-backed 行重试，结果永远是 `"db"`。
 
 ### 1.2 重启服务的正确姿势
 

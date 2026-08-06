@@ -19,7 +19,7 @@
 
 | # | 变量 | chart | 不配的后果 |
 |---|---|---|---|
-| 1 | **`CS_BOT_TOKEN_KEY`** | ❌ **deploy/ 下完全没有** | **最致命**：`gitBackingWired()` 为 false ⇒ fork/迁移**静默回落 DB 通道**，且**启动日志一个字都不打**。表现是"功能上了但完全没生效"，我们本地为此排查了数小时 |
+| 1 | **`CS_BOT_TOKEN_KEY`** | ❌ **deploy/ 下完全没有** | **最致命**：`gitBackingWired()` 为 false ⇒ fork/迁移**静默回落 DB 通道**。有一条 stdout 日志可抓（见 §5.1），但很容易被淹没；表现是"功能上了但完全没生效"，我们本地为此排查了数小时 |
 | 2 | **`GIT_SERVER_TEMPLATE_ENDPOINT`** + **`GIT_SERVER_TEMPLATE_ADMIN_TOKEN`** | ❌ 缺失 | 没有任何 git server 记录 ⇒ 所有 Git 操作无处可去。（另有可选的 `_DISPLAY_NAME` / `_ADMIN_USER` / `_ADMIN_PASSWORD`）|
 | 3 | `GIT_CAPABILITY_WORKER_CONCURRENCY` | ❌ 缺失 | 默认 **2**，配合默认 30 秒轮询 ⇒ 吞吐只有 4 job/分钟，而周期巡检每 10 分钟入队至多 50 个：**入 > 出，队列单调增长**。本地实测攒到 355 个 job 后，用户 push 触发的实时同步排到队尾等了一个多小时。建议 **8** |
 
@@ -37,17 +37,28 @@
 `config.Load()` 把 `.env` 喂给 **viper**，而 **viper 从不写 `os.Environ`**；
 `loadBotTokenKey()` 用的是**裸 `os.Getenv`**。所以：
 
-- 写进 `.env` / ConfigMap 的 `.env` 文件 → **无效**
-- 必须是**真实的进程环境变量**（k8s 的 `env:` / `envFrom:` 是对的）
+- **推荐**：k8s 的 `env:` / `envFrom:`，即真实进程环境变量 —— 最稳，且 `kubectl exec ... env` 查得到
+- 本地 `go run` 只写 `server/.env` **无效**，必须 `set -a && source .env && set +a`
 
-**同样只认真实环境变量的还有**：`GIT_SERVER_TEMPLATE_*`、`PLUGIN_GIT_MIRROR_OWNER`、
+> ⚠️ **但「挂 `.env` / ConfigMap 一定无效」这句话对容器不成立。**
+> 容器 entrypoint（`server/docker-entrypoint.sh`）对 `${COSTRICT_ENV_FILE:-/app/.env}` 做了
+> `set -a; . "$env_file"; set +a`，`server/Dockerfile` 与 `Dockerfile.worker` 都用这个 entrypoint；
+> api chart 还专门提供了 `envFile.existingConfigMap` 把 ConfigMap 挂到 `/app/.env`
+> （values 注释原文：「The container entrypoint exports it before starting the API」）。
+> ⇒ 走这条路注入的 `CS_BOT_TOKEN_KEY`，**裸 `os.Getenv` 是读得到的**。
+> 代价是可观测性：`kubectl exec ... env` 起的是新进程，环境来自容器 spec，**看不到** entrypoint
+> 为应用进程 source 进去的那批 —— 详见 §5.1。
+
+**同样绕过 viper、直接走裸 `os.Getenv` 的还有**：`GIT_SERVER_TEMPLATE_*`、`PLUGIN_GIT_MIRROR_OWNER`、
 `GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS`、`GIT_CAPABILITY_WORKER_CONCURRENCY`、
 `GIT_CAPABILITY_RECONCILE_INTERVAL`、`GIT_CAPABILITY_RECONCILE_BATCH_SIZE`、
 `WORKER_POLL_INTERVAL_SECONDS`、`GIT_SYSTEM_HOOK_RECONCILE_INTERVAL_SECONDS`。
-**唯一走 config/viper（即 `.env` 有效）的是 `GIT_SYSTEM_WEBHOOK_BASE_URL`。**
+**这批 Git 相关变量里，唯一走 config/viper 的是 `GIT_SYSTEM_WEBHOOK_BASE_URL`**
+（`INTERNAL_SECRET` / `USER_SERVICE_*` / `CSC_SNAPSHOT_*` 等非 Git 变量也走 viper，不在本节范围内）。
 全表见 `V4_OPERATIONS.md` §9。
 
-**上线后第一件事就是验证它生效**（见 §5 的冒烟）。
+**上线并做完 §6 的 bootstrap 之后，第一件事就是验证它生效**（见 §5 的冒烟；
+bootstrap 之前跑冒烟必然假失败，理由见 §3）。
 
 ---
 
@@ -58,8 +69,16 @@
 | **线上 Gitea** | 必须先有一个可用实例，且有 admin token。V4 的所有内容都存在这里 |
 | Gitea 版本 | 官方镜像即可（本地验证用 1.24.x）。**不需要**魔改版——代码只调标准 API |
 | `ROOT_URL` | Gitea 的 `ROOT_URL` 必须是**用户浏览器可达**的地址，否则它生成的 `html_url` 全是坏链 |
-| 默认分支 | Gitea 的 `DEFAULT_BRANCH` 必须是 **`main`**。webhook 判定依赖 `ref == refs/heads/<default_branch>`，配成 master 会让整条同步链路**静默失效** |
+| 默认分支 | **建议**把 Gitea 的 `DEFAULT_BRANCH` 保持 `main`（与平台自建仓库一致，少一层认知负担），但它**不是**链路失效的根因 —— 见下方说明 |
 | 网络 | api 与 worker 的 pod 必须能出站访问 Gitea；Gitea 必须能回调 api（webhook） |
+
+> **关于 `DEFAULT_BRANCH`：全局值不参与 webhook 判定。**
+> ingress 比的是**同一个 payload 内部的两个字段**（`payload.Ref != "refs/heads/"+payload.Repo.DefaultBranch`，
+> `handlers/git_capability_webhook.go`），两个都由 Gitea 按**该仓库的实际默认分支**给出 ——
+> 仓库默认分支是 `master` 时两者同为 `master`，照样入队。读侧全程用动态值。
+> 而平台自己建的能力仓库**显式指定 `main`**（`capability_item_git_provision.go` 的
+> `gitCapabilityRepoBranch`），不受全局配置影响。
+> ⇒ 保持 `main` 是一致性建议，不是必过项；排查「webhook 没进队列」时不要停在这一条上（见排查手册 F13）。
 
 ---
 
@@ -71,11 +90,27 @@
 ```
 1. 数据库 migration（见 §4；当前 14 个，以实际文件为准）
 2. api + worker（同批，它们共用 migration 结果）
-3. 验证（§5 冒烟）—— 不通过就停在这里，不要继续
-4. 前端
-5. bootstrap：写 git_servers + 挂 system webhook（§6）
+3. bootstrap（§6）：补 git_servers 的 web_url / webhook_secret + **建租户绑定** + 挂 system webhook
+4. 验证（§5 冒烟）—— 不通过就停在这里，不要继续
+5. 前端
 6. 再次验证（§5 完整）
 ```
+
+### ⚠️ bootstrap 必须排在冒烟之前（顺序反了会 100% 假失败）
+
+§5.1 的冒烟判据是「真实 fork 一次，`contentBackend` 必须是 `git`」，而这**要求 §6.2 的
+`tenant_git_server_binding` 已经存在**：`gitserver.DBResolver.Resolve` 查不到绑定行时返回
+`ErrTenantMissingGitServer`（`internal/gitserver/resolver.go`，**没有 template 行的回退**），
+fork 侧接住它走 `unavailable("no git server is bound to this tenant")`
+（`handlers/capability_item_fork_git.go`），而 `unavailable()` 对 DB-backed 源是**静默回落**。
+⇒ 绑定没建时冒烟结果**恒为 `"db"`**，与「`CS_BOT_TOKEN_KEY` 没配」的症状完全一样（§6.2 也写了这条因果）。
+
+**更麻烦的是它会把错误结论固化下来**：fork 有「一人一源只能 fork 一次」的短路 ——
+已存在 fork 行时直接返回那一行（**200，不是 201**）。所以配置补齐后用**同一个用户 + 同一个源**
+再冒烟一次，返回的还是 bootstrap 之前落下的那条 DB-backed 旧行，`contentBackend` 依旧是 `"db"`，
+于是运维会得出「配全了还是不生效」，转而去排查一个根本不存在的 `CS_BOT_TOKEN_KEY` 问题。
+
+⇒ **重跑冒烟时必须换一个没 fork 过的 (用户, 源 item) 组合**，或先删掉上一次留下的 fork 行。
 
 ⚠️ **worker 必须与 api 同批上线**，有两个独立的理由：
 
@@ -116,10 +151,13 @@
 > ls server/migrations/2026080[2-9]*.sql | wc -l
 > ```
 
-**前 11 个全部是新增列/新建表，不删不改存量数据**，所以对存量行为零影响。
-最后三个是给 V4 自己新建的表加列与约束（`capability_item_git_revisions` /
-`capability_sync_tombstones`），同样不触碰存量。
-`item_tags` 那个把唯一键扩成 `(item_id, tag_id, source)`——目的是让 git 域与用户域的同名 tag 不再互相顶掉。
+**前 11 个里有 10 个是纯新增列/新建表，不删不改存量数据**；最后三个是给 V4 自己新建的表加列与约束
+（`capability_item_git_revisions` / `capability_sync_tombstones`），同样不触碰存量。
+
+**唯一一个动了既有对象的是第 6 个** `20260804010000_add_item_tags_source`：它 `DROP CONSTRAINT
+IF EXISTS uq_item_tag`，再建宽键 `uq_item_tag_source (item_id, tag_id, source)`，
+并给 `item_tags` 加 `source` 列（存量行回填 `'legacy'`）。**不动任何数据行**，只换约束；
+目的是让 git 域与用户域的同名 tag 不再互相顶掉。
 
 ---
 
@@ -127,19 +165,42 @@
 
 ### 5.1 确认 `CS_BOT_TOKEN_KEY` 真的生效（最重要的一条）
 
-```bash
-# 在 api pod 里
-env | grep -c '^CS_BOT_TOKEN_KEY='     # 必须是 1
-```
+**前提**：§6 的 bootstrap（尤其是 §6.2 的租户绑定）必须已经做完，否则这一步恒定失败，见 §3 的警告。
 
-然后**真实 fork 一次**，返回体里 `contentBackend` 必须是 `"git"`：
+**判据只有一条：真实 fork 一次，返回体里 `contentBackend` 必须是 `"git"`。**
 
 ```bash
 curl -X POST "$API/api/items/<某个db-backed的id>/fork" -H "Authorization: Bearer $TOKEN" -d '{}'
 ```
 
-**返回 `"db"` 就说明 git backing 没接线** —— 回到 §1 检查。
-这一步没有替代方案：日志不会告诉你它没生效。
+⚠️ **换一个没 fork 过的 (用户, 源 item) 组合**。fork 有「一人一源只能 fork 一次」的短路，
+命中时直接返回旧行（**200 而非 201**）—— 拿之前失败那次留下的 DB-backed 行重试，结果永远是 `"db"`。
+非要复用同一组合就先删掉上一次的 fork 行。
+
+**返回 `"db"` 就说明 git backing 没接线** —— 回到 §1（环境变量）与 §6.2（租户绑定）检查。
+
+#### 两个辅助判据（都不能替代上面那次 fork）
+
+```bash
+# 1. 启动日志：缺 key 时 api 会打这一行（log.Printf → stdout）
+kubectl -n costrict logs deploy/costrict-web-api | grep CS_BOT_TOKEN_KEY
+#   teamns: CS_BOT_TOKEN_KEY not configured (...); team-namespace API disabled
+```
+
+限定条件：这行只在 `USER_SERVICE_BACKEND=rpc`（`rpcClient.Configured()`）分支里打印 ——
+生产必然满足，因为空 `USER_SERVICE_URL` 会让 api 启动即 Fatal。它走 `log.Printf` 进 **stdout**，
+**不进** `server/logs/app.log`（那是 zap 的输出）。所以「grep 不到」既可能是配好了，
+也可能是你 grep 错了地方。
+
+```bash
+# 2. 进程环境（只在用 k8s env:/envFrom: 注入时可靠）
+kubectl -n costrict exec deploy/costrict-web-api -- sh -c 'env | grep -c "^CS_BOT_TOKEN_KEY="'
+```
+
+⚠️ **这条在 envFile / ConfigMap 挂载方式下会给出假阴性**：`kubectl exec` 起的是新进程，
+环境来自容器 spec，**不含** entrypoint 为应用进程 source 进去的那批（见 §1）。数到 0 不代表没生效。
+
+⇒ **两条辅助判据都可能骗你，真 fork 一次不会。**
 
 ### 5.2 存量零回归
 
@@ -190,8 +251,12 @@ curl -sS -X PUT "$API/api/internal/tenants/default/git-server" \
   -d '{"git_server_id":"<server_id>"}'
 ```
 
-没有这一行，`gitserver.DBResolver.Resolve` 返回 `ErrTenantMissingGitServer`，
-fork 会走 `unavailable()` —— 对 DB-backed 源就是**静默回落**，症状与 §1 的 #1 一模一样。
+没有这一行，`gitserver.DBResolver.Resolve` 返回 `ErrTenantMissingGitServer`
+（**它不会回退到 `is_template=true` 的那行**），fork 会走 `unavailable()` ——
+对 DB-backed 源就是**静默回落**，症状与 §1 的 #1 一模一样。
+
+⚠️ **所以这一步必须早于 §5 的冒烟**，否则冒烟恒定返回 `"db"`，还会因为 fork 的一次性短路
+把错误结论固化住（见 §3）。
 
 ### 6.3 实例级 system webhook
 
@@ -237,9 +302,15 @@ plugin 是特例：它需要先把上游镜像导进自建 Gitea（`BUNDLE_TO_GI
   但存量 DB-backed 行完全正常
 - migration **不需要回滚**（全是新增列/表，旧代码忽略它们）
 
-⚠️ **已经 Git 化的行没有自动回退路径**。一旦 `content_backend='git'`，
-`content` 列就被清空了（留着旧快照等于制造第二个真相源）。要退回需要人工把 Git 内容抄回列再翻转标志——
-那是运维动作，不是产品功能。
+⚠️ **已经 Git 化的行没有自动回退路径**。一旦 `content_backend='git'`，`content` 列就**不再被写入**，
+读路径也不再看它。要退回需要人工把 Git 内容抄回列再翻转标志——那是运维动作，不是产品功能。
+
+> **别指望 `content` 列一定是空的。** 主动清空只发生在两条路径：`migrate capability-to-git`
+> 与 fork。**discovery 期直接建成 git-backed 的行仍可能残留旧值** ——
+> 本地实测 538 条 git 行里有 **14 条** `content` 非空。
+> 这些残值**不是内容来源**（读路径一律 read-through），只是清理对象
+> （`migrate capability-to-git --clear-stale-content`）；
+> 同时它们也正是 E2E AC5b「不回落 DB 旧值」需要的样本。
 
 ⇒ **所以灰度期务必控制迁移规模**：迁得越少，回滚代价越小。
 
@@ -247,18 +318,21 @@ plugin 是特例：它需要先把上游镜像导进自建 Gitea（`BUNDLE_TO_GI
 
 ## 9. 上线检查清单
 
-- [ ] 线上 Gitea 就绪，admin token 可用，`ROOT_URL` 浏览器可达，`DEFAULT_BRANCH=main`
-- [ ] **`CS_BOT_TOKEN_KEY` 以真实环境变量注入 api 与 worker**（不是 `.env` 文件）
+**顺序即门禁**：bootstrap（后四条配置项）必须在冒烟之前完成，理由见 §3。
+
+- [ ] 线上 Gitea 就绪，admin token 可用，`ROOT_URL` 浏览器可达
+- [ ] （建议，非必过）Gitea `DEFAULT_BRANCH=main` —— 一致性考虑，不是链路失效根因（§2）
+- [ ] **`CS_BOT_TOKEN_KEY` 已注入 api 与 worker**（推荐 k8s `env:`；envFile/ConfigMap 挂 `/app/.env` 同样有效，见 §1）
 - [ ] `GIT_SERVER_TEMPLATE_ENDPOINT` + `_ADMIN_TOKEN` 已配
 - [ ] `GIT_CAPABILITY_WORKER_CONCURRENCY=8`
 - [ ] `server/migrations/2026080[2-9]*` 下的 migration **全部**执行成功（当前 14 个，以实际文件为准）
 - [ ] api 与 worker **同批**上线
-- [ ] **冒烟：fork 返回 `contentBackend: "git"`**（不通过就停）
-- [ ] 存量 DB-backed 项零回归
 - [ ] git_servers 的 `endpoint` 与 `config.web_url` 取值不同
 - [ ] **`git_servers.config.webhook_secret` 已手工写入**（种子不会写）
-- [ ] **`tenant_git_server_binding` 已建**（种子不会建）
+- [ ] **`tenant_git_server_binding` 已建**（种子不会建）—— **漏了这条，下一步冒烟必然假失败**
 - [ ] system webhook 已挂且能收到 push
+- [ ] **冒烟：用一个没 fork 过的 (用户, 源 item) 组合 fork，返回 `contentBackend: "git"`**（不通过就停）
+- [ ] 存量 DB-backed 项零回归
 - [ ] 前端已部署
 - [ ] 明确本期**不迁移存量**（或已定分批计划）
 

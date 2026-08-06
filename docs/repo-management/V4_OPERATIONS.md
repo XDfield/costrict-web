@@ -7,7 +7,7 @@
 
 ```bash
 API=http://127.0.0.1:8080
-PSQL='psql -h 127.0.0.1 -U postgres -d costrict_db'
+PSQL='psql -h 127.0.0.1 -U costrict -d costrict_db'   # 用户名是 costrict；-U postgres 会 FATAL: role does not exist
 GITEA=http://127.0.0.1:3001
 ADMIN_JWT=...          # 带 platform_admin 系统角色的用户 token
 INTERNAL_SECRET=...     # = server 的 INTERNAL_SECRET
@@ -74,10 +74,15 @@ Git system webhook reconciler started, interval=...
 ```bash
 curl -sS "$API/api/items/<item-id>" \
   | python3 -c 'import sys,json;d=json.load(sys.stdin);print({k:d.get(k) for k in
-    ("contentBackend","gitSyncStatus","gitSha","sourceRepoUrl","sourceRepoRef","version")})'
+    ("contentBackend","gitSyncStatus","gitLastSyncedAt","sourceRepoUrl","sourceRepoRef","sourceRepoPath","version")})'
 ```
 
 `contentBackend` 缺失或为 `"db"` ⇒ DB-backed（字段是 `omitempty`）。
+
+> ⚠️ **详情接口不返回 `gitSha`。** `ItemResponse` 里没有这个字段：git 分支只补
+> `sourceRepoUrl` / `sourceRepoRef` / `sourceRepoPath` + `gitSyncStatus` + `gitLastSyncedAt`。
+> 往 §2.1 的 snippet 里塞 `gitSha` 只会恒定拿到 `None`。
+> 要 sha 走 §2.2 的 SQL；**列表**接口倒是有（`ItemWithRepo` 内嵌 model，带 `gitSha`）。
 
 > `version` 这里是**投影值**（git 行带 `+<短SHA>` 后缀），和 DB 列里的值不一样，这是对的。
 
@@ -448,16 +453,27 @@ WHERE content_backend = 'git' AND source_git_repo_id = <旧id>;
 绝大多数「数据不对」的情况，正确解法是**修 Gitea 上的内容，然后 resync**，
 而不是手改 DB —— 手改的字段下一次同步就会被 worker 覆盖回去。
 
-只有这三类字段是 Git 不管的、可以放心改：
-运行时计数器、平台状态（`status` / `security_status`）、位置（`registry_id` / `repo_id`）。
+**不在保护集合里**（两个写者都合法，可以放心改）的完整清单以
+`models/capability_item_git_guard.go` 的 `gitOwnedCapabilityColumns` 注释为准，当前是四类：
+
+- 运行时计数器：`preview_count` / `install_count` / `favorite_count` / `experience_score`
+- 平台状态：`status` / `security_status` / **`last_scan_id`** / **`is_builtin`**
+- 位置：`registry_id` / `repo_id`
+- **`descriptions` / `metadata`** —— fork 建行后会回填 descriptions，metadata 是合并而非独占
+
+（`V4_TROUBLESHOOTING.md` §F12 列的是同一份清单，两处必须一致。）
 
 ---
 
 ## 9. 环境变量全表
 
-| 变量 | 默认 | 谁读 | 走 `.env` 吗 |
+「走 viper 吗」= `config.Load()` 是否负责读它。**❌ 表示调用点是裸 `os.Getenv`**，
+必须是进程环境变量 —— k8s `env:` / `envFrom:` 直接满足，容器里挂 `/app/.env` 经 entrypoint export
+也满足（见表下说明）；本地 `go run` 只写 `.env` 不满足。
+
+| 变量 | 默认 | 谁读 | 走 viper 吗 |
 |---|---|---|---|
-| `CS_BOT_TOKEN_KEY` | — | api（裸 `os.Getenv`） | **❌ 必须真实环境变量** |
+| `CS_BOT_TOKEN_KEY` | — | api（裸 `os.Getenv`） | ❌ |
 | `GIT_SERVER_TEMPLATE_ENDPOINT` | — | api 启动种子 | ❌ |
 | `GIT_SERVER_TEMPLATE_ADMIN_TOKEN` | — | 同上 | ❌ |
 | `GIT_SERVER_TEMPLATE_DISPLAY_NAME` / `_ADMIN_USER` / `_ADMIN_PASSWORD` | — | 同上（可选） | ❌ |
@@ -471,10 +487,32 @@ WHERE content_backend = 'git' AND source_git_repo_id = <旧id>;
 | `GIT_SYSTEM_WEBHOOK_BASE_URL` | 空（= 禁用 reconciler） | worker | **✅ 走 config/viper** |
 | `USER_SERVICE_URL` + `USER_SERVICE_INTERNAL_TOKEN` | — | api（JWT 校验委托给 cs-user）。**为空则 api 启动即 Fatal 退出** | ✅ |
 | `INTERNAL_SECRET` | — | api（`/api/internal/*`） | ✅ |
+| `CSC_SNAPSHOT_V2_ENABLED` | **false** | api —— 挂载 `GET /api/sync/v2/snapshot`。关闭时该路由 **404**，这是给混合车队的「回落 v1」信号 | ✅ |
+| `CSC_SNAPSHOT_LIFECYCLE_PROPAGATION_ENABLED` | **false** | api —— 允许把 `git_archived` tombstone 放进 snapshot，指示客户端**删除设备上的文件**。这是生产 kill switch | ✅ |
 
-**「走 `.env` 吗 = ❌」的那些**：`config.Load()` 把 `.env` 喂给 viper，而 **viper 从不写
-`os.Environ`**，这些调用点用的是裸 `os.Getenv`。k8s 的 `env:` / `envFrom:` 是对的；
-挂成 `.env` 文件是无效的。
+> ⚠️ 后两个开关随 csc snapshot v2 一同交付。**配之前先确认你部署的镜像里有这个功能**
+> （打开开关后 `GET /api/sync/v2/snapshot` 不再 404），否则配了也不会有任何效果。
+>
+> 后两个开关**都默认关闭，且当前也没有写入方**：git 归档的 tombstone 写入函数
+> `RecordGitArchiveTombstonesTx` 零生产调用方（Phase C 未接线），所以即便打开
+> `CSC_SNAPSHOT_LIFECYCLE_PROPAGATION_ENABLED` 也不会有 git 生命周期 tombstone 可传播。
+> 关掉永远是安全的（被抑制的 tombstone 只表现为「该项缺席」，缺席是 no-op）。
+> ⚠️ 打开 `LIFECYCLE_PROPAGATION` 前必须确认全部在网客户端支持 contract v2，
+> 否则老客户端会永久持有云端已删除的能力项。详见排查手册 F10。
+
+**「走 viper 吗 = ❌」的那些**：`config.Load()` 把 `.env` 喂给 viper，而 **viper 从不写
+`os.Environ`**，这些调用点用的是裸 `os.Getenv`。⇒ 本地 `go run` 时只写 `.env` 无效，
+必须 `set -a && source .env && set +a`。
+
+> ⚠️ **容器里另当别论。** `server/docker-entrypoint.sh` 会对
+> `${COSTRICT_ENV_FILE:-/app/.env}` 做 `set -a; . "$env_file"; set +a` 后再 exec 应用，
+> api / worker 两个 Dockerfile 都用它，api chart 还提供 `envFile.existingConfigMap`
+> 把 ConfigMap 挂到 `/app/.env`。**经这条路注入的变量，裸 `os.Getenv` 读得到**，
+> 上表 ❌ 那一列描述的是 viper 不参与，不是「容器里挂 .env 没用」。
+>
+> k8s 的 `env:` / `envFrom:` 仍是**推荐**方式，因为它可观测：`kubectl exec ... env | grep`
+> 只看得到容器 spec 里的变量，**看不到** entrypoint 为应用进程 source 进去的那批 ——
+> 用 envFile 时这条命令会给出假阴性。
 
 改任何一个 `GIT_CAPABILITY_*` / `PLUGIN_GIT_MIRROR_OWNER` /
 `GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS` 都**必须重启 worker** —— discovery 跑在 worker 里，
@@ -496,4 +534,8 @@ lsof -nP -iTCP:8082 -sTCP:LISTEN     # cs-user（端口必须显式设 8082，�
 
 Gitea 官方镜像即可（本地验证用 1.24.x），**不需要魔改版** —— `internal/gitsync/` 调的全是标准端点
 （`admin/hooks`、`admin/users`、`orgs`、`repos`、`repositories/{id}`、`teams`、user tokens）。
-但 **`DEFAULT_BRANCH` 必须是 `main`**，配成 master 会让整条同步链路静默失效。
+
+`DEFAULT_BRANCH` **建议**保持 `main`（平台自建的能力仓库显式用 `main`，保持一致少一层认知负担），
+但它**不是**同步链路失效的根因：webhook ingress 比的是同一个 payload 内部的
+`ref` 与 `repository.default_branch`，两个都由 Gitea 按该仓库实际情况给出，读侧也全程用动态值。
+详见 `V4_TROUBLESHOOTING.md` F13。

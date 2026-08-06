@@ -30,7 +30,8 @@ Cloud 的 plugin fork 会按顺序探测三个候选仓库坐标，主力是候�
 ```
 
 判定实现在 `server/internal/handlers/capability_item_fork_git.go`
-（`pluginGitMirrorOwner()` `:53`、候选构造 `:194-199`、`locateGiteaSourceRepo`、`probeRepoManifest` `:828`）。
+（`pluginGitMirrorOwner()`、`src.ItemType == "plugin"` 分支里的候选构造、`locateGiteaSourceRepo`、
+`probeRepoManifest`）。**按函数名 grep，不要按行号找** —— 这几个函数在文件里已经漂过位置。
 
 命名不需要任何转换：**bundle 里 bare repo 的 basename == catalog `index.json` 的 `id` == DB 的 `slug`**，三者恒等（实测 1395 条 catalog id 无一含大写/下划线/空格，`slugifyKey` 是恒等变换）。
 
@@ -128,24 +129,26 @@ python3 scripts/build.py --version 0.17.1-local --catalog-bundle <catalog-bundle
 ### 4.1 顶层 manifest 的文件名（**最容易搞错的一条**）
 
 判定实现在 `server/internal/services/git_capability_discovery.go` 的
-`classifyGitCapabilityManifest`（约 `:435-485`）。**以代码为准，V4 文档 §5.1 只列了 `skill.md` 一种，不全**：
+`classifyGitCapabilityManifest`（按函数名 grep）。**以代码为准**：V4 文档 §5.1 列的是
+`skill.md` / `subagent.md` / `command.md` / `mcp.md` 四种顶层 metadata 文件（外加 pack 的
+`plugins/<id>/.plugin.json`），而 discovery 实际认的路径比这更多（别名与子目录布局），下表是全集：
 
 | 类型 | discovery 认的路径 | fork probe 认的路径 |
 |---|---|---|
 | skill | 根 `skill.md`（按小写匹配，`SKILL.md` 同样成立）；`skills/<x>/skill.md` | `skill.md` / `SKILL.md` |
 | subagent | 根 `agent.md` / `agents.md` / `subagent.md`；`.agent/agent.yaml|yml`；`agents/**.md`、`subagents/**.md`、`.claude/agents/**.md` | `agent.md` / `agents.md` / `subagent.md` |
 | command | 根 `command.md`；`commands/**.md`；`.claude/commands/**.md` | `command.md` |
-| mcp | 根 `mcp.json` / `.mcp.json` / `mcp.md`；`mcp/<x>/mcp.(json|md)`；（可选匹配）根 `manifest.json` / `package.json` / `pyproject.toml` | `mcp.json` / `.mcp.json` / `mcp.md` |
+| mcp | 根 `mcp.json` / `.mcp.json` / `mcp.md`；`mcp/<x>/mcp.md`、`mcp/<x>/mcp.json`、**`mcp/<x>/.mcp.json`**；（可选匹配）根 `manifest.json` / `package.json` / `pyproject.toml` | `mcp.json` / `.mcp.json` / `mcp.md` |
 | **plugin** | 根 `.plugin.json` / `plugin.json` / `plugin-manifest.json`；**`.claude-plugin/plugin.json`**；`plugins/<x>/.plugin.json` | `.claude-plugin/plugin.json` → `.plugin.json` → `plugin.json`（按此顺序） |
 
 两条硬红线：
 
-- **绝不能用 `<slug>.md`。** 那是 `contentFilename`（`registry.go:292-305`），只负责 HTTP 下载的 attachment 文件名。仓库根放 `<slug>.md`，discovery 的根目录分类表里没有这一项 → push 成功、能力项 0 个。`capability_item_git_provision.go:46-69` 的注释把这两个函数的边界写死了：**它们回答的是不同问题，谁也不能改成谁**。
+- **绝不能用 `<slug>.md`。** 那是 `contentFilename`（`handlers/registry.go`），只负责 HTTP 下载的 attachment 文件名。仓库根放 `<slug>.md`，discovery 的根目录分类表里没有这一项 → push 成功、能力项 0 个。`capability_item_git_provision.go` 顶部 `gitCapabilityRepoBranch` 附近的注释把这两个函数的边界写死了：**它们回答的是不同问题，谁也不能改成谁**。
 - plugin 的 **`plugin-manifest.json` 只有 discovery 认、fork probe 不认**。用它命名，fork 时会判成「manifest 读不到」→ 409。本脚本因此只接受上表 plugin 那一行的**前三个交集路径**。
 
 ### 4.2 frontmatter（markdown 四类）
 
-按 V4 §5.2，生成形态以 `capability_item_git_provision.go` 的 `buildMarkdownSkeleton`（`:549`）为准：
+按 V4 §5.2，生成形态以 `capability_item_git_provision.go` 的 `buildMarkdownSkeleton`（按函数名 grep）为准：
 
 ```yaml
 ---
@@ -180,7 +183,8 @@ plugin 的 manifest 是 JSON，没有 frontmatter。fork 探测比对的是：
 manifest 顶层 "name"   ==(EqualFold)==   DB 行 metadata.install.plugin_name
 ```
 
-对不上 → 409（`probeRepoManifest:852-857`）。**这就是脚本 plan 阶段那张判决表的全部依据。**
+对不上 → 409（`probeRepoManifest` 里的 `strings.EqualFold(manifest.Name, wantPlugin)` 比对）。
+**这就是脚本 plan 阶段那张判决表的全部依据。**
 
 注意 `仓库名 ≠ plugin_name` 是正常的：仓库名是 slug（`alirezarezvani-claude-code-skills-code-to-prd`），`plugin_name` 是 manifest 名（`code-to-prd`）。探测用 slug 找仓库、用 plugin_name 验内容，两个字段各司其职。
 
@@ -316,7 +320,7 @@ ingress/API 层用 owner 排除规则阻止 mirror 被重复发现，worker 层�
 
 Gitea 的 system webhook 是**服务器级**的，push 到**任何**仓库都会投递。默认分支的 push 会入队一个 sync job；worker 跑到时，如果该仓库没有已绑定的能力行，就走 `discoverGitCapabilities` —— **扫全树、把每一个能被 `classifyGitCapabilityManifest` 认出的文件都建成一条新的 `capability_items` 行**。
 
-**唯一挡住这件事的就是 owner 排除**（`gitcapability.DiscoveryOwnerExcluded`），它在两层各执行一次：webhook ingress（`handlers/git_capability_webhook.go:163` —— owner 被排除**且**该仓库没有任何已绑定的 git 行时，直接 202 `reason=discovery_owner_excluded`，**不入队**）和 worker 同步（`services/git_capability_sync_service.go:235`）。排除名单没配对，两层都拦不住。
+**唯一挡住这件事的就是 owner 排除**（`gitcapability.DiscoveryOwnerExcluded`），它在两层各执行一次：webhook ingress（`handlers/git_capability_webhook.go:163` —— owner 被排除**且**该仓库没有任何已绑定的 git 行时，直接 202 `reason=discovery_owner_excluded`，**不入队**）和 worker 同步（`services/git_capability_sync_service.go` 里的同名调用）。排除名单没配对，两层都拦不住。
 
 本地实测（3 个 mirror + 1 个索引仓库）：
 
@@ -455,12 +459,17 @@ SELECT repo_full_name, status, created_at FROM git_capability_sync_jobs ORDER BY
 `created.txt` 记录了**本次真正新建**的仓库。回滚就是删掉它们（不会碰任何本来就存在的仓库）：
 
 ```bash
+STATE_DIR=<state-dir>        # 默认 <bundle>/.costrict-import/<owner>
+
 while read -r id; do
   curl -s -o /dev/null -w "$id:%{http_code}\n" -X DELETE \
     -H "Authorization: token $GITEA_TOKEN" \
     "$GITEA_URL/api/v1/repos/$GITEA_OWNER/$id"
-done < <state-dir>/created.txt
+done < "$STATE_DIR/created.txt"
 ```
+
+> ⚠️ 别把 `done < <state-dir>/created.txt` 原样贴进 shell —— `<` 后面紧跟 `<` 会被 bash
+> 当成 here-string / 进程替换的开头，直接报语法错。用上面的 `"$STATE_DIR/..."` 形式。
 
 删仓库会让对应 plugin 的 fork 回到「静默回落 DB 编辑页」——即导入前的状态，用户仍然可用。
 
@@ -506,12 +515,14 @@ kubectl -n costrict-web get deploy <api-deploy> -o jsonpath='{.spec.template.spe
 
 ## 附：相关代码位置
 
-| 关注点 | 位置 |
+**按函数名/常量名 grep，不要按行号**：本表原先带的行号已经漂过一轮，函数都还在，只是位置变了。
+
+| 关注点 | 位置（文件 + 符号） |
 |---|---|
-| fork 候选与探测 | `server/internal/handlers/capability_item_fork_git.go`（`:53` owner、`:194-199` 候选 2、`:640-680` 判决、`:812` `pluginManifestPaths`、`:828` `probeRepoManifest`） |
-| discovery 分类表 | `server/internal/services/git_capability_discovery.go:435-485` |
-| 骨架文件名 / frontmatter | `server/internal/handlers/capability_item_git_provision.go:46-69`、`:549`（`buildMarkdownSkeleton`） |
+| fork 候选与探测 | `server/internal/handlers/capability_item_fork_git.go`：`pluginGitMirrorOwner`（owner）、`src.ItemType == "plugin"` 分支（候选 2）、`locateGiteaSourceRepo`（判决）、`pluginManifestPaths`、`probeRepoManifest` |
+| discovery 分类表 | `server/internal/services/git_capability_discovery.go`：`classifyGitCapabilityManifest` |
+| 骨架文件名 / frontmatter | `server/internal/handlers/capability_item_git_provision.go`：`gitCapabilityRepoBranch` 附近的边界注释、`buildMarkdownSkeleton` |
 | webhook 入口 | `server/internal/handlers/git_capability_webhook.go` |
-| 同步与发现 | `server/internal/services/git_capability_sync_service.go:146`（`SyncRepository`） |
+| 同步与发现 | `server/internal/services/git_capability_sync_service.go`：`SyncRepository` |
 | bundle 构建 | `costrict-plugin-marketplace/scripts/build.py` |
 | 既有导入工具（本脚本替代的对象） | `costrict-plugin-marketplace/scripts/mirror-to-gitea.sh`、`bundle-assets/import.sh` |
