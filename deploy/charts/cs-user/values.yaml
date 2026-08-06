@@ -78,8 +78,20 @@ jwt:
     value: ""
     existingSecret: ""
     existingSecretKey: jwt.pem
+  # iss claim. Must match the Gitea fork's [costrict] JWT_ISSUER byte-for-byte
+  # (or that key must be left empty), otherwise the fork rejects every token on
+  # an iss mismatch. Note this is a bare literal, NOT a URL.
   issuer: cs-user
-  ttl: 1h
+  # Token lifetime = 7 days, matching cs-user's own code default
+  # (defaultJWTTTL in internal/config/config.go); the previous 1h here
+  # silently disagreed with the binary whenever the chart value was applied.
+  # With browser SSO the costrict_jwt cookie Max-Age tracks this exp, so this
+  # is also the effective Gitea session length.
+  #
+  # MUST be a Go time.ParseDuration string: "168h", NOT "7d". Go has no "d"
+  # unit — CS_USER_JWT_TTL=7d makes cs-user fail to start with
+  # `unknown unit "d" in duration "7d"`.
+  ttl: 168h
   # Comma-separated audience claim. List the relying parties that will
   # accept cs-user-issued tokens (cs-cloud, app-ai-native, csc). Empty
   # omits the claim entirely.

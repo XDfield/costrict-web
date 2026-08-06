@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -497,6 +498,122 @@ func TestEnterpriseClaims_PermissionFieldsSignAndVerify(t *testing.T) {
 	}
 }
 
+// --- Gitea fork binding key: user_id (mirrors sub) ---
+
+// TestNewEnterpriseClaims_UserIDMirrorsSubject pins the duplicate-by-design
+// relationship between `user_id` and `sub`. The Gitea fork's CoStrictJWT
+// middleware reads `user_id` (and only `user_id`) as the key for its
+// binding-status lookup, which our side answers out of user_git_binding —
+// whose primary key is (user_subject_id, tenant_id). So the value must be the
+// subject_id, not universal_id / short_id / employee number.
+func TestNewEnterpriseClaims_UserIDMirrorsSubject(t *testing.T) {
+	const subject = "b74e5889-546e-4cc9-9ec5-a0f3de1874c0"
+	c, err := NewEnterpriseClaims(IssuanceParams{
+		Issuer:  "https://cs-user",
+		Subject: subject,
+		ShortID: "u-5Fc4PIuH",
+		TTL:     time.Hour,
+		// Identity carries a DIFFERENT universal_id so a mix-up between the
+		// two identifiers would surface here rather than silently pass.
+		Identity: &models.JWTClaims{UniversalID: "casdoor-uuid-alice"},
+	}, fixedNow)
+	if err != nil {
+		t.Fatalf("NewEnterpriseClaims: %v", err)
+	}
+	if c.UserID != subject {
+		t.Errorf("UserID: want %q (subject_id), got %q", subject, c.UserID)
+	}
+	if c.UserID != c.Subject {
+		t.Errorf("UserID must mirror Subject: user_id=%q sub=%q", c.UserID, c.Subject)
+	}
+	if c.UserID == c.UniversalID {
+		t.Errorf("UserID must be the subject_id, not universal_id (%q)", c.UniversalID)
+	}
+	if c.UserID == c.ShortID {
+		t.Errorf("UserID must be the subject_id, not short_id (%q)", c.ShortID)
+	}
+}
+
+// TestEnterpriseClaims_UserIDInMarshalledJSON asserts on the marshalled JSON,
+// not the struct field. A struct-level assertion cannot catch a missing /
+// misspelled json tag, and `omitempty` means a wrong source value would drop
+// the key entirely — which is exactly the failure that locks every user out of
+// Gitea with a 503 while cs-user reports success.
+func TestEnterpriseClaims_UserIDInMarshalledJSON(t *testing.T) {
+	const subject = "usr_binding_key"
+	c, err := NewEnterpriseClaims(IssuanceParams{
+		Subject: subject,
+		TTL:     time.Hour,
+	}, fixedNow)
+	if err != nil {
+		t.Fatalf("NewEnterpriseClaims: %v", err)
+	}
+
+	bs, err := json.Marshal(c)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(bs, &raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	got, ok := raw["user_id"].(string)
+	if !ok {
+		t.Fatalf("marshalled JSON is missing the %q key: %s", "user_id", string(bs))
+	}
+	if got != subject {
+		t.Errorf("user_id: want %q, got %q", subject, got)
+	}
+	if sub, _ := raw["sub"].(string); sub != got {
+		t.Errorf("user_id (%q) must equal sub (%q) in the wire payload", got, sub)
+	}
+}
+
+// TestEnterpriseClaims_UserIDSurvivesSigning decodes the signed token's own
+// payload segment — the exact bytes the Gitea fork parses. This is the only
+// assertion that proves the claim reaches the relying party; marshalling the
+// struct in isolation would still pass if signing dropped it.
+func TestEnterpriseClaims_UserIDSurvivesSigning(t *testing.T) {
+	const subject = "usr_signed_binding_key"
+	pk := newRSAKey(t)
+	signer := pemEncode(t, pk)
+	now := time.Now()
+	c, err := NewEnterpriseClaims(IssuanceParams{
+		Issuer:  "https://cs-user.test",
+		Subject: subject,
+		ShortID: "u-e2es7",
+		TTL:     time.Hour,
+	}, now)
+	if err != nil {
+		t.Fatalf("NewEnterpriseClaims: %v", err)
+	}
+	signed, err := signer.SignJWT(c, now)
+	if err != nil {
+		t.Fatalf("SignJWT: %v", err)
+	}
+
+	parts := strings.Split(signed, ".")
+	if len(parts) != 3 {
+		t.Fatalf("expected 3 JWT segments, got %d", len(parts))
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decode payload segment: %v", err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if got, _ := raw["user_id"].(string); got != subject {
+		t.Errorf("signed payload user_id: want %q, got %v (payload: %s)", subject, raw["user_id"], string(payload))
+	}
+	// short_id and user_id are two distinct claims serving two distinct
+	// lookups in the fork; assert both are present and different.
+	if got, _ := raw["short_id"].(string); got != "u-e2es7" {
+		t.Errorf("signed payload short_id: want %q, got %v", "u-e2es7", raw["short_id"])
+	}
+}
+
 // ===========================================================================
 // Phase A contract lock — reflection-based JSON tag vocabulary test.
 //
@@ -519,6 +636,7 @@ func TestEnterpriseClaims_JSONTagVocabularyLock(t *testing.T) {
 		"nbf": "NotBefore", "exp": "Expiry", "aud": "Audience", "jti": "JTI",
 
 		// OIDC identity (mirrors models.JWTClaims)
+		"user_id":            "UserID",
 		"universal_id":       "UniversalID",
 		"name":               "Name",
 		"preferred_username": "PreferredUsername",

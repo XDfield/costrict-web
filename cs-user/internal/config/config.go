@@ -175,8 +175,10 @@ type JWTConfig struct {
 	// TTL is the time from issuance to expiry. Defaults to 7d (168h) — long
 	// enough that relying parties (Gitea fork auth, app-ai-native) don't
 	// see constant re-issue churn in normal use, short enough to bound the
-	// blast radius of a leaked cookie. Parsed from the env var as a Go
-	// duration string ("168h", "7d" via ParseDuration-friendly forms, "30m").
+	// blast radius of a leaked cookie. Parsed from the env var with
+	// time.ParseDuration, which supports ns/us/ms/s/m/h ONLY — there is no
+	// "d" unit. Write 7 days as "168h"; "7d" fails Load() outright with
+	// `unknown unit "d" in duration "7d"` and cs-user will not start.
 	TTL time.Duration
 
 	// DefaultAudience is the aud claim applied when the caller doesn't

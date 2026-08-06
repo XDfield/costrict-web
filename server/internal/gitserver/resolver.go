@@ -53,6 +53,13 @@ type Config struct {
 	// is stored alongside the other per-server secrets in git_servers.config
 	// as webhook_secret, never in a dedicated plaintext database column.
 	WebhookSecret string
+	// InternalToken is Gitea's own [security] INTERNAL_TOKEN, required by the
+	// CoStrict fork's private surface under /api/internal/costrict/*. It is a
+	// DIFFERENT credential from AdminToken and travels in a different header
+	// (X-Gitea-Internal-Auth: Bearer <token>, not Authorization), so the two
+	// are never interchangeable. Optional: empty means the fork-private
+	// endpoints are not configured for this server and callers skip it.
+	InternalToken string
 	// WebURL is the browser-facing base URL of the git server, used to build
 	// links a user clicks (repo pages) and addresses their device clones from.
 	// Endpoint is the API address, which on split internal/external deployments
@@ -146,6 +153,7 @@ func (r *DBResolver) ResolveByServerID(ctx context.Context, serverID string) (*C
 		AdminUser:     parsed.AdminUser,
 		AdminPassword: parsed.AdminPassword,
 		WebhookSecret: parsed.WebhookSecret,
+		InternalToken: parsed.InternalToken,
 		WebURL:        parsed.WebURL,
 	}, nil
 }
@@ -156,6 +164,11 @@ type gitServerConfigJSON struct {
 	AdminUser     string `json:"admin_user,omitempty"`
 	AdminPassword string `json:"admin_password,omitempty"`
 	WebhookSecret string `json:"webhook_secret,omitempty"`
+	// InternalToken is Gitea's [security] INTERNAL_TOKEN. Stored per server in
+	// the same JSONB blob as the other secrets so a multi-server deployment
+	// keeps one credential set per server; there is deliberately no global env
+	// var, which could only ever be right for a single-server deployment.
+	InternalToken string `json:"internal_token,omitempty"`
 	WebURL        string `json:"web_url,omitempty"`
 }
 

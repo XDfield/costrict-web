@@ -173,6 +173,7 @@ func runWorker() {
 		ReconcileDrainBudget: gitCapabilityReconcileDrainBudget,
 	}
 	gitSystemHookReconciler := newGitSystemHookReconciler(db, cfg)
+	giteaConfigSyncWorker := newGiteaConfigSyncWorker(db, cfg)
 
 	scanEnabled := os.Getenv("SCAN_ENABLED")
 	var scanPool *worker.ScanWorkerPool
@@ -227,9 +228,12 @@ func runWorker() {
 	log.Printf("Git capability worker pool started with %d workers", gitCapabilityConcurrency)
 	gitSystemHookReconciler.Start()
 	log.Printf("Git system webhook reconciler started, interval=%s", gitSystemHookReconciler.Interval)
+	giteaConfigSyncWorker.Start()
+	log.Printf("Gitea config sync worker started, enabled=%t interval=%s", giteaConfigSyncWorker.Enabled, giteaConfigSyncWorker.Interval)
 
 	<-ctx.Done()
 	log.Println("Shutting down worker pools...")
+	giteaConfigSyncWorker.Stop()
 	gitSystemHookReconciler.Stop()
 	pool.Stop()
 	gitCapabilityPool.Stop()
@@ -256,6 +260,58 @@ func newGitSystemHookReconciler(db *gorm.DB, cfg *config.Config) *worker.GitSyst
 		Interval:       interval,
 		RequestTimeout: 15 * time.Second,
 	}
+}
+
+// newGiteaConfigSyncWorker builds the CoStrict Gitea fork config pusher
+// (Gitea fork integration FI-4 / FI-5).
+//
+// Defaults to ON because it is safe when unconfigured: a Git server without
+// git_servers.config.internal_token is skipped, so a deployment that has not
+// onboarded the fork sees nothing happen. GITEA_CONFIG_SYNC_ENABLED=false is
+// the kill switch - it stops all pushes without withdrawing anything already
+// pushed.
+//
+// The JWKS URL is what rotation watching polls. It falls back to cs-user's
+// well-known path under USER_SERVICE_URL because that is the same issuer the
+// Gitea fork is configured to verify against; an explicit
+// GITEA_CONFIG_SYNC_JWKS_URL wins for split-endpoint deployments. Note there is
+// no ".json" suffix - cs-user serves /.well-known/jwks.
+func newGiteaConfigSyncWorker(db *gorm.DB, cfg *config.Config) *worker.GiteaConfigSyncWorker {
+	enabled := true
+	if raw := strings.TrimSpace(os.Getenv("GITEA_CONFIG_SYNC_ENABLED")); raw != "" {
+		if parsed, err := strconv.ParseBool(raw); err == nil {
+			enabled = parsed
+		}
+	}
+	interval := 5 * time.Minute
+	if raw := strings.TrimSpace(os.Getenv("GITEA_CONFIG_SYNC_INTERVAL")); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
+			interval = parsed
+		}
+	}
+	requestTimeout := 15 * time.Second
+	if raw := strings.TrimSpace(os.Getenv("GITEA_CONFIG_SYNC_REQUEST_TIMEOUT")); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil && parsed > 0 {
+			requestTimeout = parsed
+		}
+	}
+	jwksURL := strings.TrimSpace(os.Getenv("GITEA_CONFIG_SYNC_JWKS_URL"))
+	if jwksURL == "" && cfg != nil && strings.TrimSpace(cfg.UserService.BaseURL) != "" {
+		jwksURL = strings.TrimRight(strings.TrimSpace(cfg.UserService.BaseURL), "/") + "/.well-known/jwks"
+	}
+	syncWorker := &worker.GiteaConfigSyncWorker{
+		DB:             db,
+		Enabled:        enabled,
+		Interval:       interval,
+		RequestTimeout: requestTimeout,
+	}
+	// Assigned only when non-nil: storing a typed nil pointer in the interface
+	// field would make the worker's "is rotation watching configured" check
+	// true while every call fails.
+	if lister := worker.NewHTTPJWKSKeyIDLister(jwksURL, requestTimeout); lister != nil {
+		syncWorker.JWKS = lister
+	}
+	return syncWorker
 }
 
 type latestRevisionRow struct {

@@ -6,7 +6,10 @@
 //  2. OIDC identity (mirrors models.JWTClaims): universal_id / name / email /
 //     picture / owner / provider / provider_user_id / phone. These overlap
 //     1:1 with Casdoor's token shape, so a relying party switching from
-//     Casdoor tokens to cs-user tokens sees no diff.
+//     Casdoor tokens to cs-user tokens sees no diff. Two relying-party-driven
+//     claims ride in this group without a Casdoor counterpart: short_id (the
+//     Gitea username) and user_id (the Gitea binding-lookup key, same value
+//     as sub) — see the field comments before changing either.
 //  3. Enterprise context (Phase A5 — populated from employment_identities):
 //     employee_number / job_title / job_level / employment_type /
 //     cost_center / org_path / work_location. Plus tenant_id, reserved for
@@ -34,15 +37,26 @@ type EnterpriseClaims struct {
 	// marshals to an RFC 3339 string, which jwt/v5 MapClaims / verifiers
 	// on the relying-party side reject ("exp claim is invalid"), causing
 	// every cs-user-signed token to fail verification.
-	Issuer    string             `json:"iss,omitempty"`
-	Subject   string             `json:"sub,omitempty"`
-	IssuedAt  *jwt.NumericDate   `json:"iat,omitempty"`
-	NotBefore *jwt.NumericDate   `json:"nbf,omitempty"`
-	Expiry    *jwt.NumericDate   `json:"exp,omitempty"`
-	Audience  []string           `json:"aud,omitempty"`
-	JTI       string             `json:"jti,omitempty"`
+	Issuer    string           `json:"iss,omitempty"`
+	Subject   string           `json:"sub,omitempty"`
+	IssuedAt  *jwt.NumericDate `json:"iat,omitempty"`
+	NotBefore *jwt.NumericDate `json:"nbf,omitempty"`
+	Expiry    *jwt.NumericDate `json:"exp,omitempty"`
+	Audience  []string         `json:"aud,omitempty"`
+	JTI       string           `json:"jti,omitempty"`
 
 	// --- OIDC identity (mirrors models.JWTClaims) ---
+	// UserID intentionally carries the SAME value as Subject (users.subject_id).
+	// Do NOT "de-duplicate" it: the claim NAME is fixed by the Gitea fork, which
+	// reads `user_id` — and only `user_id` — as the key for its binding-status
+	// lookup (gitea services/auth/jwt.go: checkBinding(claims.UserID); an empty
+	// value errors out and every user is rejected with 503). Our side answers
+	// that lookup from user_git_binding, whose primary key is
+	// (user_subject_id, tenant_id), so subject_id is the value that hits the PK
+	// directly. Distinct in purpose from ShortID: `short_id` is consumed as the
+	// Gitea *username*, `user_id` as the *binding lookup key* — two different
+	// claims serving two different lookups in the same middleware.
+	UserID            string `json:"user_id,omitempty"`
 	UniversalID       string `json:"universal_id,omitempty"`
 	Name              string `json:"name,omitempty"`
 	PreferredUsername string `json:"preferred_username,omitempty"`
@@ -52,13 +66,13 @@ type EnterpriseClaims struct {
 	// CoStrictJWT middleware, which uses it directly as the Gitea username
 	// (no further transformation). Distinct from PreferredUsername (display
 	// name) which carries no uniqueness / charset guarantees.
-	ShortID string `json:"short_id,omitempty"`
-	Email             string `json:"email,omitempty"`
-	Picture           string `json:"picture,omitempty"`
-	Owner             string `json:"owner,omitempty"`
-	Provider          string `json:"provider,omitempty"`
-	ProviderUserID    string `json:"provider_user_id,omitempty"`
-	Phone             string `json:"phone,omitempty"`
+	ShortID        string `json:"short_id,omitempty"`
+	Email          string `json:"email,omitempty"`
+	Picture        string `json:"picture,omitempty"`
+	Owner          string `json:"owner,omitempty"`
+	Provider       string `json:"provider,omitempty"`
+	ProviderUserID string `json:"provider_user_id,omitempty"`
+	Phone          string `json:"phone,omitempty"`
 
 	// --- Enterprise context (Phase A5 — from employment_identities) ---
 	// EnterpriseUID is the user's stable identifier at the enterprise IdP
@@ -67,8 +81,8 @@ type EnterpriseClaims struct {
 	// overwrites them via ApplyEnterpriseMapping. Required pair per the
 	// two-layer design: basic user info is mutable, enterprise identity is
 	// IdP-synced and not user-editable.
-	EnterpriseUID string `json:"enterprise_uid,omitempty"`
-	DisplayName   string `json:"display_name,omitempty"`
+	EnterpriseUID  string `json:"enterprise_uid,omitempty"`
+	DisplayName    string `json:"display_name,omitempty"`
 	EmployeeNumber string `json:"employee_number,omitempty"`
 	JobTitle       string `json:"job_title,omitempty"`
 	JobLevel       string `json:"job_level,omitempty"`
@@ -228,8 +242,13 @@ func NewEnterpriseClaims(params IssuanceParams, now time.Time) (*EnterpriseClaim
 	// to a fresh copy, so no shared aliasing risk between fields. Each call
 	// below is independent.
 	c := &EnterpriseClaims{
-		Issuer:        params.Issuer,
-		Subject:       params.Subject,
+		Issuer:  params.Issuer,
+		Subject: params.Subject,
+		// Deliberate duplicate of Subject — see the UserID field comment. The
+		// Gitea fork keys its binding check on `user_id`, so dropping this
+		// assignment silently locks every user out of Gitea (503), with no
+		// failure visible on cs-user's own side.
+		UserID:        params.Subject,
 		ShortID:       params.ShortID,
 		IssuedAt:      jwt.NewNumericDate(now),
 		NotBefore:     jwt.NewNumericDate(now),

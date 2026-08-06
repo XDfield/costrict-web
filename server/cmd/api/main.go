@@ -897,6 +897,17 @@ func main() {
 			// repository reported as success.
 			admin.POST("/git-capability-repositories/:git_server_id/:git_repo_id/resync", gitCapabilityResyncAPI.ResyncGitCapabilityRepository)
 
+			// Gitea fork push-quota rules (FI-4). These rows are the source of
+			// truth for what GiteaConfigSyncWorker pushes into each Gitea
+			// server's memory; an edit here reaches the Git server on the
+			// worker's next reconcile, not synchronously. The global default
+			// tier is deliberately absent: it lives in Gitea's app.ini and the
+			// fork exposes no way to push it.
+			gitQuotaRuleAPI := handlers.NewGitQuotaRuleAPI(db)
+			admin.GET("/git-quota-rules", gitQuotaRuleAPI.ListGitQuotaRules)
+			admin.PUT("/git-quota-rules", gitQuotaRuleAPI.UpsertGitQuotaRule)
+			admin.DELETE("/git-quota-rules", gitQuotaRuleAPI.DeleteGitQuotaRule)
+
 			// Admin audit-log query (platform admin only). The write path is the
 			// package-level audit.Logger initialized above.
 			audit.NewModule(db).RegisterRoutes(admin)
