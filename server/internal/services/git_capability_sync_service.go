@@ -134,11 +134,15 @@ type GitCapabilitySyncLease struct {
 var ErrGitCapabilityLeaseLost = errors.New("git capability sync lease lost")
 
 type preparedGitCapability struct {
-	item       models.CapabilityItem
-	parsed     *ParsedItem
-	metadata   datatypes.JSON
-	updateTags bool
-	removed    bool
+	item     models.CapabilityItem
+	parsed   *ParsedItem
+	metadata datatypes.JSON
+	// contentDigest is this item's own projected digest — the revision writer's
+	// trigger. Computed outside the transaction, from the manifest this pass
+	// read, so the projection and the digest describe the same bytes.
+	contentDigest string
+	updateTags    bool
+	removed       bool
 }
 
 // SyncRepository converges Git-backed capability rows using the stable
@@ -285,8 +289,13 @@ func (s *GitCapabilitySyncService) SyncRepository(
 		if err != nil {
 			return nil, fmt.Errorf("merge metadata for item %s: %w", item.ID, err)
 		}
+		digest, err := gitCapabilityProjectionDigest(item.ItemType, item.SourceRepoPath, parsed)
+		if err != nil {
+			return nil, fmt.Errorf("digest projection for item %s: %w", item.ID, err)
+		}
 		entry.parsed = parsed
 		entry.metadata = merged
+		entry.contentDigest = digest
 		entry.updateTags = updateTags
 		prepared = append(prepared, entry)
 	}
@@ -295,9 +304,15 @@ func (s *GitCapabilitySyncService) SyncRepository(
 	now := time.Now()
 	repoURL := strings.TrimRight(firstGitURL(cfg.WebURL, cfg.Endpoint), "/") + "/" + owner + "/" + repoName
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := assertGitCapabilityLease(tx, lease); err != nil {
+		job, err := assertGitCapabilityLease(tx, lease)
+		if err != nil {
 			return err
 		}
+		// The delivery this projection is running under decides the `source` of
+		// any revision it appends. It is read from the leased job rather than
+		// passed down, so the label can never disagree with the job that actually
+		// authorized the write.
+		triggerSource := GitRevisionSourceForDelivery(job.DeliveryID)
 		// Resolve lazily on the transaction handle. This keeps owner projection in
 		// the same snapshot and avoids self-deadlock in single-connection tests.
 		ownerResolver := newGitCapabilityOwnerResolver(tx, cfg.ServerID, gitRepositoryOwnerID(repo), owner)
@@ -361,6 +376,26 @@ func (s *GitCapabilitySyncService) SyncRepository(
 				}
 			}
 
+			// Take the item's row lock and read its authoritative pre-update state
+			// BEFORE the UPDATE overwrites it. The lock is what serializes revision
+			// numbering; the state answers whether this projection is a restore
+			// (this sync had orphaned the row) or a provision (never projected),
+			// neither of which can be read from `entry.item` — that was loaded
+			// outside this transaction and may already be stale.
+			//
+			// An archiving entry needs neither, so it is not read for one — its own
+			// UPDATE below takes the same lock a moment later. `prepared` preserves
+			// the boundItems `id ASC` order, so every writer of this repository
+			// acquires the item locks in the same order and two concurrent syncs
+			// queue rather than deadlock.
+			var state *gitCapabilityProjectionState
+			if !entry.removed {
+				state, err = lockGitCapabilityItemForProjection(tx, entry.item.ID, cfg.ServerID, repoID)
+				if err != nil {
+					return err
+				}
+			}
+
 			// Explicit, statement-local opt-out from the Git-owned field guard:
 			// this is the authoritative Git writer, so it is the one caller
 			// allowed to move the projection columns.
@@ -374,6 +409,32 @@ func (s *GitCapabilitySyncService) SyncRepository(
 			}
 			if updated.RowsAffected != 1 {
 				return fmt.Errorf("Git-backed item %s changed identity during sync", entry.item.ID)
+			}
+
+			// History records ACTIVE projections only, and only when THIS item's
+			// projected content digest moved. The head SHA above moved for every
+			// item in the repository — that is exactly why it cannot be the
+			// trigger — so a commit that only touched a sibling's manifest reaches
+			// here with an unchanged digest and appends nothing.
+			//
+			// An archiving pass still advances git_sha, deliberately, but never
+			// reaches this call: `state` is nil for a removed entry.
+			if state != nil {
+				if err := projectGitCapabilityRevision(tx, gitCapabilityRevisionInput{
+					ItemID:        entry.item.ID,
+					GitServerID:   cfg.ServerID,
+					GitRepoID:     repoID,
+					GitRef:        branchName,
+					ManifestPath:  entry.item.SourceRepoPath,
+					EntryKey:      entry.item.SourceGitEntryKey,
+					GitSHA:        headSHA,
+					VersionLabel:  entry.parsed.Version,
+					ContentDigest: entry.contentDigest,
+					Source:        gitRevisionSourceForProjection(*state, triggerSource),
+					ObservedAt:    now,
+				}); err != nil {
+					return err
+				}
 			}
 
 			if !entry.removed && entry.updateTags {
@@ -407,7 +468,7 @@ func (s *GitCapabilitySyncService) SyncRepository(
 			if err != nil {
 				return err
 			}
-			if err := createDiscoveredCapability(tx, item, discoveredEntry.Parsed.Tags, ownerID); err != nil {
+			if err := createDiscoveredCapability(tx, item, discoveredEntry, ownerID); err != nil {
 				return err
 			}
 			result.Created++
@@ -434,7 +495,7 @@ func (s *GitCapabilitySyncService) archiveGitCapabilitiesForMissingRepository(
 	result := &GitCapabilitySyncResult{}
 	now := time.Now()
 	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := assertGitCapabilityLease(tx, lease); err != nil {
+		if _, err := assertGitCapabilityLease(tx, lease); err != nil {
 			return err
 		}
 		for _, item := range items {
@@ -482,7 +543,7 @@ func (s *GitCapabilitySyncService) archiveGitCapabilitiesForMissingDefaultBranch
 	result := &GitCapabilitySyncResult{}
 	now := time.Now()
 	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := assertGitCapabilityLease(tx, lease); err != nil {
+		if _, err := assertGitCapabilityLease(tx, lease); err != nil {
 			return err
 		}
 		for _, item := range items {
@@ -523,7 +584,7 @@ func (s *GitCapabilitySyncService) markGitCapabilitySyncFailure(
 	syncErr error,
 ) error {
 	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := assertGitCapabilityLease(tx, lease); err != nil {
+		if _, err := assertGitCapabilityLease(tx, lease); err != nil {
 			return err
 		}
 		// Authoritative Git writer — see the marker in SyncRepository.
@@ -552,9 +613,15 @@ func (s *GitCapabilitySyncService) markGitCapabilitySyncFailure(
 // concurrent lease-reclaimer behind the index commit; the token is still
 // checked so a lease reclaimed before this point fails closed. SQLite omits
 // FOR UPDATE because its write transaction already serializes the test path.
-func assertGitCapabilityLease(tx *gorm.DB, lease GitCapabilitySyncLease) error {
+//
+// It returns the leased job so a caller can read the delivery that authorized
+// the write — the revision writer classifies a projection's `source` from it.
+// Deriving the trigger from the row this function already had to load keeps the
+// label and the authorization inseparable: there is no second parameter that
+// could describe a different job than the one the lease was checked against.
+func assertGitCapabilityLease(tx *gorm.DB, lease GitCapabilitySyncLease) (*models.GitCapabilitySyncJob, error) {
 	if tx == nil || strings.TrimSpace(lease.JobID) == "" || strings.TrimSpace(lease.Token) == "" {
-		return ErrGitCapabilityLeaseLost
+		return nil, ErrGitCapabilityLeaseLost
 	}
 	query := tx.Where("id = ? AND status = ? AND lease_token = ?", lease.JobID, models.GitCapabilitySyncJobStatusRunning, lease.Token)
 	if tx.Dialector.Name() == "postgres" {
@@ -563,11 +630,11 @@ func assertGitCapabilityLease(tx *gorm.DB, lease GitCapabilitySyncLease) error {
 	var job models.GitCapabilitySyncJob
 	if err := query.First(&job).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return ErrGitCapabilityLeaseLost
+			return nil, ErrGitCapabilityLeaseLost
 		}
-		return fmt.Errorf("validate Git capability lease: %w", err)
+		return nil, fmt.Errorf("validate Git capability lease: %w", err)
 	}
-	return nil
+	return &job, nil
 }
 
 func (s *GitCapabilitySyncService) reader(cfg *gitserver.Config) GitCapabilityReader {

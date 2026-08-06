@@ -140,7 +140,7 @@ func (p *GitCapabilityWorkerPool) reconcileIfDue() {
 		// the way whole seconds can, so this stays safe even if a future caller
 		// reaches here without passing through the guard in the constructor.
 		bucket := now.UnixNano() / interval.Nanoseconds()
-		delivery := fmt.Sprintf("reconcile:%d:%d", repo.GitRepoID, bucket)
+		delivery := fmt.Sprintf("%s%d:%d", models.GitCapabilitySyncDeliveryPrefixReconcile, repo.GitRepoID, bucket)
 		job := models.GitCapabilitySyncJob{ID: uuid.NewString(), GitServerID: repo.GitServerID, DeliveryID: delivery,
 			RepoID: repo.GitRepoID, RepoFullName: repo.FullName, DefaultBranch: repo.DefaultBranch,
 			Ref: repo.DefaultBranch, AfterSHA: repo.LastSyncedCommit, Status: models.GitCapabilitySyncJobStatusPending,

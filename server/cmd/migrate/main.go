@@ -115,6 +115,11 @@ func main() {
 				log.Fatalf("capability-to-git: %v", err)
 			}
 			return
+		case "backfill-git-revisions":
+			if err := runGitRevisionBackfillCommand(db, os.Args[2:]); err != nil {
+				log.Fatalf("backfill-git-revisions: %v", err)
+			}
+			return
 		case "backfill-provider-aware-external-keys":
 			dryRun := len(os.Args) > 2 && os.Args[2] == "--dry-run"
 			if err := backfillProviderAwareExternalKeys(db, dryRun); err != nil {
@@ -273,6 +278,11 @@ func printMigrateHelp() {
 	fmt.Println("                                                Dry-run by default; --confirm executes.")
 	fmt.Println("                                                Requires CS_BOT_TOKEN_KEY exported and a git server")
 	fmt.Println("                                                bound to the tenant.")
+	fmt.Println("  go run ./cmd/migrate backfill-git-revisions [--limit=N] [--report-limit=N] [--confirm]")
+	fmt.Println("                                                Seed revision 1 of the Git revision history for")
+	fmt.Println("                                                currently synced Git-backed items that have none,")
+	fmt.Println("                                                using their existing git_sha/version/last-synced time.")
+	fmt.Println("                                                Dry-run by default; --confirm executes.")
 	fmt.Println("")
 	fmt.Println("Examples:")
 	fmt.Println("  go run ./cmd/migrate")
@@ -283,6 +293,8 @@ func printMigrateHelp() {
 	fmt.Println("  go run ./cmd/migrate ingest-upstream --source=https://github.com/zgsm-ai/everything-ai-coding/releases/download/catalog-bundle-v1.0.0/catalog-bundle.tar.gz --dry-run")
 	fmt.Println("  go run ./cmd/migrate capability-to-git --type=skill --owner=u-devuser1")
 	fmt.Println("  go run ./cmd/migrate capability-to-git --ids=2fc7fdcb-c640-42b1-a6df-2751b145b132 --confirm")
+	fmt.Println("  go run ./cmd/migrate backfill-git-revisions")
+	fmt.Println("  go run ./cmd/migrate backfill-git-revisions --confirm")
 }
 
 // ingestUpstreamCatalog is the new entry point that replaces the

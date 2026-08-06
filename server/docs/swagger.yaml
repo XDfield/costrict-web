@@ -296,6 +296,17 @@ definitions:
         type: string
       gitLastSyncedAt:
         type: string
+      gitLifecycleChangedAt:
+        description: Reason 所代表的那次转换的观测时间；有 Reason 必有此值
+        type: string
+      gitLifecycleReason:
+        description: |-
+          Git 生命周期归属：git_sync_status 说"是这次 sync 把行藏起来的"，但说不出原因，
+          而不同原因的恢复规则不同（manifest/默认分支可自动恢复，仓库删除是终态）。
+          人工 archived/inactive/banned 会在同一事务里清空 Reason，等于收回 Git 自动恢复的权限。
+          列类型必须与 migrations/20260805000000_add_capability_items_git_lifecycle.sql 精确一致：
+          capability_items 同时受 AutoMigrate 覆盖，谁先跑都要产出同一列。
+        type: string
       gitSha:
         description: 最近成功写入索引的 default-branch commit
         type: string
@@ -1252,6 +1263,17 @@ definitions:
         type: string
       gitLastSyncedAt:
         type: string
+      gitLifecycleChangedAt:
+        description: Reason 所代表的那次转换的观测时间；有 Reason 必有此值
+        type: string
+      gitLifecycleReason:
+        description: |-
+          Git 生命周期归属：git_sync_status 说"是这次 sync 把行藏起来的"，但说不出原因，
+          而不同原因的恢复规则不同（manifest/默认分支可自动恢复，仓库删除是终态）。
+          人工 archived/inactive/banned 会在同一事务里清空 Reason，等于收回 Git 自动恢复的权限。
+          列类型必须与 migrations/20260805000000_add_capability_items_git_lifecycle.sql 精确一致：
+          capability_items 同时受 AutoMigrate 覆盖，谁先跑都要产出同一列。
+        type: string
       gitSha:
         description: 最近成功写入索引的 default-branch commit
         type: string
@@ -1402,6 +1424,17 @@ definitions:
         description: 源 item 的 createdBy，用于展示原作者（源删除后仍可解析）
         type: string
       gitLastSyncedAt:
+        type: string
+      gitLifecycleChangedAt:
+        description: Reason 所代表的那次转换的观测时间；有 Reason 必有此值
+        type: string
+      gitLifecycleReason:
+        description: |-
+          Git 生命周期归属：git_sync_status 说"是这次 sync 把行藏起来的"，但说不出原因，
+          而不同原因的恢复规则不同（manifest/默认分支可自动恢复，仓库删除是终态）。
+          人工 archived/inactive/banned 会在同一事务里清空 Reason，等于收回 Git 自动恢复的权限。
+          列类型必须与 migrations/20260805000000_add_capability_items_git_lifecycle.sql 精确一致：
+          capability_items 同时受 AutoMigrate 覆盖，谁先跑都要产出同一列。
         type: string
       gitSha:
         description: 最近成功写入索引的 default-branch commit
@@ -2014,6 +2047,61 @@ definitions:
       webhookSecret:
         type: string
     type: object
+  internal_handlers.GitHistoryResponse:
+    properties:
+      hasMore:
+        type: boolean
+      historyBackend:
+        description: |-
+          HistoryBackend is "git" for a Git-backed item and "db" for every other
+          row — a DB-backed capability is versioned through /items/{id}/versions and
+          has no Git history, which this reports as an empty page rather than an
+          error.
+        type: string
+      nextBeforeRevision:
+        description: |-
+          NextBeforeRevision is the cursor for the next page; absent on the last
+          page. It is item-bound and stable: revisions only ever get HIGHER numbers,
+          so a row appended while a client pages cannot shift the rows behind the
+          cursor.
+        type: integer
+      revisions:
+        items:
+          $ref: '#/definitions/internal_handlers.GitRevisionResponse'
+        type: array
+    type: object
+  internal_handlers.GitRevisionResponse:
+    properties:
+      gitSha:
+        description: |-
+          GitSHA is the repository default-branch head OBSERVED when this change was
+          detected. It is a coordinate, not a cause: the revision was triggered by
+          this item's own projected content changing, and the head may have advanced
+          past the commit that made that change (a repository holds many
+          capabilities). A UI must not label it "the commit that made this change".
+        type: string
+      observedAt:
+        description: |-
+          ObservedAt is the server time of the successful observation. It is not
+          the commit's authored time.
+        type: string
+      revisionNo:
+        description: |-
+          RevisionNo is strictly increasing within the item and is the paging
+          cursor: pass the smallest one you received as `before_revision`.
+        type: integer
+      shortSha:
+        type: string
+      source:
+        description: Source is backfill | provision | push | reconcile | restore.
+        type: string
+      version:
+        description: |-
+          Version is the item-visible version and is never empty: a manifest that
+          declares none falls back to the short commit SHA, because a history row
+          with a blank version label is unrenderable.
+        type: string
+    type: object
   internal_handlers.ItemAssetsResponse:
     properties:
       assets:
@@ -2285,6 +2373,17 @@ definitions:
         description: 源 item 的 createdBy，用于展示原作者（源删除后仍可解析）
         type: string
       gitLastSyncedAt:
+        type: string
+      gitLifecycleChangedAt:
+        description: Reason 所代表的那次转换的观测时间；有 Reason 必有此值
+        type: string
+      gitLifecycleReason:
+        description: |-
+          Git 生命周期归属：git_sync_status 说"是这次 sync 把行藏起来的"，但说不出原因，
+          而不同原因的恢复规则不同（manifest/默认分支可自动恢复，仓库删除是终态）。
+          人工 archived/inactive/banned 会在同一事务里清空 Reason，等于收回 Git 自动恢复的权限。
+          列类型必须与 migrations/20260805000000_add_capability_items_git_lifecycle.sql 精确一致：
+          capability_items 同时受 AutoMigrate 覆盖，谁先跑都要产出同一列。
         type: string
       gitSha:
         description: 最近成功写入索引的 default-branch commit
@@ -10889,6 +10988,71 @@ paths:
                 type: string
             type: object
       summary: Fork an item
+      tags:
+      - items
+  /items/{id}/git-history:
+    get:
+      description: 'Returns the item''s most recent successful Git projection transitions,
+        newest first. A revision exists only where a successful projection changed
+        THIS item''s own projected content, so a duplicate webhook delivery, a same-content
+        reconcile, and a commit that only touched another capability in the same repository
+        all add nothing, while a revert back to earlier content adds a new revision.
+        `gitSha` is the repository head observed when the change was detected — a
+        coordinate, not the commit that made the change, and it must not be presented
+        as one. `version` is never empty: when the manifest declares no version the
+        short commit SHA is returned instead. Paging uses the item-bound `before_revision`
+        cursor. Authorization is identical to item detail; a DB-backed item returns
+        an empty page with historyBackend=db.'
+      parameters:
+      - description: Item ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Page size, default 5, values above 20 are clamped to 20
+        in: query
+        name: limit
+        type: integer
+      - description: Return revisions strictly older than this revision number
+        in: query
+        name: before_revision
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.GitHistoryResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List a Git-backed item's recent revisions
       tags:
       - items
   /items/{id}/improve:

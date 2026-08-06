@@ -166,6 +166,18 @@ func setupGitCapabilitySyncDB(t *testing.T) *gorm.DB {
 			id TEXT PRIMARY KEY, item_id TEXT NOT NULL, tag_id TEXT NOT NULL,
 			source TEXT NOT NULL DEFAULT 'legacy', created_at DATETIME, UNIQUE(item_id, tag_id, source)
 		)`,
+		`CREATE TABLE capability_item_git_revisions (
+			id TEXT PRIMARY KEY, item_id TEXT NOT NULL, revision_no INTEGER NOT NULL,
+			git_server_id TEXT NOT NULL, git_repo_id INTEGER NOT NULL,
+			git_ref TEXT NOT NULL DEFAULT '', manifest_path TEXT NOT NULL DEFAULT '',
+			entry_key TEXT NOT NULL DEFAULT '', git_sha TEXT NOT NULL,
+			version_label TEXT NOT NULL DEFAULT '', source TEXT NOT NULL,
+			content_digest TEXT,
+			observed_at DATETIME NOT NULL, created_at DATETIME NOT NULL,
+			UNIQUE(item_id, revision_no),
+			CHECK (content_digest IS NULL OR content_digest GLOB '[0-9a-f]*'),
+			CHECK (content_digest IS NOT NULL OR source = 'backfill')
+		)`,
 		`CREATE TABLE git_capability_sync_jobs (
 			id TEXT PRIMARY KEY, git_server_id TEXT NOT NULL, delivery_id TEXT NOT NULL,
 			repo_id INTEGER NOT NULL, repo_full_name TEXT NOT NULL, default_branch TEXT NOT NULL,

@@ -288,7 +288,7 @@ func (s *GitCapabilitySyncService) discoverGitCapabilities(
 	result := &GitCapabilitySyncResult{CommitSHA: headSHA, Skipped: len(issues)}
 
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := assertGitCapabilityLease(tx, lease); err != nil {
+		if _, err := assertGitCapabilityLease(tx, lease); err != nil {
 			return err
 		}
 		binding, err := ensureGitCapabilityRepositoryBinding(tx, cfg.ServerID, repo, repoURL, branchName, headSHA, repoKind, status, strings.Join(issues, "; "), ownerID, now)
@@ -300,7 +300,7 @@ func (s *GitCapabilitySyncService) discoverGitCapabilities(
 			if err != nil {
 				return err
 			}
-			if err := createDiscoveredCapability(tx, item, entry.Parsed.Tags, ownerID); err != nil {
+			if err := createDiscoveredCapability(tx, item, entry, ownerID); err != nil {
 				return err
 			}
 			result.Created++
@@ -1329,12 +1329,24 @@ func buildDiscoveredCapability(
 	return item, nil
 }
 
+// createDiscoveredCapability inserts a newly discovered row, seeds its history
+// and applies its Git-domain tags.
+//
+// It takes the discovered entry rather than just the tag slugs because the
+// revision writer needs the item's projected content digest, and the digest is
+// a function of the MANIFEST (content plus the manifest-derived display
+// fields), not of the row — capability_items deliberately stores no content for
+// a Git-backed capability, so it cannot be recomputed from `item` afterwards.
 func createDiscoveredCapability(
 	tx *gorm.DB,
 	item *models.CapabilityItem,
-	tagSlugs []string,
+	entry discoveredGitCapability,
 	ownerID string,
 ) error {
+	contentDigest, err := gitCapabilityProjectionDigest(entry.ItemType, entry.Path, entry.Parsed)
+	if err != nil {
+		return err
+	}
 	// "Content" is absent from this whitelist on purpose, not by omission — the
 	// column keeps its NULL default so nothing can mistake a Git-backed row for
 	// one that carries its own content.
@@ -1347,13 +1359,26 @@ func createDiscoveredCapability(
 	).Create(item).Error; err != nil {
 		return fmt.Errorf("create discovered capability %s: %w", item.SourceRepoPath, err)
 	}
+	// Revision 1: the row's first successful projection, in the transaction that
+	// created it. A capability whose history began before this writer existed is
+	// seeded instead by `migrate backfill-git-revisions`; a row created here must
+	// never need that, or its history would start at whatever commit happened to
+	// be current when an operator ran the backfill.
+	observedAt := item.CreatedAt
+	if item.GitLastSyncedAt != nil {
+		observedAt = *item.GitLastSyncedAt
+	}
+	if err := appendGitCapabilityProvisionRevision(tx, item, contentDigest, observedAt); err != nil {
+		return err
+	}
+	tagSlugs := entry.Parsed.Tags
 	if len(tagSlugs) == 0 {
 		return nil
 	}
 	tagSvc := &TagService{DB: tx}
-	tags, err := tagSvc.ResolveOrCreateForAssignment(tagSlugs, ownerID)
-	if err != nil {
-		return err
+	tags, tagErr := tagSvc.ResolveOrCreateForAssignment(tagSlugs, ownerID)
+	if tagErr != nil {
+		return tagErr
 	}
 	tagIDs := make([]string, 0, len(tags))
 	for _, tag := range tags {

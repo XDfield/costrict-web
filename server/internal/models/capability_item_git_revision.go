@@ -44,17 +44,26 @@ const (
 // It is deliberately not derived from GitCapabilitySyncJob: jobs record
 // deliveries and attempts (including retries, failures and no-op reconciles),
 // while a revision exists only when a successful projection actually changed
-// the item's authoritative SHA.
+// what THIS item projects.
 //
-// GitSHA is the repository default-branch commit SHA used for the projection,
-// not a manifest blob hash. RevisionNo is strictly increasing within ItemID; it
-// is allocated inside the same transaction that updates the item's current SHA,
-// under that item's row lock, with the unique index as the backstop.
+// ContentDigest is the trigger: a row is appended only when the newly projected
+// digest differs from the item's current one. GitSHA is the repository
+// default-branch commit observed at that transition — a recorded coordinate,
+// not the trigger. The distinction is load-bearing rather than pedantic: 94% of
+// Git-backed items share their repository with other bound capabilities (the
+// largest holds 55), so triggering on the head SHA would give every sibling a
+// revision for a commit that never touched it.
 //
-// Mirrors migration 20260805000100_create_capability_item_git_revisions.sql.
-// This model is intentionally NOT part of autoMigrateAll — like
-// GitCapabilityRepository and GitCapabilitySyncJob, the goose migration is the
-// single owner of its DDL, so the model and the schema cannot drift.
+// RevisionNo is strictly increasing within ItemID; it is allocated inside the
+// same transaction that updates the item's current SHA, under that item's row
+// lock, with the unique index as the backstop.
+//
+// Mirrors migrations 20260805000100_create_capability_item_git_revisions.sql,
+// 20260805000500_add_capability_item_git_revision_content_digest.sql and
+// 20260805000600_constrain_capability_item_git_revision_sha.sql. This model is
+// intentionally NOT part of autoMigrateAll — like GitCapabilityRepository and
+// GitCapabilitySyncJob, the goose migration is the single owner of its DDL, so
+// the model and the schema cannot drift.
 type CapabilityItemGitRevision struct {
 	ID           string `gorm:"column:id;primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	ItemID       string `gorm:"column:item_id;type:uuid;not null;uniqueIndex:uq_capability_item_git_revisions_no,priority:1" json:"itemId"`
@@ -72,6 +81,18 @@ type CapabilityItemGitRevision struct {
 	Source       string    `gorm:"column:source;type:varchar(16);not null" json:"source"`
 	ObservedAt   time.Time `gorm:"column:observed_at;type:timestamptz;not null" json:"observedAt"`
 	CreatedAt    time.Time `gorm:"column:created_at;type:timestamptz;not null;default:now()" json:"-"`
+
+	// ContentDigest is the lowercase SHA-256 of this item's own projected
+	// content and manifest-derived display fields (see
+	// services.gitCapabilityProjectionDigest). The empty string represents SQL
+	// NULL, which is legal only on a `backfill` baseline whose digest was never
+	// observed; every other writer must supply one, and the schema rejects a row
+	// that does not.
+	//
+	// Not serialized: it is the writer's comparison key, not a fact a history
+	// reader can act on, and publishing it would invite a client to treat it as
+	// a content identifier it can fetch by.
+	ContentDigest string `gorm:"column:content_digest;type:varchar(64)" json:"-"`
 }
 
 // TableName pins the production table name.

@@ -9,6 +9,20 @@ const (
 	GitCapabilitySyncJobStatusFailed  = "failed"
 )
 
+// Delivery-id prefixes for the jobs this platform enqueues itself.
+//
+// A webhook delivery carries Gitea's own X-Gitea-Delivery value (a UUID), so
+// the absence of a prefix is what identifies a push. These constants exist
+// because the value is now read as well as written: the revision writer
+// classifies a projection's `source` from the job that authorized it
+// (services.GitRevisionSourceForDelivery), and a producer that spelled its
+// prefix independently would silently label every one of its projections
+// "push".
+const (
+	GitCapabilitySyncDeliveryPrefixReconcile = "reconcile:"
+	GitCapabilitySyncDeliveryPrefixManual    = "manual:"
+)
+
 // GitCapabilitySyncJob is a durable, idempotent record of one Gitea push
 // delivery that must be reflected in the Git-backed capability index. The
 // webhook handler only inserts this row; a dedicated worker owns state

@@ -75,7 +75,8 @@ func (a *GitCapabilityResyncAPI) ResyncGitCapabilityRepository(c *gin.Context) {
 	now := time.Now().UTC()
 	// The minute bucket deduplicates retries while pending/running, yet permits
 	// a fresh manual replay after a completed job in a later bucket.
-	delivery := "manual:" + strconv.FormatInt(repo.GitRepoID, 10) + ":" + strconv.FormatInt(now.Unix()/60, 10)
+	delivery := models.GitCapabilitySyncDeliveryPrefixManual +
+		strconv.FormatInt(repo.GitRepoID, 10) + ":" + strconv.FormatInt(now.Unix()/60, 10)
 	job := models.GitCapabilitySyncJob{ID: uuid.NewString(), GitServerID: repo.GitServerID, DeliveryID: delivery,
 		RepoID: repo.GitRepoID, RepoFullName: repo.FullName, DefaultBranch: repo.DefaultBranch,
 		Ref: repo.DefaultBranch, AfterSHA: repo.LastSyncedCommit, Status: models.GitCapabilitySyncJobStatusPending,

@@ -571,6 +571,9 @@ func main() {
 		api.GET("/items/:id/assets", handlers.ListItemAssets)
 		api.GET("/items/:id/versions", handlers.ListItemVersions)
 		api.GET("/items/:id/versions/:version", handlers.GetItemVersion)
+		// Detail-scoped by design: a Git-backed item's recent revisions. The list
+		// endpoints must never fan out into it (N+1).
+		api.GET("/items/:id/git-history", handlers.ListItemGitHistory)
 		api.GET("/items/:id/artifacts", handlers.ListArtifacts)
 		api.GET("/items/:id/download", handlers.DownloadItem)
 		api.GET("/items/:id/scan-status", handlers.GetItemScanStatus)

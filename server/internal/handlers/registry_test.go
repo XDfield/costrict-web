@@ -366,6 +366,23 @@ func setupTestDB(t *testing.T) func() {
 			metadata_after  TEXT DEFAULT '{}',
 			created_at      DATETIME
 		)`,
+		`CREATE TABLE IF NOT EXISTS capability_item_git_revisions (
+			id            TEXT PRIMARY KEY,
+			item_id       TEXT NOT NULL,
+			revision_no   INTEGER NOT NULL,
+			git_server_id TEXT NOT NULL,
+			git_repo_id   INTEGER NOT NULL,
+			git_ref       TEXT NOT NULL DEFAULT '',
+			manifest_path TEXT NOT NULL DEFAULT '',
+			entry_key     TEXT NOT NULL DEFAULT '',
+			git_sha       TEXT NOT NULL,
+			version_label TEXT NOT NULL DEFAULT '',
+			source        TEXT NOT NULL,
+			content_digest TEXT,
+			observed_at   DATETIME NOT NULL,
+			created_at    DATETIME NOT NULL,
+			UNIQUE(item_id, revision_no)
+		)`,
 		`CREATE TABLE IF NOT EXISTS mcp_user_configs (
 			id           TEXT PRIMARY KEY,
 			user_id      TEXT NOT NULL,
