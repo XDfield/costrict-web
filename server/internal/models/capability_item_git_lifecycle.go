@@ -270,7 +270,17 @@ func capabilityItemsHaveGitLifecycle(tx *gorm.DB) bool {
 	if _, cached := capabilityItemsGitLifecycleColumn.Load(tx.Dialector); cached {
 		return true
 	}
-	if !tx.Migrator().HasColumn(&CapabilityItem{}, "git_lifecycle_reason") {
+	// ColumnReachable for the same reason capabilityItemsHaveContentBackend
+	// uses it: the driver's HasColumn resolves against CURRENT_SCHEMA() while
+	// the guarded statement resolves through search_path, so on a divergent
+	// connection it would report "pre-lifecycle schema" for a table that has the
+	// column and quietly stop enforcing the lifecycle claim. An unanswerable
+	// probe enforces, for the same reason it does there.
+	present, err := ColumnReachable(tx, &CapabilityItem{}, "git_lifecycle_reason")
+	if err != nil {
+		return true
+	}
+	if !present {
 		return false
 	}
 	capabilityItemsGitLifecycleColumn.Store(tx.Dialector, struct{}{})

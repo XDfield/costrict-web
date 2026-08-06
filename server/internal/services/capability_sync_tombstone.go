@@ -200,12 +200,20 @@ func recordHolderTombstonesTx(tx *gorm.DB, itemID, reason, lifecycleReason strin
 	if itemID == "" {
 		return 0, fmt.Errorf("%w: item is required", ErrInvalidTombstoneCause)
 	}
-	// A schema with no tombstone table has no snapshot-v2 contract to satisfy.
-	// Production always has it (goose owns the DDL); the check exists for the
-	// partial in-memory fixtures several packages hand-build, which is the same
-	// reason itemdelete's cascade probes for each table it touches.
-	if !tx.Migrator().HasTable(&models.CapabilitySyncTombstone{}) {
-		return 0, nil
+	// The table is a precondition, not an option: this function is the single
+	// choke point every archive path writes its removal instruction through, so
+	// a schema that cannot record one must refuse the archive rather than
+	// complete it. (models.RequireTable, not Migrator().HasTable — see
+	// models/schema_reachability.go for the resolution bug that made the old
+	// guard skip the write on a perfectly working database.)
+	//
+	// Checked positively rather than left to the INSERT below, because an item
+	// with no holders writes no row: a broken schema would otherwise stay
+	// invisible until the first archived item somebody happened to have
+	// installed, which is the worst possible moment to find out.
+	if err := models.RequireTable(tx, &models.CapabilitySyncTombstone{},
+		"the removal instruction for every holder of "+itemID); err != nil {
+		return 0, err
 	}
 	userIDs, err := entitledUserIDsTx(tx, itemID)
 	if err != nil {
@@ -248,27 +256,39 @@ func entitledUserIDsTx(tx *gorm.DB, itemID string) ([]string, error) {
 		}
 	}
 
-	if tx.Migrator().HasTable(&models.ItemFavorite{}) {
-		var favoriteUserIDs []string
-		if err := tx.Model(&models.ItemFavorite{}).
-			Where("item_id = ?", itemID).
-			Pluck("user_id", &favoriteUserIDs).Error; err != nil {
-			return nil, fmt.Errorf("load favorite holders of %s: %w", itemID, err)
-		}
-		add(favoriteUserIDs)
+	// Both relationship tables are preconditions for the same reason the
+	// tombstone table is. A subset is not a smaller answer, it is a wrong one:
+	// every holder this query fails to name keeps the capability installed
+	// forever, and the caller is handed a success and a plausible-looking count.
+	// This is the failure cmd/migrate's countByItem comment records, one layer
+	// closer to the device.
+	if err := models.RequireTable(tx, &models.ItemFavorite{},
+		"the favorite holders of "+itemID); err != nil {
+		return nil, err
 	}
+	var favoriteUserIDs []string
+	if err := tx.Model(&models.ItemFavorite{}).
+		Where("item_id = ?", itemID).
+		Pluck("user_id", &favoriteUserIDs).Error; err != nil {
+		return nil, fmt.Errorf("load favorite holders of %s: %w", itemID, err)
+	}
+	add(favoriteUserIDs)
 
-	if tx.Migrator().HasTable(&models.ItemDistribution{}) && tx.Migrator().HasTable(&models.ItemDistributionReceipt{}) {
-		var distributedUserIDs []string
-		if err := tx.Model(&models.ItemDistributionReceipt{}).
-			Joins("JOIN item_distributions ON item_distributions.id = item_distribution_receipts.distribution_id").
-			Where("item_distributions.item_id = ? AND item_distributions.status = ? AND item_distribution_receipts.receipt_status != ?",
-				itemID, "active", "dismissed").
-			Pluck("item_distribution_receipts.user_id", &distributedUserIDs).Error; err != nil {
-			return nil, fmt.Errorf("load distribution holders of %s: %w", itemID, err)
+	for _, table := range []any{&models.ItemDistribution{}, &models.ItemDistributionReceipt{}} {
+		if err := models.RequireTable(tx, table,
+			"the distribution holders of "+itemID); err != nil {
+			return nil, err
 		}
-		add(distributedUserIDs)
 	}
+	var distributedUserIDs []string
+	if err := tx.Model(&models.ItemDistributionReceipt{}).
+		Joins("JOIN item_distributions ON item_distributions.id = item_distribution_receipts.distribution_id").
+		Where("item_distributions.item_id = ? AND item_distributions.status = ? AND item_distribution_receipts.receipt_status != ?",
+			itemID, "active", "dismissed").
+		Pluck("item_distribution_receipts.user_id", &distributedUserIDs).Error; err != nil {
+		return nil, fmt.Errorf("load distribution holders of %s: %w", itemID, err)
+	}
+	add(distributedUserIDs)
 
 	return ordered, nil
 }

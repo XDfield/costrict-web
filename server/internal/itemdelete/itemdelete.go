@@ -89,26 +89,39 @@ func cascadeDelete(tx *gorm.DB, id string, visited map[string]bool) error {
 
 	// 2) Recurse into bundled sub-skills first so each child clears its own
 	//    dependent rows before the parent row goes away.
-	if tx.Migrator().HasTable(&models.CapabilityItem{}) {
-		var subIDs []string
-		if err := tx.Model(&models.CapabilityItem{}).
-			Where("parent_plugin_id = ?", id).
-			Pluck("id", &subIDs).Error; err != nil {
-			return fmt.Errorf("failed to list sub-skills of %s: %w", id, err)
+	//
+	//    Deliberately unguarded: capability_items is not optional here — step 5
+	//    deletes from it. A probe in front of this could only ever skip the
+	//    recursion on a schema where the parent delete then succeeds, leaving
+	//    exactly the dangling sub-skill rows this package's doc comment says the
+	//    cascade exists to prevent. If the table is unreachable, the Pluck says
+	//    so and the whole delete rolls back, which is the correct outcome.
+	var subIDs []string
+	if err := tx.Model(&models.CapabilityItem{}).
+		Where("parent_plugin_id = ?", id).
+		Pluck("id", &subIDs).Error; err != nil {
+		return fmt.Errorf("failed to list sub-skills of %s: %w", id, err)
+	}
+	for _, sid := range subIDs {
+		if sid == id || sid == "" {
+			continue
 		}
-		for _, sid := range subIDs {
-			if sid == id || sid == "" {
-				continue
-			}
-			if err := cascadeDelete(tx, sid, visited); err != nil {
-				return err
-			}
+		if err := cascadeDelete(tx, sid, visited); err != nil {
+			return err
 		}
 	}
 
 	// 3) Dependent rows keyed by item_id. Best-effort across schemas: older
 	//    deployments / SQLite unit fixtures may lack some tables, so skip any
 	//    table that does not exist rather than failing the whole delete.
+	//
+	//    "Optional" is the honest word for these — none of them decides whether
+	//    a device keeps a capability — but the probe must still resolve the
+	//    table the DELETE would resolve. models.TableReachable does; gorm's
+	//    Migrator().HasTable answers about CURRENT_SCHEMA() instead, so on a
+	//    connection whose search_path reaches these tables through a later entry
+	//    every one of them would be skipped while step 5 deleted the item row
+	//    anyway, littering the schema with rows pointing at a row that is gone.
 	deletions := []struct {
 		model any
 		name  string
@@ -125,7 +138,11 @@ func cascadeDelete(tx *gorm.DB, id string, visited map[string]bool) error {
 		{&models.MCPUserConfig{}, "mcp user configs"},
 	}
 	for _, d := range deletions {
-		if !tx.Migrator().HasTable(d.model) {
+		present, err := models.TableReachable(tx, d.model)
+		if err != nil {
+			return fmt.Errorf("failed to probe %s for %s: %w", d.name, id, err)
+		}
+		if !present {
 			continue
 		}
 		query := tx.Where("item_id = ?", id)
@@ -133,8 +150,12 @@ func cascadeDelete(tx *gorm.DB, id string, visited map[string]bool) error {
 			// version assets reference versions, not the item directly. The
 			// subquery needs capability_versions; if that table is absent
 			// (asymmetric/partial schema) skip rather than erroring the whole
-			// cascade — the HasTable above only covers the asset table.
-			if !tx.Migrator().HasTable(&models.CapabilityVersion{}) {
+			// cascade — the probe above only covers the asset table.
+			versions, err := models.TableReachable(tx, &models.CapabilityVersion{})
+			if err != nil {
+				return fmt.Errorf("failed to probe capability versions for %s: %w", id, err)
+			}
+			if !versions {
 				continue
 			}
 			query = tx.Where("version_id IN (?)",
@@ -149,8 +170,19 @@ func cascadeDelete(tx *gorm.DB, id string, visited map[string]bool) error {
 	//    Delete receipts first, then the distributions themselves. (Receipts may
 	//    carry a forked_item_id pointing at a fork copy — that fork is another
 	//    user's item and is NOT touched here, only the receipt row is removed.)
-	if tx.Migrator().HasTable(&models.ItemDistribution{}) {
-		if tx.Migrator().HasTable(&models.ItemDistributionReceipt{}) {
+	//    Step 1 already required both of these to be reachable (they define the
+	//    holder set), so in practice the probes below cannot fail here — they
+	//    are kept so this block stays correct if it is ever reached on its own.
+	distributions, err := models.TableReachable(tx, &models.ItemDistribution{})
+	if err != nil {
+		return fmt.Errorf("failed to probe distributions for %s: %w", id, err)
+	}
+	if distributions {
+		receipts, err := models.TableReachable(tx, &models.ItemDistributionReceipt{})
+		if err != nil {
+			return fmt.Errorf("failed to probe distribution receipts for %s: %w", id, err)
+		}
+		if receipts {
 			if err := tx.Where("distribution_id IN (?)",
 				tx.Model(&models.ItemDistribution{}).Select("id").Where("item_id = ?", id)).
 				Delete(&models.ItemDistributionReceipt{}).Error; err != nil {

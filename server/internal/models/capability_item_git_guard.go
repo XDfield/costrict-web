@@ -308,7 +308,23 @@ func capabilityItemsHaveContentBackend(tx *gorm.DB) bool {
 	if _, cached := capabilityContentBackendColumn.Load(tx.Dialector); cached {
 		return true
 	}
-	if !tx.Migrator().HasColumn(&CapabilityItem{}, "content_backend") {
+	// ColumnReachable, not Migrator().HasColumn: HasColumn answers about
+	// CURRENT_SCHEMA() while the guarded statement resolves capability_items
+	// through the whole search_path (see schema_reachability.go). Answering "no"
+	// here does not skip a nice-to-have — it turns OFF the guard that stops a
+	// Git-backed row from being hard-deleted or silently rewritten, on a
+	// connection where the row is plainly reachable.
+	present, err := ColumnReachable(tx, &CapabilityItem{}, "content_backend")
+	if err != nil {
+		// An unanswerable probe is not evidence of a pre-Git schema, so it must
+		// not be read as one. An absent column returns (false, nil) — this
+		// branch means the question could not be asked at all, and the safe
+		// reading of that for a guard is "enforce". The guarded query then
+		// either succeeds or fails the write; neither outcome lets an
+		// unguarded write through.
+		return true
+	}
+	if !present {
 		return false
 	}
 	capabilityContentBackendColumn.Store(tx.Dialector, struct{}{})
