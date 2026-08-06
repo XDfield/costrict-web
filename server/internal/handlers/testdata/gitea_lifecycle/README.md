@@ -22,9 +22,42 @@ secret, no password). Emails are Gitea's synthetic `*@noreply.localhost` form.
 | `push_new_branch.json` | `push` | *(absent)* | branch creation; `before` is 40 zeros |
 | `create_branch.json` | `create` | *(absent)* | branch creation (`ref_type: branch`) |
 | `delete_branch.json` | `delete` | *(absent)* | non-default branch deletion |
+| `fork_repository.json` | `fork` | *(absent)* | `POST /api/v1/repos/{owner}/{repo}/forks` — **captured on 1.27.0+fork.2, see below** |
+
+### `fork` (added 2026-08-06, captured on the fork build)
+
+1.24.6 was never observed emitting `fork`, so the original capture run has no fixture for it.
+1.27 does emit it, and the payload was captured against `1.27.0+fork.2` after the local switch.
+
+**Read the two repository objects carefully — the naming is inverted from the obvious guess:**
+
+| Field | Contents |
+|---|---|
+| `forkee` | the **source** repository that was forked *from* |
+| `repository` | the **newly created** fork, with `"fork": true` |
+| `sender` | the user who performed the fork |
+
+There is **no `action` field**. A `fork` is always accompanied by a separate
+`repository`/`created` delivery for the new repository, so a consumer keying only on
+`repository`/`created` still learns the fork exists — it just cannot tell it was a fork, or
+what it came from, without this event.
 
 `headers_system_delivery.json` records the header set per fixture with per-delivery
 values (signatures, delivery UUIDs) replaced by placeholders.
+
+## Re-verified on `1.27.0+fork.2` (2026-08-06)
+
+After the local Gitea was switched from upstream 1.24.6 to the `zgsm-ai/gitea` fork
+(`1.27.0+fork.2`), the silent-mutation matrix below was re-run against the fork with a
+throw-away system webhook subscribed to every event. **Result: unchanged — all five remain
+silent.** The only difference found is `fork`, now captured above.
+
+One methodology note worth keeping, because it produced a false negative on the first attempt:
+`POST /api/v1/admin/hooks` with `"events":["all"]` is accepted with HTTP 200 but silently
+subscribes to **nothing** (`choose_events: true` with every flag `false`). A matrix run against
+such a hook observes no deliveries and looks like a clean pass. Always assert a **positive
+control** — perform one operation that is known to emit (e.g. repository creation) and confirm
+it is captured — before trusting any "no events were emitted" conclusion.
 
 ## Operations that emit NO webhook at all on 1.24.6
 

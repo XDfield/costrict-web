@@ -156,19 +156,25 @@ type IngestOptions struct {
 // nobody could ever load". The set of upstream-data signatures we
 // reclassify lives in isUpstreamDataIncomplete().
 type IngestResult struct {
-	BundleEntries    int           // upstream entry count from manifest
-	Added            int           // items inserted (one entry may add >1, e.g. multi-server mcp)
-	Updated          int           // items with content sha changed
-	MetadataUpdated  int           // items whose content was unchanged but metadata refreshed
-	Skipped          int           // items where neither content nor metadata changed
-	Deleted          int           // items soft-archived because upstream removed them
-	Failed           int           // entries that errored due to a real ingest-side problem
-	Incomplete       int           // entries dropped because upstream bundle ships an unusable record
-	Errors           []string      // human-readable error lines (Failed only)
-	IncompleteErrors []string      // human-readable lines for Incomplete entries (separate slice)
-	Duration         time.Duration // total wallclock
-	ManifestSHA256   string        // sha256 of upstream index.json (carried in manifest.json)
-	GeneratedAt      string        // upstream bundle generation timestamp
+	BundleEntries   int // upstream entry count from manifest
+	Added           int // items inserted (one entry may add >1, e.g. multi-server mcp)
+	Updated         int // items with content sha changed
+	MetadataUpdated int // items whose content was unchanged but metadata refreshed
+	Skipped         int // items where neither content nor metadata changed
+	Deleted         int // items soft-archived because upstream removed them
+	// BundledChildrenIgnored counts entries dropped because they declare
+	// `bundled_in`: package content of another entry's plugin, which the flat
+	// capability model does not index. Also counted in Skipped; reported
+	// separately so a legacy bundle's ignored volume stays visible instead of
+	// disappearing into the no-change bucket.
+	BundledChildrenIgnored int
+	Failed                 int           // entries that errored due to a real ingest-side problem
+	Incomplete             int           // entries dropped because upstream bundle ships an unusable record
+	Errors                 []string      // human-readable error lines (Failed only)
+	IncompleteErrors       []string      // human-readable lines for Incomplete entries (separate slice)
+	Duration               time.Duration // total wallclock
+	ManifestSHA256         string        // sha256 of upstream index.json (carried in manifest.json)
+	GeneratedAt            string        // upstream bundle generation timestamp
 }
 
 // isUpstreamDataIncomplete returns true when the error matches a known
@@ -346,30 +352,47 @@ func (s *CatalogIngestService) Ingest(ctx context.Context, src IngestSource, opt
 	// the orphaned child.
 	seenSourcePaths := make(map[string]bool, len(entries))
 
-	// Second-pass reconcile state (plugin child → parent plugin linking).
-	//
-	//   pluginChildEntryDirs — entryDir of every skill/MCP entry we saw this run,
-	//     mapped to its declared bundled_in (parent plugin's upstream entry id;
-	//     "" when the item is independent, i.e. un-bundled).
-	//   pluginEntryIDsSeen — set of plugin entry ids present in this bundle, so
-	//     the second pass can resolve bundled_in even when the parent plugin and
-	//     its sub-skills first appear together in the same batch (order-independent).
-	// We resolve entry id → DB item via the source_path entry-dir prefix in the
-	// second pass (after all writes land), so same-batch inserts are visible.
-	pluginChildEntryDirs := make(map[string]string)
-	pluginEntryIDsSeen := make(map[string]bool)
-
 	for _, entry := range entries {
-		if pluginBundledChildTypes[entry.Type] {
-			if paths, ok := primaryPathsForEntry(entry); ok {
-				// Record even an empty bundled_in: an item that previously was a
-				// plugin child but is no longer bundled must have its parent link
-				// cleared (un-link), which the second pass does on "".
-				pluginChildEntryDirs[paths.EntryDir] = entry.BundledIn
+		// Flat capability model: an entry that declares `bundled_in` is a file
+		// living inside another entry's plugin package. The plugin runtime loads
+		// it after installing the plugin; Cloud does not index it as a capability
+		// of its own, and the parent-link second pass that used to turn it into
+		// `parent_plugin_id` is gone.
+		//
+		// Inert, not archiving: the row is neither created, updated, revived, nor
+		// archived here. Its source paths are still seeded into seenSourcePaths a
+		// few lines down so the soft-archive sweep leaves any existing row alone —
+		// retiring those rows is the flatten migration's job, where it is
+		// row-level auditable and reversible, not a silent side effect of the next
+		// ingest. Without that seeding an ingest run would archive 6.7k rows with
+		// the reason "vanished upstream", which is both false and unattributable.
+		//
+		// This is also what makes the cleanup stick (PAC-12): a legacy bundle
+		// still carrying `bundled_in` cannot resurrect a row the migration
+		// archived, because applyMetadataDelta's `archived -> active` revival is
+		// never reached for these entries.
+		//
+		// The gate is `bundled_in` alone, deliberately wider than
+		// isPluginBundledChild's `bundled_in AND type ∈ pluginBundledChildTypes`.
+		// That type set is a historical list of what upstream happened to bundle;
+		// binding the rule to it means the day upstream bundles a `prompt`, or
+		// nests a plugin inside a plugin, package expansion silently resumes for
+		// that type. What makes an entry package content is the declaration that
+		// it lives inside another entry, not which of six types it is.
+		if strings.TrimSpace(entry.BundledIn) != "" {
+			paths, ok := primaryPathsForEntry(entry)
+			if !ok {
+				result.Incomplete++
+				result.IncompleteErrors = append(result.IncompleteErrors, fmt.Sprintf("entry %s: unsupported type %q", entry.ID, entry.Type))
+				continue
 			}
-		}
-		if entry.Type == "plugin" {
-			pluginEntryIDsSeen[entry.ID] = true
+			seenSourcePaths[normalizeSourcePath(paths.SourcePath)] = true
+			if entry.Type != "mcp" {
+				seenSourcePaths[normalizeSourcePath(faithfulSourcePath(entry, paths.SourcePath))] = true
+			}
+			result.Skipped++
+			result.BundledChildrenIgnored++
+			continue
 		}
 
 		paths, ok := primaryPathsForEntry(entry)
@@ -516,20 +539,12 @@ func (s *CatalogIngestService) Ingest(ctx context.Context, src IngestSource, opt
 					result.Errors = append(result.Errors, fmt.Sprintf("archive %s: %v", item.ID, err))
 					continue
 				}
-				// Archiving a plugin cascades an UNLINK (not archive) to its
-				// children: children that vanished upstream archive via their
-				// own entryDirs in this same loop; children still shipped
-				// upstream stay active but must not point at an archived
-				// parent. If the parent later resurrects, the reconcile pass
-				// re-links them from bundled_in.
-				if item.ItemType == "plugin" {
-					if err := s.DB.Model(&models.CapabilityItem{}).
-						Where("parent_plugin_id = ?", item.ID).
-						Update("parent_plugin_id", nil).Error; err != nil {
-						result.Failed++
-						result.Errors = append(result.Errors, fmt.Sprintf("unlink children of archived plugin %s: %v", item.ID, err))
-					}
-				}
+				// Archiving a plugin used to cascade an UNLINK to its children.
+				// Ingest no longer writes parent_plugin_id in either direction:
+				// under the flat model it is a deprecated column whose only
+				// remaining writer is the flatten migration, and a second writer
+				// racing that migration is exactly what the compare-and-set
+				// predicates are there to prevent.
 				result.Deleted++
 			}
 		}
@@ -539,19 +554,12 @@ func (s *CatalogIngestService) Ingest(ctx context.Context, src IngestSource, opt
 			Updates(map[string]any{"last_synced_at": time.Now()})
 	}
 
-	// Second pass: resolve each sub-skill's `bundled_in` (parent plugin's
-	// upstream entry id) to the parent plugin's DB item id and write
-	// capability_items.parent_plugin_id. This runs after every entry has been
-	// written so a parent plugin and its sub-skills appearing in the SAME batch
-	// (in any order) both resolve — we look the rows up fresh by source_path
-	// entry-dir prefix rather than relying on a mid-loop in-memory index —
-	// and after the soft-archive loop so archived rows are out of scope.
-	if !opts.DryRun && len(pluginChildEntryDirs) > 0 {
-		s.reconcileParentPluginLinks(pluginChildEntryDirs, pluginEntryIDsSeen, result)
-	}
+	// The second pass that resolved `bundled_in` into capability_items.parent_plugin_id
+	// is deliberately gone. Its inputs are still read off each entry above, but
+	// only to decide that the entry is package content and must not be indexed.
 
-	logger.Info("catalog-ingest: done entries=%d added=%d updated=%d metadataUpdated=%d skipped=%d deleted=%d failed=%d incomplete=%d duration=%s",
-		result.BundleEntries, result.Added, result.Updated, result.MetadataUpdated, result.Skipped, result.Deleted, result.Failed, result.Incomplete, result.Duration.Round(time.Millisecond))
+	logger.Info("catalog-ingest: done entries=%d added=%d updated=%d metadataUpdated=%d skipped=%d bundledChildrenIgnored=%d deleted=%d failed=%d incomplete=%d duration=%s",
+		result.BundleEntries, result.Added, result.Updated, result.MetadataUpdated, result.Skipped, result.BundledChildrenIgnored, result.Deleted, result.Failed, result.Incomplete, result.Duration.Round(time.Millisecond))
 
 	return result, nil
 }
@@ -622,37 +630,18 @@ func (s *CatalogIngestService) applyChangedEntry(
 
 	// Normalize all parsed items first so the adoption pre-pass below sees
 	// final (scoped) slugs/types.
+	// The entry-type-authority and independent-to-bundled adoption passes that
+	// used to live here are gone with the entries they served: Ingest drops every
+	// entry declaring `bundled_in` before this function is reached, so both were
+	// unreachable. Leaving them in place would have told the next reader that
+	// ingest still understands package children.
 	scopedParsedItems := make([]*ParsedItem, 0, len(parsedItems))
-	for _, parsed := range parsedItems {
-		parsed = scopeBundledMCPParsedItem(parsed, entry)
-		// For plugin-bundled children the upstream entry type is authoritative:
-		// InferItemType's content heuristics otherwise re-classify e.g. a
-		// SKILL.md named "webhooks" as hook / "using-tmux-..." as command,
-		// which orphans the row from parent-link reconciliation (skill/mcp only).
-		if isPluginBundledChild(entry) && parsed.ItemType != entry.Type {
-			parsed.ItemType = entry.Type
-		}
-		scopedParsedItems = append(scopedParsedItems, parsed)
-	}
-	// Rows that will be matched by slug belong to their parsed item; the
-	// flip-adoption fallback must not claim them for a different sibling.
-	adoptedRowIDs := map[string]bool{}
-	{
-		parsedKeys := map[string]bool{}
-		for _, p := range scopedParsedItems {
-			parsedKeys[p.ItemType+":"+p.Slug] = true
-		}
-		for _, old := range relatedItems {
-			if parsedKeys[old.ItemType+":"+old.Slug] {
-				adoptedRowIDs[old.ID] = true
-			}
-		}
-	}
+	scopedParsedItems = append(scopedParsedItems, parsedItems...)
 
 	for _, parsed := range scopedParsedItems {
 		key := parsed.ItemType + ":" + parsed.Slug
 		existing, exists := localBySlug[key]
-		if !exists && !isPluginBundledChild(entry) {
+		if !exists {
 			// Cross-entry slug collision: another upstream entry already
 			// owns a row with this (item_type, slug). Treat as update of
 			// THAT row instead of inserting a duplicate (which would crash
@@ -663,29 +652,6 @@ func (s *CatalogIngestService) applyChangedEntry(
 				exists = true
 			}
 		}
-		if !exists && isPluginBundledChild(entry) {
-			// independent→bundled flip: scopeBundledMCPParsedItem rewrote the
-			// parsed slug, so the entry's OWN pre-flip row (same entryDir,
-			// indexed under the old slug) no longer matches by slug. Adopt it
-			// by entryDir + item_type instead of inserting a duplicate — the
-			// old row would otherwise never be archived (its entryDir stays
-			// seen) and its stale SourceSHA would force the full update path
-			// every round, minting a version + scan job on zero upstream
-			// change. updateItem migrates the adopted row's slug.
-			for _, old := range relatedItems {
-				if old.ItemType != parsed.ItemType {
-					continue
-				}
-				if adoptedRowIDs[old.ID] {
-					continue // already claimed by another parsed item this entry
-				}
-				existing = old
-				exists = true
-				adoptedRowIDs[old.ID] = true
-				break
-			}
-		}
-
 		if dryRun {
 			if exists {
 				updated++
@@ -744,13 +710,13 @@ func (s *CatalogIngestService) applyChangedEntry(
 	return added, updated, failed, errs
 }
 
-// pluginBundledChildTypes is the set of item types that can appear as a plugin's
-// bundled children in the catalog. It must stay in sync with the path→type
-// contract shared across the upstream catalog pipeline, the archive-upload
-// extractors (handlers.pluginFileChildSpecs / extractSubSkillAssets), and the
-// frontend TYPE_META: skill / mcp / command / subagent / rule / template.
-// evaluators are synthesized upstream as item_type=skill, so they're covered by
-// the "skill" entry.
+// pluginBundledChildTypes is the historical set of item types the upstream
+// catalog bundles inside a plugin.
+//
+// It no longer gates anything. The flat-model gate in Ingest keys on the
+// presence of `bundled_in` alone, precisely so that a seventh bundled type
+// cannot slip through by not being on this list. The table survives as the
+// enumeration the regression suite walks to prove every one of them is ignored.
 var pluginBundledChildTypes = map[string]bool{
 	"skill":    true,
 	"mcp":      true,
@@ -758,10 +724,6 @@ var pluginBundledChildTypes = map[string]bool{
 	"subagent": true,
 	"rule":     true,
 	"template": true,
-}
-
-func isPluginBundledChild(entry catalogEntry) bool {
-	return entry.BundledIn != "" && pluginBundledChildTypes[entry.Type]
 }
 
 // isUniqueViolationErr matches unique-constraint violations across the
@@ -775,15 +737,6 @@ func isUniqueViolationErr(err error) bool {
 	return strings.Contains(msg, "UNIQUE constraint failed") ||
 		strings.Contains(msg, "duplicate key value violates unique constraint") ||
 		strings.Contains(msg, "duplicated key not allowed")
-}
-
-func scopeBundledMCPParsedItem(parsed *ParsedItem, entry catalogEntry) *ParsedItem {
-	if entry.BundledIn == "" || entry.Type != "mcp" || parsed.ItemType != "mcp" {
-		return parsed
-	}
-	scoped := *parsed
-	scoped.Slug = slugifyKey(entry.ID)
-	return &scoped
 }
 
 // applyMetadataOnly refreshes the columns that come from index.json
@@ -855,12 +808,6 @@ func (s *CatalogIngestService) computeMetadataDelta(item *models.CapabilityItem,
 		return true
 	}
 	if entryDir != "" && item.CatalogEntryDir != entryDir {
-		return true
-	}
-	// Bundled children mis-typed by an earlier ingest (InferItemType path
-	// heuristics) must converge to the authoritative entry type even when
-	// content is unchanged, else parent-link reconciliation keeps skipping them.
-	if isPluginBundledChild(entry) && item.ItemType != entry.Type {
 		return true
 	}
 	if entry.Source != "" && item.Source != entry.Source {
@@ -963,9 +910,6 @@ func (s *CatalogIngestService) applyMetadataDelta(item *models.CapabilityItem, e
 	}
 	if entryDir != "" && item.CatalogEntryDir != entryDir {
 		updates["catalog_entry_dir"] = entryDir
-	}
-	if isPluginBundledChild(entry) && item.ItemType != entry.Type {
-		updates["item_type"] = entry.Type
 	}
 	if entry.Source != "" {
 		updates["source"] = entry.Source
@@ -1786,138 +1730,6 @@ func rawBlockJSON(raw json.RawMessage) datatypes.JSON {
 		return datatypes.JSON([]byte(raw))
 	}
 	return datatypes.JSON(buf.Bytes())
-}
-
-// reconcileParentPluginLinks performs the second pass of sub-skill linking.
-//
-// pluginChildEntryDirs maps every skill/MCP entry's entryDir ("skills/<id>" or
-// "mcp/<id>") seen this run to its declared bundled_in (parent plugin's upstream
-// entry id, or "" when the child is independent / was un-bundled).
-// pluginEntryIDsSeen is the set of plugin entry ids present in the bundle.
-//
-// For each plugin child it resolves bundled_in → parent plugin DB id and writes
-// parent_plugin_id. Children whose bundled_in is empty (independent / un-bundled)
-// have any stale parent_plugin_id cleared. All reads are batched (no N+1) and use
-// only portable GORM/SQL so the SQLite test path and Postgres prod path agree.
-func (s *CatalogIngestService) reconcileParentPluginLinks(
-	pluginChildEntryDirs map[string]string,
-	pluginEntryIDsSeen map[string]bool,
-	result *IngestResult,
-) {
-	// 1) Load every public skill + plugin row once. We index by entryDir
-	//    (derived from source_path) so same-batch inserts — invisible to the
-	//    pre-loop existingItems snapshot — are included via this fresh read.
-	//
-	//    Scope guards (both matter — silent data corruption otherwise):
-	//    - source_type: the public registry also holds zip-promoted sub-skills
-	//      (source_type='archive') and forks, whose source_path can collide
-	//      byte-for-byte with a catalog entryDir (skills/<name>/SKILL.md). The
-	//      catalog reconcile must never link/unlink rows it doesn't own.
-	//    - content_backend: same question asked about ownership rather than
-	//      origin. A git-backed row carries source_type='git', which the clause
-	//      above does not exclude, and its parent link is decided by the manifest
-	//      in the repository — not by a catalog bundle. This is a FRESH read (it
-	//      deliberately re-queries so same-batch inserts are visible), so it does
-	//      not inherit the pre-load filter and needs its own condition.
-	//    - status: archived rows must neither receive new links (a child would
-	//      end up pointing at a parent invisible in the market) nor occupy an
-	//      entryDir slot that shadows the active row.
-	// Load every public plugin row plus every row of a type that can be a
-	// bundled child. Derived from pluginBundledChildTypes so adding a new child
-	// type (rule/template/command/subagent) automatically widens this scope.
-	childAndPluginTypes := make([]string, 0, len(pluginBundledChildTypes)+1)
-	for t := range pluginBundledChildTypes {
-		childAndPluginTypes = append(childAndPluginTypes, t)
-	}
-	childAndPluginTypes = append(childAndPluginTypes, "plugin")
-
-	var rows []models.CapabilityItem
-	if err := s.DB.
-		Where("registry_id = ? AND item_type IN ? AND source_type NOT IN ? AND content_backend = ? AND status <> 'archived'",
-			PublicRegistryID, childAndPluginTypes, []string{"archive", "fork"}, contentBackendDB).
-		Select("id", "item_type", "source_path", "catalog_entry_dir", "parent_plugin_id").
-		Find(&rows).Error; err != nil {
-		logger.Warn("catalog-ingest: load rows for parent-plugin reconcile: %v", err)
-		return
-	}
-
-	// entryDir → DB item ids. Multi-valued: one upstream entry can legitimately
-	// own several rows (e.g. a multi-server .mcp.json); a single-valued map
-	// would link/unlink only the arbitrary last row.
-	childIDsByEntryDir := make(map[string][]string)
-	pluginIDByEntryDir := make(map[string]string)
-	// current parent_plugin_id per child DB id (to detect stale links to clear).
-	childParentByID := make(map[string]*string)
-	for i := range rows {
-		dir := catalogEntryDirForRow(rows[i])
-		if dir == "" {
-			continue
-		}
-		if rows[i].ItemType == "plugin" {
-			pluginIDByEntryDir[dir] = rows[i].ID
-			continue
-		}
-		// Any bundled-child type (skill/mcp/rule/template/command/subagent).
-		if pluginBundledChildTypes[rows[i].ItemType] {
-			childIDsByEntryDir[dir] = append(childIDsByEntryDir[dir], rows[i].ID)
-			childParentByID[rows[i].ID] = rows[i].ParentPluginID
-		}
-	}
-
-	// 2) Resolve each plugin child's target parent and collect grouped updates:
-	//    parentID → []childID to link, plus a list of childIDs to unlink.
-	toLink := make(map[string][]string)
-	var toUnlink []string
-	for entryDir, bundledIn := range pluginChildEntryDirs {
-		childIDs, ok := childIDsByEntryDir[entryDir]
-		if !ok {
-			continue // child row not found (parse/insert failed upstream of here)
-		}
-		for _, childID := range childIDs {
-			curParent := childParentByID[childID]
-
-			if bundledIn == "" {
-				// Independent item: clear any stale parent link (un-bundled upstream).
-				if curParent != nil && *curParent != "" {
-					toUnlink = append(toUnlink, childID)
-				}
-				continue
-			}
-
-			parentID, ok := pluginIDByEntryDir[filepath.ToSlash(filepath.Join("plugins", bundledIn))]
-			if !ok {
-				// Parent plugin not present/active this run (orphan, archived, or
-				// arrives later). Leave parent_plugin_id as-is; a future ingest
-				// with the parent active links it.
-				if !pluginEntryIDsSeen[bundledIn] {
-					logger.Warn("catalog-ingest: plugin child %s bundled_in=%q has no parent plugin in this bundle; leaving parent_plugin_id unset", childID, bundledIn)
-				}
-				continue
-			}
-			if curParent != nil && *curParent == parentID {
-				continue // already linked correctly
-			}
-			toLink[parentID] = append(toLink[parentID], childID)
-		}
-	}
-
-	// 3) Apply grouped updates — one UPDATE per distinct parent, one for unlinks.
-	for parentID, skillIDs := range toLink {
-		if err := s.DB.Model(&models.CapabilityItem{}).
-			Where("id IN ?", skillIDs).
-			Update("parent_plugin_id", parentID).Error; err != nil {
-			result.Failed++
-			result.Errors = append(result.Errors, fmt.Sprintf("link sub-skills to plugin %s: %v", parentID, err))
-		}
-	}
-	if len(toUnlink) > 0 {
-		if err := s.DB.Model(&models.CapabilityItem{}).
-			Where("id IN ?", toUnlink).
-			Update("parent_plugin_id", nil).Error; err != nil {
-			result.Failed++
-			result.Errors = append(result.Errors, fmt.Sprintf("unlink sub-skills: %v", err))
-		}
-	}
 }
 
 // withBundledInMirror returns a copy of meta with a "bundled_in" key set to

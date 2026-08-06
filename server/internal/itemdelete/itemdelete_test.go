@@ -39,8 +39,24 @@ func setupFullSchema(t *testing.T) *gorm.DB {
 		`CREATE TABLE scan_jobs (id TEXT PRIMARY KEY, item_id TEXT)`,
 		`CREATE TABLE security_scans (id TEXT PRIMARY KEY, item_id TEXT)`,
 		`CREATE TABLE mcp_user_configs (id TEXT PRIMARY KEY, user_id TEXT, item_id TEXT, field_values TEXT DEFAULT '{}')`,
-		`CREATE TABLE item_distributions (id TEXT PRIMARY KEY, item_id TEXT)`,
-		`CREATE TABLE item_distribution_receipts (id TEXT PRIMARY KEY, distribution_id TEXT, forked_item_id TEXT)`,
+		// status / user_id / receipt_status are what identify a LIVE holder, and
+		// the cascade now has to name every holder before it deletes them.
+		`CREATE TABLE item_distributions (id TEXT PRIMARY KEY, item_id TEXT, status TEXT DEFAULT 'active')`,
+		// user_id is NOT NULL in production (models.ItemDistributionReceipt);
+		// spelling it here keeps the fixture from accepting a row shape the real
+		// schema rejects, which is how a seed with no recipient got written.
+		`CREATE TABLE item_distribution_receipts (
+			id TEXT PRIMARY KEY, distribution_id TEXT, user_id TEXT NOT NULL,
+			receipt_status TEXT DEFAULT 'unread', forked_item_id TEXT
+		)`,
+		`CREATE TABLE capability_sync_tombstones (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, item_id TEXT NOT NULL,
+			reason TEXT NOT NULL, lifecycle_reason TEXT, source TEXT NOT NULL,
+			event_id TEXT NOT NULL UNIQUE, removed_at DATETIME NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(user_id, item_id)
+		)`,
 	}
 	for _, s := range stmts {
 		if err := db.Exec(s).Error; err != nil {
@@ -88,7 +104,7 @@ func TestCascadeDelete_PluginSubskillAndOrphans(t *testing.T) {
 	mustExec(t, db, `INSERT INTO security_scans (id, item_id) VALUES ('pss','P')`)
 	mustExec(t, db, `INSERT INTO mcp_user_configs (id, user_id, item_id) VALUES ('pmc','u9','P')`)
 	mustExec(t, db, `INSERT INTO item_distributions (id, item_id) VALUES ('pd','P')`)
-	mustExec(t, db, `INSERT INTO item_distribution_receipts (id, distribution_id, forked_item_id) VALUES ('pdr','pd','F')`)
+	mustExec(t, db, `INSERT INTO item_distribution_receipts (id, distribution_id, user_id, forked_item_id) VALUES ('pdr','pd','u8','F')`)
 
 	// S1's own dependents (must be cleaned when S1 is hard-deleted).
 	mustExec(t, db, `INSERT INTO capability_versions (id, item_id) VALUES ('sv','S1')`)

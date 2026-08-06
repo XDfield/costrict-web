@@ -111,6 +111,32 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		`CREATE TABLE user_system_roles (
 			id TEXT PRIMARY KEY, user_id TEXT, role TEXT, created_at DATETIME, deleted_at DATETIME
 		)`,
+		// Taking an item off the shelf now also records the csc removal
+		// instruction, so the tables that answer "who currently holds this?"
+		// and the table that stores the instruction are part of this fixture.
+		// The UNIQUE (user_id, item_id) matters: it is what turns "wrote two
+		// rows for one holder" into a failure rather than silent duplication.
+		`CREATE TABLE capability_sync_tombstones (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, item_id TEXT NOT NULL,
+			reason TEXT NOT NULL, lifecycle_reason TEXT, source TEXT NOT NULL,
+			event_id TEXT NOT NULL UNIQUE, removed_at DATETIME NOT NULL,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(user_id, item_id)
+		)`,
+		`CREATE TABLE item_distributions (
+			id TEXT PRIMARY KEY, item_id TEXT NOT NULL, distributor_id TEXT,
+			permission_mode TEXT DEFAULT 'readonly', status TEXT DEFAULT 'active',
+			scope_type TEXT DEFAULT 'user', target_id TEXT, message TEXT,
+			revoked_at DATETIME, expires_at DATETIME,
+			created_at DATETIME, updated_at DATETIME
+		)`,
+		`CREATE TABLE item_distribution_receipts (
+			id TEXT PRIMARY KEY, distribution_id TEXT NOT NULL, user_id TEXT NOT NULL,
+			receipt_status TEXT DEFAULT 'unread', forked_item_id TEXT,
+			created_at DATETIME, updated_at DATETIME,
+			UNIQUE(distribution_id, user_id)
+		)`,
 	}
 	for _, s := range stmts {
 		if err := db.Exec(s).Error; err != nil {

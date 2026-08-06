@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,7 +10,6 @@ import (
 	"io"
 	"log"
 	"net/http"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -207,9 +205,15 @@ type createItemRequest struct {
 	// Fork provenance (optional)
 	ForkedFromItemID  *string
 	ForkedFromOwnerID *string
-	// ParentPluginID links a promoted sub-skill back to its parent plugin item (optional).
-	ParentPluginID *string
-	IsBuiltIn      bool
+	// There is deliberately no ParentPluginID here. persistNewItem is the single
+	// kernel every item-creation path goes through, so removing the field is the
+	// server-side no-new-writer gate: under the flat capability model no HTTP
+	// path can mint a row that claims to be part of another item's package, and
+	// it cannot be re-enabled by a caller passing a field that does not exist.
+	// Retiring the rows the old writers already created is the flatten
+	// migration's job (`migrate flatten-plugins`), which is the only writer of
+	// capability_items.parent_plugin_id that remains.
+	IsBuiltIn bool
 	// Git backing (optional). Empty ContentBackend keeps the DB default ('db'),
 	// i.e. content + capability_assets stay the source of truth.
 	SourceRepoURL     string
@@ -450,7 +454,6 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 		Source:            req.Source,
 		ForkedFromItemID:  req.ForkedFromItemID,
 		ForkedFromOwnerID: req.ForkedFromOwnerID,
-		ParentPluginID:    req.ParentPluginID,
 		IsBuiltIn:         req.IsBuiltIn,
 		Status:            "active",
 		CreatedBy:         req.CreatedBy,
@@ -566,31 +569,34 @@ func persistNewItem(db *gorm.DB, req createItemRequest, assets createItemAssets)
 // ItemResponse wraps a CapabilityItem with optional repo visibility,
 // keeping a flat JSON structure compatible with the previous ItemWithAuthor.
 type ItemResponse struct {
-	ID                  string                      `json:"id"`
-	RegistryID          string                      `json:"registryId"`
-	RepoID              string                      `json:"repoId"`
-	Slug                string                      `json:"slug"`
-	ItemType            string                      `json:"itemType"`
-	Name                string                      `json:"name"`
-	Description         string                      `json:"description"`                       // Resolved per `?lang=` query or Accept-Language header; en is the default. Use `descriptions` for raw locale map.
-	Descriptions        datatypes.JSON              `json:"descriptions" swaggertype:"object"` // Raw locale → text map, e.g. {"en":"...","zh":"..."}.
-	Category            string                      `json:"category"`
-	Version             string                      `json:"version"`
-	Content             string                      `json:"content"`
-	ContentMD5          string                      `json:"contentMd5"`
-	CurrentRevision     int                         `json:"currentRevision"`
-	Metadata            datatypes.JSON              `json:"metadata" swaggertype:"object"`
-	Health              datatypes.JSON              `json:"health,omitempty" swaggertype:"object"`
-	Evaluation          datatypes.JSON              `json:"evaluation,omitempty" swaggertype:"object"`
-	SourcePath          string                      `json:"sourcePath"`
-	SourceSHA           string                      `json:"sourceSha"`
-	SourceType          string                      `json:"sourceType"`
-	Source              string                      `json:"source"`
-	ForkedFromItemID    *string                     `json:"forkedFromItemId,omitempty"`
-	ForkedFromOwnerID   *string                     `json:"forkedFromOwnerId,omitempty"`
-	ParentPluginID      *string                     `json:"parentPluginId,omitempty"`   // sub-skill: 所属父 plugin item ID
-	ParentPluginName    string                      `json:"parentPluginName,omitempty"` // 父 plugin 展示名（供「来自插件 X」徽章）
-	ParentPluginSlug    string                      `json:"parentPluginSlug,omitempty"` // 父 plugin slug（供跳转）
+	ID                string         `json:"id"`
+	RegistryID        string         `json:"registryId"`
+	RepoID            string         `json:"repoId"`
+	Slug              string         `json:"slug"`
+	ItemType          string         `json:"itemType"`
+	Name              string         `json:"name"`
+	Description       string         `json:"description"`                       // Resolved per `?lang=` query or Accept-Language header; en is the default. Use `descriptions` for raw locale map.
+	Descriptions      datatypes.JSON `json:"descriptions" swaggertype:"object"` // Raw locale → text map, e.g. {"en":"...","zh":"..."}.
+	Category          string         `json:"category"`
+	Version           string         `json:"version"`
+	Content           string         `json:"content"`
+	ContentMD5        string         `json:"contentMd5"`
+	CurrentRevision   int            `json:"currentRevision"`
+	Metadata          datatypes.JSON `json:"metadata" swaggertype:"object"`
+	Health            datatypes.JSON `json:"health,omitempty" swaggertype:"object"`
+	Evaluation        datatypes.JSON `json:"evaluation,omitempty" swaggertype:"object"`
+	SourcePath        string         `json:"sourcePath"`
+	SourceSHA         string         `json:"sourceSha"`
+	SourceType        string         `json:"sourceType"`
+	Source            string         `json:"source"`
+	ForkedFromItemID  *string        `json:"forkedFromItemId,omitempty"`
+	ForkedFromOwnerID *string        `json:"forkedFromOwnerId,omitempty"`
+	// Deprecated: 三个 parentPlugin* 字段在扁平能力模型下已停止产生新数据，
+	// 仅为存量行保留一个发布兼容窗口。消费方（multica / csc）应停止依赖它们：
+	// plugin 详情不再展示子项树，也不再有「来自插件 X」的父子关系。
+	ParentPluginID      *string                     `json:"parentPluginId,omitempty"`   // Deprecated: 存量 sub-skill 的父 plugin item ID
+	ParentPluginName    string                      `json:"parentPluginName,omitempty"` // Deprecated: 父 plugin 展示名
+	ParentPluginSlug    string                      `json:"parentPluginSlug,omitempty"` // Deprecated: 父 plugin slug
 	PreviewCount        int                         `json:"previewCount"`
 	InstallCount        int                         `json:"installCount"`
 	FavoriteCount       int                         `json:"favoriteCount"`
@@ -1111,7 +1117,11 @@ func applySharedItemListFilters(query *gorm.DB, db *gorm.DB, c *gin.Context, opt
 	if opts.AllowFavorited && c.Query("favorited") == "true" && opts.UserID != "" {
 		query = query.Where("EXISTS (SELECT 1 FROM item_favorites f WHERE f.item_id = capability_items.id AND f.user_id = ?) OR EXISTS (SELECT 1 FROM item_distribution_receipts idr JOIN item_distributions id ON id.id = idr.distribution_id WHERE idr.user_id = ? AND idr.receipt_status != ? AND id.status = ? AND id.item_id = capability_items.id)", opts.UserID, opts.UserID, "dismissed", "active")
 	}
-	// sub-skill filters: list a plugin's bundled sub-skills, or hide all sub-skills.
+	// Deprecated sub-skill filters. No writer produces a parent link any more, so
+	// both only ever match rows the flatten migration is retiring. They stay for
+	// one released compatibility window so a client that still sends them gets a
+	// coherent (increasingly empty) answer rather than an error, and they are
+	// documented as deprecated in Swagger.
 	if parentPluginID := c.Query("parentPluginId"); parentPluginID != "" {
 		query = query.Where("parent_plugin_id = ?", parentPluginID)
 	}
@@ -1873,12 +1883,9 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update item"})
 			return
 		}
-		// The contentChanged short-circuit only hashes the plugin main content, so the
-		// bundled skills/ set may have changed even when the parent is byte-identical.
-		// Reconcile sub-skills unconditionally for plugins (idempotent).
-		if item.ItemType == "plugin" {
-			_ = reconcilePluginSubSkills(h, &item, result.Assets, updatedBy)
-		}
+		// Bundled sub-skill promotion is retired: an uploaded plugin is one
+		// capability whose archive keeps every skills//commands//agents/ file as
+		// its own asset. See flattenedPluginArchiveContract.
 		c.JSON(http.StatusOK, buildItemResponse(c, db, item, c.GetString(middleware.UserIDKey)))
 		return
 	}
@@ -2030,11 +2037,7 @@ func (h *ItemHandler) updateItemFromArchive(c *gin.Context) {
 		return
 	}
 
-	// Reconcile bundled sub-skills (create/update/archive) for plugin updates.
-	if item.ItemType == "plugin" {
-		_ = reconcilePluginSubSkills(h, &item, result.Assets, updatedBy)
-	}
-
+	// Bundled sub-skill promotion is retired: see flattenedPluginArchiveContract.
 	c.JSON(http.StatusOK, buildItemResponse(c, db, item, c.GetString(middleware.UserIDKey)))
 }
 
@@ -2484,8 +2487,8 @@ func buildVisibleRegistryIDs(db *gorm.DB, userID string) []string {
 // @Param        source      query     string   false  "Filter by sources (comma-separated, OR logic)"
 // @Param        registryId  query     string   false  "Filter by registry ID"
 // @Param        favorited   query     string   false  "Filter to only favorited items (requires auth)"
-// @Param        parentPluginId query   string   false  "Filter to sub-skills bundled by the given parent plugin item ID"
-// @Param        excludeSubSkills query string   false  "Hide bundled sub-skills from the result when true"
+// @Param        parentPluginId query   string   false  "DEPRECATED (flat capability model): filter to legacy sub-skills bundled by the given parent plugin item ID. No new rows carry a parent link; the filter exists only for the one-release compatibility window."
+// @Param        excludeSubSkills query string   false  "DEPRECATED (flat capability model): hide legacy bundled sub-skills. Retained for the one-release compatibility window."
 // @Param        page        query     int      false  "Page number (default: 1)"
 // @Param        pageSize    query     int      false  "Page size (default: 20, max: 100)"
 // @Param        sortBy      query     string   false  "Sort by updatedAt, createdAt, previewCount, installCount, or favoriteCount"
@@ -3216,456 +3219,10 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 		}
 	}
 
-	// Plugins bundle their sub-skills/MCPs as first-class child items
-	// (parent_plugin_id). Fork those too so the user gets their own editable
-	// copies, re-linked to the new plugin fork. Best-effort: per-child failures
-	// are logged and skipped — the plugin fork itself already succeeded.
-	// Git-backed forks skip this: the repo already carries every sub-asset, so
-	// duplicating them as DB rows would create a second, diverging truth.
-	if src.ItemType == "plugin" && gitPlan == nil {
-		h.forkPluginChildren(srcItemID, item.ID, userID)
-	}
-
+	// Forking a plugin no longer forks a set of child rows. The fork copies the
+	// source plugin's own assets, which already contain every bundled file, so
+	// the user still receives the whole package — as one capability.
 	c.JSON(http.StatusCreated, buildItemResponse(c, h.db, *item, userID))
-}
-
-// forkPluginChildren forks each active sub-skill/MCP bundled under the source
-// plugin (parent_plugin_id = srcPluginID) into the new plugin fork, re-linking
-// them via parent_plugin_id = newPluginID. Idempotent per (child, user); a child
-// that fails to fork is logged and skipped.
-func (h *ItemHandler) forkPluginChildren(srcPluginID, newPluginID, userID string) {
-	var children []models.CapabilityItem
-	if err := h.db.Where("parent_plugin_id = ? AND status = ?", srcPluginID, "active").
-		Order("slug asc").Find(&children).Error; err != nil {
-		log.Printf("fork: load sub-skills of plugin %s failed: %v", srcPluginID, err)
-		return
-	}
-	if len(children) == 0 {
-		return
-	}
-
-	publicRepoID := registryRepoID(h.db, PublicRegistryID)
-	uidSum := sha256.Sum256([]byte(userID))
-
-	for i := range children {
-		child := children[i]
-
-		// One fork per user per source child.
-		var existing models.CapabilityItem
-		if err := h.db.Where("forked_from_item_id = ? AND created_by = ?", child.ID, userID).
-			First(&existing).Error; err == nil && existing.ID != "" {
-			continue
-		}
-
-		var childAssets []models.CapabilityAsset
-		h.db.Where("item_id = ?", child.ID).Order("rel_path asc").Find(&childAssets)
-		assetTpl := make([]models.CapabilityAsset, 0, len(childAssets))
-		for _, a := range childAssets {
-			assetTpl = append(assetTpl, models.CapabilityAsset{
-				RelPath:        a.RelPath,
-				TextContent:    a.TextContent,
-				StorageBackend: a.StorageBackend,
-				StorageKey:     a.StorageKey,
-				MimeType:       a.MimeType,
-				FileSize:       a.FileSize,
-				ContentSHA:     a.ContentSHA,
-			})
-		}
-
-		childSrcID := child.ID
-		childOwnerID := child.CreatedBy
-		parentID := newPluginID
-		baseSlug := fmt.Sprintf("%s-fork-%x", child.Slug, uidSum[:4])
-
-		var forked *models.CapabilityItem
-		var ferr error
-		for attempt := 0; attempt < 10; attempt++ {
-			slug := baseSlug
-			if attempt > 0 {
-				slug = fmt.Sprintf("%s-%d", baseSlug, attempt+1)
-			}
-			records := make([]models.CapabilityAsset, len(assetTpl))
-			copy(records, assetTpl)
-			forked, ferr = persistNewItem(h.db, createItemRequest{
-				ID:                uuid.New().String(),
-				RegistryID:        PublicRegistryID,
-				RepoID:            publicRepoID,
-				Slug:              slug,
-				ItemType:          child.ItemType,
-				Name:              child.Name,
-				Description:       child.Description,
-				Category:          child.Category,
-				Version:           child.Version,
-				Content:           child.Content,
-				ContentMD5:        child.ContentMD5,
-				Metadata:          child.Metadata,
-				SourcePath:        child.SourcePath,
-				SourceSHA:         child.SourceSHA,
-				SourceType:        "fork",
-				Source:            childSrcID,
-				CreatedBy:         userID,
-				ForkedFromItemID:  &childSrcID,
-				ForkedFromOwnerID: &childOwnerID,
-				ParentPluginID:    &parentID,
-			}, createItemAssets{Records: records})
-			if ferr == nil {
-				break
-			}
-			if errors.Is(ferr, ErrSlugConflict) {
-				// Concurrent fork by the same user won the race — treat as done.
-				var raced models.CapabilityItem
-				if e := h.db.Where("forked_from_item_id = ? AND created_by = ?", childSrcID, userID).
-					First(&raced).Error; e == nil && raced.ID != "" {
-					ferr, forked = nil, nil
-					break
-				}
-				continue
-			}
-			break
-		}
-		if ferr != nil {
-			log.Printf("fork: sub-skill %s of plugin %s failed: %v", child.ID, srcPluginID, ferr)
-			continue
-		}
-		if forked == nil {
-			continue // a concurrent fork already created it
-		}
-
-		// Carry localized descriptions (persistNewItem doesn't).
-		if len(child.Descriptions) > 0 && string(child.Descriptions) != "{}" {
-			h.db.Model(&models.CapabilityItem{}).Where("id = ?", forked.ID).Update("descriptions", child.Descriptions)
-			h.db.Model(&models.CapabilityVersion{}).Where("item_id = ? AND revision = ?", forked.ID, 1).Update("descriptions", child.Descriptions)
-		}
-
-		enqueueScanAsync(forked.ID, 1, "fork")
-
-		if h.tagSvc != nil {
-			if tagsMap, err := h.tagSvc.GetItemTags([]string{child.ID}); err == nil {
-				var tids []string
-				for _, t := range tagsMap[child.ID] {
-					tids = append(tids, t.ID)
-				}
-				if len(tids) > 0 {
-					_ = assignTagsForItem(h.tagSvc, forked.ID, tids, services.TagSourceUser)
-				}
-			}
-		}
-	}
-}
-
-// pluginChildAsset is a skill or MCP item extracted from a plugin archive and
-// promoted into a normal capability_items row.
-type pluginChildAsset struct {
-	ItemType    string
-	Name        string
-	SlugSuffix  string
-	Description string
-	Version     string
-	SourcePath  string
-	Content     string
-	Metadata    datatypes.JSON
-	Assets      []services.ArchiveAsset // files under the child directory, with paths relative to that directory
-}
-
-// extractSubSkillAssets returns the directory-type children bundled inside a
-// plugin archive: skills/<name>/SKILL.md and evaluators/<name>/SKILL.md. Both
-// are SKILL.md-shaped directory items (a SKILL.md plus sibling files under the
-// same directory) and become item_type=skill rows. For deeper nesting (e.g.
-// "skills/a/b/SKILL.md") the directory immediately above SKILL.md ("b") is used
-// as the name, matching how the device installs it.
-//
-// The source_path is the verbatim archive path so the plugin "work tree"
-// mirrors the original repository layout (skills/... and evaluators/... live
-// under different roots and never collide).
-func extractSubSkillAssets(assets []services.ArchiveAsset) []pluginChildAsset {
-	out := make([]pluginChildAsset, 0)
-	out = append(out, extractSkillDirChildren(assets, "skills/")...)
-	out = append(out, extractSkillDirChildren(assets, "evaluators/")...)
-	return out
-}
-
-// extractSkillDirChildren returns directory-type skill children whose SKILL.md
-// lives under the given top-level prefix ("skills/" or "evaluators/"). Both map
-// to item_type=skill; only the prefix differs, keeping evaluators generic
-// rather than hardcoded to cospower.
-func extractSkillDirChildren(assets []services.ArchiveAsset, prefix string) []pluginChildAsset {
-	out := make([]pluginChildAsset, 0)
-	seen := make(map[string]struct{})
-	for _, asset := range assets {
-		if asset.Binary {
-			continue
-		}
-		p := asset.Path
-		if !strings.HasPrefix(p, prefix) || !strings.HasSuffix(p, "/SKILL.md") {
-			continue
-		}
-		dir := path.Dir(p) // "<prefix-root>/<...>/<name>"
-		name := path.Base(dir)
-		if name == "" || dir == strings.TrimSuffix(prefix, "/") {
-			continue
-		}
-		if _, ok := seen[p]; ok {
-			continue
-		}
-		seen[p] = struct{}{}
-		childPrefix := dir + "/"
-		childAssets := make([]services.ArchiveAsset, 0)
-		for _, candidate := range assets {
-			if candidate.Path == p || !strings.HasPrefix(candidate.Path, childPrefix) {
-				continue
-			}
-			relPath := strings.TrimPrefix(candidate.Path, childPrefix)
-			if relPath == "" || relPath == "SKILL.md" {
-				continue
-			}
-			copied := candidate
-			copied.Path = relPath
-			childAssets = append(childAssets, copied)
-		}
-		out = append(out, pluginChildAsset{
-			ItemType:   "skill",
-			Name:       name,
-			SlugSuffix: name,
-			Version:    "1.0.0",
-			SourcePath: p,
-			Content:    string(asset.Content),
-			Metadata:   datatypes.JSON([]byte("{}")),
-			Assets:     childAssets,
-		})
-	}
-	return out
-}
-
-// pluginFileChildSpec describes a single-file plugin-child extractor: every
-// non-binary .md file under <prefix> becomes one child of the given item_type,
-// with a path-faithful source_path. Used for commands/agents/rules/templates,
-// which (unlike skills/evaluators) are individual files, not directories.
-type pluginFileChildSpec struct {
-	prefix   string // top-level dir prefix, e.g. "commands/"
-	itemType string // resulting capability_items.item_type
-}
-
-// pluginFileChildSpecs lists the single-file child types in a stable order. The
-// path→type mapping is the cross-repo contract shared with the upstream catalog
-// pipeline and the frontend TYPE_META:
-//
-//	commands/<f>.md          -> command
-//	agents/<f>.md            -> subagent
-//	rules/<group>/<f>.md     -> rule       (nestable; group segment kept in slug)
-//	templates/<f>.md         -> template
-var pluginFileChildSpecs = []pluginFileChildSpec{
-	{prefix: "commands/", itemType: "command"},
-	{prefix: "agents/", itemType: "subagent"},
-	{prefix: "rules/", itemType: "rule"},
-	{prefix: "templates/", itemType: "template"},
-}
-
-// extractPluginFileChildren returns the single-file children (commands, agents,
-// rules, templates) bundled inside a plugin archive. Each matching .md file
-// becomes one child with item_type per pluginFileChildSpecs and a verbatim
-// source_path. rules/ may be nested (rules/<group>/<file>.md); the intermediate
-// segments are folded into the slug suffix so siblings sharing a leaf filename
-// (including non-ASCII ones) stay unique while the source_path remains faithful.
-func extractPluginFileChildren(assets []services.ArchiveAsset) []pluginChildAsset {
-	out := make([]pluginChildAsset, 0)
-	seen := make(map[string]struct{})
-	for _, asset := range assets {
-		if asset.Binary {
-			continue
-		}
-		p := asset.Path
-		if !strings.HasSuffix(strings.ToLower(p), ".md") {
-			continue
-		}
-		var spec *pluginFileChildSpec
-		for i := range pluginFileChildSpecs {
-			if strings.HasPrefix(p, pluginFileChildSpecs[i].prefix) {
-				spec = &pluginFileChildSpecs[i]
-				break
-			}
-		}
-		if spec == nil {
-			continue
-		}
-		if _, ok := seen[p]; ok {
-			continue
-		}
-		seen[p] = struct{}{}
-
-		// Inner segments (between the top-level dir and the file) plus the
-		// leaf filename without extension form the slug suffix; this keeps
-		// nested rules unique. Falls back to the leaf when only one segment.
-		rel := strings.TrimPrefix(p, spec.prefix)
-		leaf := strings.TrimSuffix(path.Base(rel), path.Ext(rel))
-		dirPart := path.Dir(rel)
-		slugSuffix := leaf
-		if dirPart != "." && dirPart != "" {
-			slugSuffix = strings.ReplaceAll(dirPart, "/", "-") + "-" + leaf
-		}
-
-		out = append(out, pluginChildAsset{
-			ItemType:   spec.itemType,
-			Name:       pluginChildDisplayName(p),
-			SlugSuffix: slugSuffix,
-			Version:    "1.0.0",
-			SourcePath: p,
-			Content:    string(asset.Content),
-			Metadata:   datatypes.JSON([]byte("{}")),
-		})
-	}
-	return out
-}
-
-// pluginChildDisplayName derives a human-friendly name from a child file path,
-// e.g. "rules/dfx/安全.md" -> "安全", "commands/run-tests.md" -> "Run tests".
-// Non-ASCII leaves (Chinese filenames) are returned as-is; ASCII leaves are
-// title-cased with separators turned into spaces.
-func pluginChildDisplayName(filePath string) string {
-	base := path.Base(filePath)
-	if strings.EqualFold(base, "SKILL.md") {
-		base = path.Base(path.Dir(filePath))
-	} else {
-		base = strings.TrimSuffix(base, path.Ext(base))
-	}
-	name := strings.ReplaceAll(base, "-", " ")
-	name = strings.ReplaceAll(name, "_", " ")
-	if name == "" {
-		return base
-	}
-	r := []rune(name)
-	if r[0] >= 'a' && r[0] <= 'z' {
-		r[0] = r[0] - 32
-	}
-	return string(r)
-}
-
-func hasObjectMCPServers(content []byte) bool {
-	var data map[string]any
-	if err := json.Unmarshal(content, &data); err != nil {
-		return false
-	}
-	_, ok := data["mcpServers"].(map[string]any)
-	return ok
-}
-
-func singleMCPContent(parsed *services.ParsedItem, fallback []byte) string {
-	key, _ := parsed.Metadata["key"].(string)
-	if key == "" {
-		return string(fallback)
-	}
-	server := make(map[string]any, len(parsed.Metadata))
-	for k, v := range parsed.Metadata {
-		if k == "key" {
-			continue
-		}
-		server[k] = v
-	}
-	content := map[string]any{
-		"mcpServers": map[string]any{
-			key: server,
-		},
-	}
-	b, err := json.Marshal(content)
-	if err != nil {
-		return string(fallback)
-	}
-	return string(b)
-}
-
-func buildPluginMCPChildrenFromContent(parser *services.ParserService, sourcePath string, content []byte) ([]pluginChildAsset, error) {
-	parsedItems, err := parser.ParseMCPJSON(content, sourcePath)
-	if err != nil {
-		return nil, err
-	}
-	children := make([]pluginChildAsset, 0, len(parsedItems))
-	for _, parsed := range parsedItems {
-		normalized, err := services.NormalizeMCPMetadata(parsed.Metadata)
-		if err != nil {
-			return nil, err
-		}
-		metaBytes, err := json.Marshal(normalized)
-		if err != nil {
-			return nil, err
-		}
-		name := parsed.Name
-		if strings.TrimSpace(name) == "" {
-			name = "MCP Config"
-		}
-		slugSuffix := parsed.Slug
-		if strings.TrimSpace(slugSuffix) == "" {
-			slugSuffix = name
-		}
-		version := parsed.Version
-		if version == "" {
-			version = "1.0.0"
-		}
-		childSourcePath := sourcePath + "#" + slugSuffix
-		childContent := singleMCPContent(parsed, content)
-		children = append(children, pluginChildAsset{
-			ItemType:    "mcp",
-			Name:        name,
-			SlugSuffix:  slugSuffix,
-			Description: parsed.Description,
-			Version:     version,
-			SourcePath:  childSourcePath,
-			Content:     childContent,
-			Metadata:    datatypes.JSON(metaBytes),
-		})
-	}
-	return children, nil
-}
-
-func extractPluginMCPAssets(parser *services.ParserService, pluginItem *models.CapabilityItem, assets []services.ArchiveAsset) ([]pluginChildAsset, error) {
-	manifestChildren := make([]pluginChildAsset, 0)
-	rootChildren := make([]pluginChildAsset, 0)
-	if pluginItem.SourcePath == ".claude-plugin/plugin.json" && hasObjectMCPServers([]byte(pluginItem.Content)) {
-		children, err := buildPluginMCPChildrenFromContent(parser, pluginItem.SourcePath, []byte(pluginItem.Content))
-		if err != nil {
-			return nil, err
-		}
-		manifestChildren = append(manifestChildren, children...)
-	}
-	for _, asset := range assets {
-		if asset.Binary || (asset.Path != ".mcp.json" && asset.Path != ".claude-plugin/plugin.json") {
-			continue
-		}
-		if asset.Path == ".claude-plugin/plugin.json" && !hasObjectMCPServers(asset.Content) {
-			continue
-		}
-		children, err := buildPluginMCPChildrenFromContent(parser, asset.Path, asset.Content)
-		if err != nil {
-			return nil, err
-		}
-		if asset.Path == ".mcp.json" {
-			rootChildren = append(rootChildren, children...)
-		} else {
-			manifestChildren = append(manifestChildren, children...)
-		}
-	}
-	return mergePluginMCPChildren(manifestChildren, rootChildren), nil
-}
-
-func mergePluginMCPChildren(manifestChildren, rootChildren []pluginChildAsset) []pluginChildAsset {
-	out := make([]pluginChildAsset, 0, len(manifestChildren)+len(rootChildren))
-	bySlug := make(map[string]int, len(manifestChildren)+len(rootChildren))
-	appendOrReplace := func(child pluginChildAsset) {
-		key := child.ItemType + ":" + child.SlugSuffix
-		if idx, ok := bySlug[key]; ok {
-			out[idx] = child
-			return
-		}
-		bySlug[key] = len(out)
-		out = append(out, child)
-	}
-	for _, child := range manifestChildren {
-		appendOrReplace(child)
-	}
-	// A root .mcp.json is the executable MCP config. When the manifest also
-	// repeats mcpServers, prefer the root config and avoid duplicate children.
-	for _, child := range rootChildren {
-		appendOrReplace(child)
-	}
-	return out
 }
 
 func archiveAssetContentSHA(asset services.ArchiveAsset) string {
@@ -3676,393 +3233,30 @@ func archiveAssetContentSHA(asset services.ArchiveAsset) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// archiveAssetStorageKey scopes an uploaded asset's object key by item, revision
+// and content hash, so a new revision never overwrites an object a previous
+// revision still references.
 func archiveAssetStorageKey(itemID string, revision int, asset services.ArchiveAsset) string {
 	return fmt.Sprintf("%s/assets/r%d/%s/%s", itemID, revision, archiveAssetContentSHA(asset), asset.Path)
 }
 
-// buildSubSkillAssetRecords uploads the child's binary assets under a
-// revision-scoped key prefix. Keys never collide with objects referenced by a
-// previous revision; unreferenced objects are retained for offline GC.
-func buildSubSkillAssetRecords(childID string, revision int, ss pluginChildAsset) ([]models.CapabilityAsset, error) {
-	records := make([]models.CapabilityAsset, 0, len(ss.Assets))
-	for _, asset := range ss.Assets {
-		relPath := strings.TrimSpace(asset.Path)
-		if relPath == "" || relPath == "SKILL.md" || strings.Contains(relPath, "..") {
-			continue
-		}
-		record := models.CapabilityAsset{
-			RelPath:    relPath,
-			MimeType:   asset.MimeType,
-			FileSize:   asset.Size,
-			ContentSHA: archiveAssetContentSHA(asset),
-		}
-		if record.MimeType == "" {
-			record.MimeType = services.InferMimeType(relPath)
-		}
-		if record.FileSize <= 0 {
-			record.FileSize = int64(len(asset.Content))
-		}
-		if asset.Binary {
-			if StorageBackend == nil {
-				return records, fmt.Errorf("storage backend is not configured")
-			}
-			storageKey := archiveAssetStorageKey(childID, revision, asset)
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-			err := StorageBackend.Put(ctx, storageKey, bytes.NewReader(asset.Content), record.FileSize)
-			cancel()
-			if err != nil {
-				return records, err
-			}
-			record.StorageBackend = storage.KindOf(StorageBackend)
-			record.StorageKey = storageKey
-		} else {
-			text := string(asset.Content)
-			record.TextContent = &text
-		}
-		records = append(records, record)
-	}
-	return records, nil
-}
-
-func subSkillAssetsMatch(db *gorm.DB, childID string, expected []services.ArchiveAsset) bool {
-	var current []models.CapabilityAsset
-	if err := db.Where("item_id = ?", childID).Find(&current).Error; err != nil {
-		return false
-	}
-	if len(current) != len(expected) {
-		return false
-	}
-	currentByPath := make(map[string]models.CapabilityAsset, len(current))
-	for _, asset := range current {
-		currentByPath[asset.RelPath] = asset
-	}
-	for _, expectedAsset := range expected {
-		relPath := strings.TrimSpace(expectedAsset.Path)
-		cur, ok := currentByPath[relPath]
-		if !ok {
-			return false
-		}
-		if cur.ContentSHA != archiveAssetContentSHA(expectedAsset) || cur.FileSize != expectedAsset.Size {
-			return false
-		}
-		if expectedAsset.Binary && cur.StorageKey == "" {
-			return false
-		}
-		if !expectedAsset.Binary && cur.TextContent == nil {
-			return false
-		}
-	}
-	return true
-}
-
-func replaceSubSkillAssets(tx *gorm.DB, childID string, records []models.CapabilityAsset) error {
-	if err := tx.Where("item_id = ?", childID).Delete(&models.CapabilityAsset{}).Error; err != nil {
-		return err
-	}
-	for i := range records {
-		records[i].ID = uuid.New().String()
-		records[i].ItemID = childID
-		if err := tx.Create(&records[i]).Error; err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func reconcileExistingPluginSubSkill(h *ItemHandler, pluginItem *models.CapabilityItem, child models.CapabilityItem, ss pluginChildAsset, contentMD5 string, createdBy string) (*models.CapabilityItem, bool) {
-	parentID := pluginItem.ID
-	updates := map[string]any{}
-	newRevision := child.CurrentRevision
-	contentChanged := child.ContentMD5 != contentMD5
-	assetsChanged := !subSkillAssetsMatch(h.db, child.ID, ss.Assets)
-	sourcePathChanged := child.SourcePath != ss.SourcePath
-	if contentChanged || assetsChanged {
-		newRevision = child.CurrentRevision + 1
-		updates["content"] = ss.Content
-		updates["content_md5"] = contentMD5
-		updates["current_revision"] = newRevision
-		updates["updated_by"] = createdBy
-	}
-	if sourcePathChanged {
-		updates["source_path"] = ss.SourcePath
-	}
-	if len(ss.Metadata) > 0 && string(child.Metadata) != string(ss.Metadata) {
-		updates["metadata"] = ss.Metadata
-	}
-	if child.Status != "active" {
-		updates["status"] = "active"
-	}
-	if child.ParentPluginID == nil || *child.ParentPluginID != parentID {
-		updates["parent_plugin_id"] = parentID
-	}
-	if child.RegistryID != pluginItem.RegistryID {
-		updates["registry_id"] = pluginItem.RegistryID
-	}
-	if child.RepoID != pluginItem.RepoID {
-		updates["repo_id"] = pluginItem.RepoID
-	}
-	if len(updates) == 0 {
-		return nil, false
-	}
-
-	var records []models.CapabilityAsset
-	if contentChanged || assetsChanged {
-		var err error
-		records, err = buildSubSkillAssetRecords(child.ID, newRevision, ss)
-		if err != nil {
-			log.Printf("sub-skill reconcile: asset build failed for %s: %v", child.ID, err)
-			return nil, false
-		}
-	}
-	if err := h.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&models.CapabilityItem{}).Where("id = ?", child.ID).Updates(updates).Error; err != nil {
-			return err
-		}
-		if contentChanged || assetsChanged {
-			if err := replaceSubSkillAssets(tx, child.ID, records); err != nil {
-				return err
-			}
-			version := models.CapabilityVersion{
-				ID:          uuid.New().String(),
-				ItemID:      child.ID,
-				Revision:    newRevision,
-				Name:        child.Name,
-				Description: child.Description,
-				Category:    child.Category,
-				Version:     child.Version,
-				Content:     ss.Content,
-				ContentMD5:  contentMD5,
-				Metadata:    ss.Metadata,
-				SourcePath:  ss.SourcePath,
-				CommitMsg:   "Sub-skill content updated",
-				CreatedBy:   createdBy,
-			}
-			if err := tx.Create(&version).Error; err != nil {
-				return err
-			}
-			for _, snapshotAsset := range cloneItemAssetsToVersionAssets(version.ID, records) {
-				asset := snapshotAsset
-				if err := tx.Create(&asset).Error; err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}); err != nil {
-		log.Printf("sub-skill reconcile: update failed for %s: %v", child.ID, err)
-		return nil, false
-	}
-	if contentChanged || assetsChanged {
-		enqueueScanAsync(child.ID, newRevision, "update")
-	}
-
-	child.Content = ss.Content
-	child.ContentMD5 = contentMD5
-	child.Metadata = ss.Metadata
-	child.CurrentRevision = newRevision
-	child.SourcePath = ss.SourcePath
-	child.Status = "active"
-	child.ParentPluginID = &parentID
-	child.RegistryID = pluginItem.RegistryID
-	child.RepoID = pluginItem.RepoID
-	return &child, true
-}
-
-func legacySingleMCPSourcePath(sourcePath string) string {
-	if !strings.HasPrefix(sourcePath, ".mcp.json#") {
-		return ""
-	}
-	return ".mcp.json"
-}
-
-func pluginChildBaseSlug(pluginSlug string, child pluginChildAsset) string {
-	baseSlug := slugify(pluginSlug + "-" + child.SlugSuffix)
-	if baseSlug == "" {
-		baseSlug = slugify(child.Name)
-	}
-	return baseSlug
-}
-
-// reconcilePluginSubSkills promotes each sub-skill bundled in a plugin archive into
-// a first-class item_type=skill row linked back via parent_plugin_id, reusing the
-// existing skill download/install pipeline. It is idempotent: re-running with the
-// same archive neither duplicates rows nor needlessly bumps revisions.
+// flattenedPluginArchiveContract records what an uploaded plugin archive means
+// under the flat capability model, because the code that used to say it out loud
+// has been deleted.
 //
-//   - new sub-skill (source_path not yet present)      -> create a child skill item
-//   - existing sub-skill, content changed              -> update Content/ContentMD5 (bump revision)
-//   - existing sub-skill, content unchanged            -> no-op (idempotent)
-//   - existing sub-skill, previously archived          -> re-activate
-//   - existing child whose source_path is gone in zip  -> archive (status='archived')
+// An archive upload produces exactly ONE capability row. Every file the archive
+// carries — `skills/<n>/SKILL.md`, `commands/*.md`, `agents/*.md`, `rules/`,
+// `templates/`, `.mcp.json` — is stored as an asset of that row and shipped to
+// the device with it. The plugin runtime reads those files after installing the
+// plugin; Cloud does not mint a row per file, so it can no longer send an owner
+// who asked to edit "the plugin" to an inferred child of some other type.
 //
-// It returns the child items that were created so callers can trigger async indexing.
-// Child failures never roll back the parent plugin; they are logged and skipped so a
-// subsequent re-upload can reconcile them.
-func reconcilePluginSubSkills(h *ItemHandler, pluginItem *models.CapabilityItem, assets []services.ArchiveAsset, createdBy string) []*models.CapabilityItem {
-	subSkills := extractSubSkillAssets(assets)
-	subSkills = append(subSkills, extractPluginFileChildren(assets)...)
-	if h.parserSvc != nil {
-		mcpChildren, err := extractPluginMCPAssets(h.parserSvc, pluginItem, assets)
-		if err != nil {
-			log.Printf("plugin child promote: parse MCP config failed for plugin %s: %v", pluginItem.ID, err)
-		} else {
-			subSkills = append(subSkills, mcpChildren...)
-		}
-	}
-
-	// Existing children of this plugin, keyed by source_path and by slug.
-	var existing []models.CapabilityItem
-	h.db.Where("parent_plugin_id = ?", pluginItem.ID).Find(&existing)
-	existingByPath := make(map[string]models.CapabilityItem, len(existing))
-	existingBySlug := make(map[string]models.CapabilityItem, len(existing))
-	for _, ch := range existing {
-		existingByPath[ch.SourcePath] = ch
-		existingBySlug[ch.Slug] = ch
-	}
-
-	// Full path set up-front: the slug-adoption fallback below must only treat
-	// a row as "migrated" when its old path is truly absent from THIS archive
-	// (otherwise a later iteration would path-match the same row).
-	newPaths := make(map[string]struct{}, len(subSkills))
-	for _, ss := range subSkills {
-		newPaths[ss.SourcePath] = struct{}{}
-	}
-	reconciledIDs := make(map[string]struct{}, len(subSkills))
-	created := make([]*models.CapabilityItem, 0, len(subSkills))
-	hashSvc := services.NewContentHashService()
-
-	for _, ss := range subSkills {
-		contentMD5, err := hashSvc.HashArchiveContent(ss.SourcePath, []byte(ss.Content), ss.Assets)
-		if err != nil {
-			log.Printf("sub-skill promote: hash failed for %s of plugin %s: %v", ss.SourcePath, pluginItem.ID, err)
-			continue
-		}
-
-		if child, ok := existingByPath[ss.SourcePath]; ok {
-			if updated, ok := reconcileExistingPluginSubSkill(h, pluginItem, child, ss, contentMD5, createdBy); ok {
-				created = append(created, updated)
-			}
-			reconciledIDs[child.ID] = struct{}{}
-			continue
-		}
-		if legacyPath := legacySingleMCPSourcePath(ss.SourcePath); legacyPath != "" {
-			if child, ok := existingByPath[legacyPath]; ok {
-				if child.Slug == pluginChildBaseSlug(pluginItem.Slug, ss) {
-					if updated, ok := reconcileExistingPluginSubSkill(h, pluginItem, child, ss, contentMD5, createdBy); ok {
-						created = append(created, updated)
-					}
-					reconciledIDs[child.ID] = struct{}{}
-					continue
-				}
-			}
-		}
-		// Path migration (e.g. skills/foo → skills/sub/foo, or an MCP server
-		// moving across config files): same logical child, same slug, new
-		// path. Adopt the existing row instead of letting the create loop hit
-		// the unique slug index and mint a -2 suffixed duplicate while the old
-		// row gets archived.
-		if child, ok := existingBySlug[pluginChildBaseSlug(pluginItem.Slug, ss)]; ok {
-			_, claimed := reconciledIDs[child.ID]
-			_, oldPathStillShipped := newPaths[child.SourcePath]
-			if !claimed && !oldPathStillShipped {
-				if updated, ok := reconcileExistingPluginSubSkill(h, pluginItem, child, ss, contentMD5, createdBy); ok {
-					created = append(created, updated)
-				}
-				reconciledIDs[child.ID] = struct{}{}
-				continue
-			}
-		}
-
-		// New sub-skill: create a child skill item with slug collision retry.
-		baseSlug := pluginChildBaseSlug(pluginItem.Slug, ss)
-		parentID := pluginItem.ID
-		var childItem *models.CapabilityItem
-		var persistErr error
-		for attempt := 0; attempt < 10; attempt++ {
-			slug := baseSlug
-			if attempt > 0 {
-				slug = fmt.Sprintf("%s-%d", baseSlug, attempt+1)
-			}
-			childID := uuid.New().String()
-			assetRecords, assetErr := buildSubSkillAssetRecords(childID, 1, ss)
-			if assetErr != nil {
-				persistErr = assetErr
-				log.Printf("sub-skill promote: asset build failed for %q of plugin %s: %v", ss.Name, pluginItem.ID, assetErr)
-				break
-			}
-			childItem, persistErr = persistNewItem(h.db, createItemRequest{
-				ID:             childID,
-				RegistryID:     pluginItem.RegistryID,
-				RepoID:         pluginItem.RepoID,
-				Slug:           slug,
-				ItemType:       ss.ItemType,
-				Name:           ss.Name,
-				Description:    ss.Description,
-				Version:        ss.Version,
-				Content:        ss.Content,
-				ContentMD5:     contentMD5,
-				Metadata:       ss.Metadata,
-				SourcePath:     ss.SourcePath,
-				SourceType:     "archive",
-				CreatedBy:      createdBy,
-				ParentPluginID: &parentID,
-			}, createItemAssets{Records: assetRecords})
-			if persistErr == nil {
-				enqueueScanAsync(childItem.ID, 1, "create")
-				break
-			}
-			if errors.Is(persistErr, ErrSlugConflict) {
-				// Own-child adoption first: the slot holder being THIS plugin's
-				// child (any status, any source_path) means we raced another
-				// upload or migrated paths — update that row instead of
-				// suffixing a duplicate.
-				var own models.CapabilityItem
-				if err := h.db.Where("repo_id = ? AND item_type = ? AND slug = ? AND parent_plugin_id = ?", pluginItem.RepoID, ss.ItemType, slug, pluginItem.ID).First(&own).Error; err == nil {
-					if updated, ok := reconcileExistingPluginSubSkill(h, pluginItem, own, ss, contentMD5, createdBy); ok {
-						childItem = updated
-						persistErr = nil
-						reconciledIDs[own.ID] = struct{}{}
-					}
-					break
-				}
-				// Legacy: an archived foreign row left on the exact same path.
-				var archived models.CapabilityItem
-				if err := h.db.Where("repo_id = ? AND item_type = ? AND slug = ? AND status = ? AND source_path = ?", pluginItem.RepoID, ss.ItemType, slug, "archived", ss.SourcePath).First(&archived).Error; err == nil {
-					if updated, ok := reconcileExistingPluginSubSkill(h, pluginItem, archived, ss, contentMD5, createdBy); ok {
-						childItem = updated
-						persistErr = nil
-						reconciledIDs[archived.ID] = struct{}{}
-					}
-					break
-				}
-				continue
-			}
-			break
-		}
-		if persistErr != nil {
-			log.Printf("sub-skill promote: failed to create child skill %q for plugin %s: %v", ss.Name, pluginItem.ID, persistErr)
-			continue
-		}
-		created = append(created, childItem)
-	}
-
-	// Archive children whose source_path no longer exists in the uploaded archive.
-	for _, ch := range existing {
-		if _, ok := reconciledIDs[ch.ID]; ok {
-			continue
-		}
-		if _, ok := newPaths[ch.SourcePath]; ok {
-			continue
-		}
-		if ch.Status == "archived" {
-			continue
-		}
-		if err := h.db.Model(&models.CapabilityItem{}).Where("id = ?", ch.ID).Update("status", "archived").Error; err != nil {
-			log.Printf("sub-skill reconcile: archive failed for %s: %v", ch.ID, err)
-		}
-	}
-
-	return created
-}
+// Nothing is lost on the storage side: promotion always COPIED out of the
+// plugin's own asset set, it never moved anything. What promotion added was a
+// second addressable identity for the same bytes, and that duplicate identity is
+// exactly what the flat model retires. The 6.7k rows it already created are
+// retired by the auditable flatten migration, not by this upload path.
+const flattenedPluginArchiveContract = "plugin archive upload yields one capability; bundled files stay assets"
 
 // createItemFromArchive handles multipart/form-data archive upload item creation.
 func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
@@ -4318,13 +3512,7 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 		return
 	}
 
-	// Promote bundled sub-skills (skills/<name>/SKILL.md) into standalone skill items
-	// linked to this plugin via parent_plugin_id. Best-effort: child failures don't
-	// roll back the parent plugin (a later re-upload reconciles them).
-	if itemType == "plugin" {
-		_ = reconcilePluginSubSkills(h, item, result.Assets, createdBy)
-	}
-
+	// Bundled sub-skill promotion is retired: see flattenedPluginArchiveContract.
 	if h.tagSvc != nil {
 		if err := assignTagsForItem(h.tagSvc, item.ID, resolvedTagIDs, services.TagSourceUser); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to assign item tags"})

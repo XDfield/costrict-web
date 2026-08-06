@@ -539,7 +539,11 @@ func TestGitCapabilitySyncService_ArchivesMissingManifestAndReactivatesSameRow(t
 	}
 }
 
-func TestGitCapabilitySyncService_ReconcilesAddedManifestAndRestoresStableIdentity(t *testing.T) {
+// A bound repository reconciles the coordinates it already has. A new
+// classifiable file appearing inside it is content of the capabilities that live
+// there, not a new capability — minting one is the package expansion the flat
+// model retires (AC-FP2/FP-5).
+func TestGitCapabilitySyncService_BoundRepositoryIgnoresNewManifestPath(t *testing.T) {
 	db := setupGitCapabilitySyncDB(t)
 	existing := newGitCapabilityItem("item-existing-skill", "repo-reconcile", "capabilities", "skill", "SKILL.md")
 	createGitCapabilityItem(t, db, existing)
@@ -553,20 +557,56 @@ func TestGitCapabilitySyncService_ReconcilesAddedManifestAndRestoresStableIdenti
 	if err != nil {
 		t.Fatalf("add manifest sync: %v", err)
 	}
-	if result.Created != 1 || result.Updated != 1 || result.Archived != 0 {
-		t.Fatalf("add manifest result = %+v, want one create and one update", result)
+	if result.Created != 0 || result.Archived != 0 {
+		t.Fatalf("bound repository minted a row for a new manifest path: %+v", result)
 	}
-	var created models.CapabilityItem
-	if err := db.Where("source_git_server_id = ? AND source_git_repo_id = ? AND source_repo_path = ? AND source_git_entry_key = ''",
-		gitCapabilityTestServerID, gitCapabilityTestRepoID, "commands/review.md").First(&created).Error; err != nil {
-		t.Fatalf("load created command: %v", err)
+	var count int64
+	if err := db.Model(&models.CapabilityItem{}).Count(&count).Error; err != nil {
+		t.Fatalf("count items: %v", err)
 	}
+	if count != 1 {
+		t.Fatalf("item count = %d, want 1", count)
+	}
+	// The added file is still an asset of the bound skill, so it moves that
+	// capability's projection — it just does not become a capability.
+	if err := db.Model(&models.CapabilityItem{}).
+		Where("source_repo_path = ?", "commands/review.md").Count(&count).Error; err != nil {
+		t.Fatalf("count command rows: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("commands/review.md was indexed as its own capability")
+	}
+}
+
+// Archive-on-removal and reactivation-on-restore must preserve the capability
+// ID. Both manifests here are explicitly bound up front, because binding is now
+// the only way a coordinate enters the index.
+func TestGitCapabilitySyncService_RestoresStableIdentityForBoundManifest(t *testing.T) {
+	db := setupGitCapabilitySyncDB(t)
+	existing := newGitCapabilityItem("item-existing-skill", "repo-reconcile", "capabilities", "skill", "SKILL.md")
+	createGitCapabilityItem(t, db, existing)
+	bound := newGitCapabilityItem("item-bound-command", "repo-reconcile", "capabilities-review", "command", "commands/review.md")
+	createGitCapabilityItem(t, db, bound)
+	reader := newGitCapabilityReader(map[string][]byte{
+		"SKILL.md":           []byte("---\nname: Existing Skill\n---\nbody"),
+		"commands/review.md": []byte("---\nname: Review Command\ndescription: Review changes\nversion: 2.0.0\n---\nreview"),
+	})
+	svc, cfg := newGitCapabilitySyncService(db, reader)
+
+	result, err := svc.SyncRepository(context.Background(), cfg, gitCapabilityTestRepoID, "alice/capabilities", "main", false, createGitCapabilityLease(t, db, "job-add-manifest", "lease-add-manifest"))
+	if err != nil {
+		t.Fatalf("add manifest sync: %v", err)
+	}
+	if result.Created != 0 || result.Updated != 2 || result.Archived != 0 {
+		t.Fatalf("bound projection result = %+v, want two updates", result)
+	}
+	created := loadGitCapabilityItem(t, db, bound.ID)
 	if created.ItemType != "command" || created.Name != "Review Command" || created.Version != "2.0.0" || created.Status != "active" {
-		t.Fatalf("created command projection = %+v", created)
+		t.Fatalf("bound command projection = %+v", created)
 	}
 	// A Git-backed row is anchored on its commit, not on a revision chain: it
-	// grows no capability_versions rows at all, and its content stays in the
-	// repository rather than being copied into either table.
+	// grows no capability_versions rows at all, and index sync never copies the
+	// manifest body into the DB column.
 	var versionCount int64
 	if err := db.Model(&models.CapabilityVersion{}).Where("item_id = ?", created.ID).Count(&versionCount).Error; err != nil {
 		t.Fatalf("count initial versions: %v", err)
@@ -574,11 +614,11 @@ func TestGitCapabilitySyncService_ReconcilesAddedManifestAndRestoresStableIdenti
 	if versionCount != 0 {
 		t.Fatalf("initial version count = %d, want 0", versionCount)
 	}
-	if created.Content != "" {
-		t.Fatalf("created command stored content in the DB: %q", created.Content)
-	}
-	if len(created.ContentMD5) != 64 {
-		t.Fatalf("created command lost its manifest hash: %q", created.ContentMD5)
+	// content/content_md5 are deliberately absent from the projection update map:
+	// a bound row's body lives in the repository, so reconcile must leave both
+	// columns exactly as it found them.
+	if created.Content != bound.Content || created.ContentMD5 != bound.ContentMD5 {
+		t.Fatalf("index sync mutated the DB content columns: content=%q md5=%q", created.Content, created.ContentMD5)
 	}
 
 	delete(reader.files, "commands/review.md")

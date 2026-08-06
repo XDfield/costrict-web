@@ -125,6 +125,11 @@ func main() {
 				log.Fatalf("backfill-moderation-tombstones: %v", err)
 			}
 			return
+		case "flatten-plugins":
+			if err := runPluginFlattenCommand(db, os.Args[2:]); err != nil {
+				log.Fatalf("flatten-plugins: %v", err)
+			}
+			return
 		case "backfill-provider-aware-external-keys":
 			dryRun := len(os.Args) > 2 && os.Args[2] == "--dry-run"
 			if err := backfillProviderAwareExternalKeys(db, dryRun); err != nil {
@@ -296,6 +301,17 @@ func printMigrateHelp() {
 	fmt.Println("                                                Reports two gaps it does NOT cover: Git-archived")
 	fmt.Println("                                                rows, and historical hard deletes (unrecoverable).")
 	fmt.Println("                                                Dry-run by default; --confirm executes.")
+	fmt.Println("  go run ./cmd/migrate flatten-plugins <plan|apply|rollback-plan|rollback-apply|status>")
+	fmt.Println("                                        [--run=<uuid>] [--artifact=<path>] [--batch-size=N]")
+	fmt.Println("                                        [--report-limit=N] [--force] [--confirm]")
+	fmt.Println("                                                Retire package-derived Plugin child rows")
+	fmt.Println("                                                (capability_items.parent_plugin_id) under the flat")
+	fmt.Println("                                                capability model. Classifies by provenance only and")
+	fmt.Println("                                                skips anything ambiguous. Archives and unlinks; never")
+	fmt.Println("                                                hard-deletes a row, favorite, distribution or repo.")
+	fmt.Println("                                                Plan first, then apply with --confirm; every write is")
+	fmt.Println("                                                a compare-and-set and the run resumes by id.")
+	fmt.Println("                                                Run `flatten-plugins help` for the full flag list.")
 	fmt.Println("")
 	fmt.Println("Examples:")
 	fmt.Println("  go run ./cmd/migrate")

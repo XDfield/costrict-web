@@ -87,6 +87,7 @@ var snapshotMigrations = []string{
 	"20260805000700_constrain_capability_sync_tombstone_triples.sql",
 	"20260805000800_materialize_capability_sync_snapshots.sql",
 	"20260806000100_freeze_capability_sync_snapshot_identity.sql",
+	"20260806000300_extend_capability_sync_tombstone_causes.sql",
 }
 
 func newSnapshotPostgresDB(t *testing.T) *gorm.DB {

@@ -3,7 +3,6 @@ package services
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -592,7 +591,11 @@ func TestGitCapabilityDiscovery_RepairsOwnerProjectionAfterBindingAppears(t *tes
 	}
 }
 
-func TestGitCapabilityDiscovery_CreatesCompoundRepositoryAndLocksTypes(t *testing.T) {
+// A repository whose root declares one capability and whose subdirectories
+// contain more classifiable files registers the ROOT declaration only. The
+// nested files are content the capability ships, not capabilities of their own —
+// this is the Git-side half of the flat model (AC-FP1/AC-FP5).
+func TestGitCapabilityDiscovery_RegistersRootManifestOnlyAndLocksType(t *testing.T) {
 	db := setupGitCapabilitySyncDB(t)
 	seedGitDiscoveryOwner(t, db)
 	reader := newGitCapabilityReader(map[string][]byte{
@@ -601,12 +604,13 @@ func TestGitCapabilityDiscovery_CreatesCompoundRepositoryAndLocksTypes(t *testin
 	})
 	reader.repo.Private = true
 	reader.tree = []gitsync.GitTreeEntry{
-		// README.md is not a manifest, so it is an asset of the root SKILL.md and
-		// therefore part of that capability's projection digest. A tree entry that
-		// reaches the digest must carry the object id a real listing carries.
+		// Neither README.md nor commands/review.md is a registrable coordinate.
+		// Both are assets of the root SKILL.md and therefore part of that
+		// capability's projection digest, so both must carry the object id a real
+		// listing carries.
 		{Path: "README.md", Type: "blob", SHA: strings.Repeat("1", 40)},
 		{Path: "SKILL.md", Type: "blob"},
-		{Path: "commands/review.md", Type: "blob"},
+		{Path: "commands/review.md", Type: "blob", SHA: strings.Repeat("3", 40)},
 	}
 	svc, cfg := newGitCapabilitySyncService(db, reader)
 	lease := createGitCapabilityLease(t, db, "discover-compound", "lease-compound")
@@ -615,7 +619,7 @@ func TestGitCapabilityDiscovery_CreatesCompoundRepositoryAndLocksTypes(t *testin
 	if err != nil {
 		t.Fatalf("SyncRepository discovery: %v", err)
 	}
-	if result.Created != 2 || result.Updated != 0 || result.CommitSHA != gitCapabilityTestSHA {
+	if result.Created != 1 || result.Updated != 0 || result.CommitSHA != gitCapabilityTestSHA {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 
@@ -634,41 +638,141 @@ func TestGitCapabilityDiscovery_CreatesCompoundRepositoryAndLocksTypes(t *testin
 	if err := db.Order("item_type ASC").Find(&items).Error; err != nil {
 		t.Fatalf("load discovered items: %v", err)
 	}
-	if len(items) != 2 {
-		t.Fatalf("item count = %d, want 2", len(items))
+	if len(items) != 1 {
+		t.Fatalf("item count = %d, want 1 (nested commands/review.md must not be indexed): %+v", len(items), items)
 	}
-	types := []string{items[0].ItemType, items[1].ItemType}
-	sort.Strings(types)
-	if strings.Join(types, ",") != "command,skill" {
-		t.Fatalf("types = %v", types)
+	if items[0].ItemType != "skill" || items[0].SourceRepoPath != "SKILL.md" {
+		t.Fatalf("root manifest was not the registered coordinate: %+v", items[0])
 	}
-	for _, item := range items {
-		if item.ContentBackend != "git" || item.SourceGitRepoID != gitCapabilityTestRepoID || item.GitSyncStatus != gitCapabilitySyncSynced {
-			t.Fatalf("item was not fully Git-bound: %+v", item)
-		}
+	if items[0].ContentBackend != "git" || items[0].SourceGitRepoID != gitCapabilityTestRepoID || items[0].GitSyncStatus != gitCapabilitySyncSynced {
+		t.Fatalf("item was not fully Git-bound: %+v", items[0])
 	}
 
 	// A later manifest attempts to change the existing skill type. Bound rows
-	// must preserve their locked item types during set reconciliation.
-	reader.tree = []gitsync.GitTreeEntry{
-		{Path: "SKILL.md", Type: "blob"},
-		{Path: "commands/review.md", Type: "blob"},
-	}
+	// must preserve their locked item type during set reconciliation, and the
+	// still-present nested command must still mint nothing.
 	reader.files["SKILL.md"] = []byte("---\nname: Still Skill\ntype: plugin\n---\n\nChanged")
 	secondLease := createGitCapabilityLease(t, db, "discover-compound-2", "lease-compound-2")
 	second, err := svc.SyncRepository(t.Context(), cfg, gitCapabilityTestRepoID, reader.repo.FullName, "main", false, secondLease)
 	if err != nil {
 		t.Fatalf("SyncRepository locked refresh: %v", err)
 	}
-	if second.Created != 0 || second.Updated != 2 {
+	if second.Created != 0 || second.Updated != 1 {
 		t.Fatalf("unexpected second result: %+v", second)
 	}
 	items = nil
 	if err := db.Order("item_type ASC").Find(&items).Error; err != nil {
 		t.Fatalf("reload locked items: %v", err)
 	}
-	if len(items) != 2 || items[0].ItemType != "command" || items[1].ItemType != "skill" {
-		t.Fatalf("locked types changed: %+v", items)
+	if len(items) != 1 || items[0].ItemType != "skill" {
+		t.Fatalf("locked type changed or a child appeared: %+v", items)
+	}
+}
+
+// A repository containing a plugin manifest plus every kind of classifiable
+// package file yields exactly the plugin — AC-FP1 stated in its strongest form.
+func TestGitCapabilityDiscovery_PluginRepositoryYieldsOnlyThePlugin(t *testing.T) {
+	db := setupGitCapabilitySyncDB(t)
+	reader := newGitCapabilityReader(map[string][]byte{
+		".claude-plugin/plugin.json": []byte(discoveryPluginJSON("Toolkit", "toolkit")),
+		"skills/alpha/SKILL.md":      []byte("---\nname: Alpha Skill\n---\nbody"),
+		"commands/build.md":          []byte("---\nname: Build\n---\nbuild"),
+		"agents/reviewer.md":         []byte("---\nname: Reviewer\n---\nreview"),
+		".mcp.json":                  []byte(`{"mcpServers":{"gh":{"command":"gh"}}}`),
+	})
+	svc, cfg := newGitCapabilitySyncService(db, reader)
+
+	result, err := svc.SyncRepository(t.Context(), cfg, gitCapabilityTestRepoID, reader.repo.FullName, "main", false,
+		createGitCapabilityLease(t, db, "discover-plugin-flat", "lease-plugin-flat"))
+	if err != nil {
+		t.Fatalf("discover plugin repository: %v", err)
+	}
+
+	var items []models.CapabilityItem
+	if err := db.Find(&items).Error; err != nil {
+		t.Fatalf("load items: %v", err)
+	}
+	// Root `.mcp.json` and `.claude-plugin/plugin.json` are both repository-scoped,
+	// so the repository declares two identities and discovery refuses to guess.
+	if result.Created != 0 || len(items) != 0 {
+		t.Fatalf("ambiguous root must register nothing: created=%d items=%+v", result.Created, items)
+	}
+	var binding models.GitCapabilityRepository
+	if err := db.First(&binding).Error; err != nil {
+		t.Fatalf("load binding: %v", err)
+	}
+	if binding.IdentificationStatus != models.GitCapabilityIdentificationUnknown ||
+		!strings.Contains(binding.LastError, "explicit registration is required") {
+		t.Fatalf("ambiguous root has no actionable diagnostic: %+v", binding)
+	}
+
+}
+
+// The same repository without the competing root `.mcp.json`: it unambiguously
+// is one plugin, and every skills//commands//agents/ file stays package content.
+func TestGitCapabilityDiscovery_UnambiguousPluginRepositoryYieldsOnePlugin(t *testing.T) {
+	db := setupGitCapabilitySyncDB(t)
+	reader := newGitCapabilityReader(map[string][]byte{
+		".claude-plugin/plugin.json": []byte(discoveryPluginJSON("Toolkit", "toolkit")),
+		"skills/alpha/SKILL.md":      []byte("---\nname: Alpha Skill\n---\nbody"),
+		"commands/build.md":          []byte("---\nname: Build\n---\nbuild"),
+		"agents/reviewer.md":         []byte("---\nname: Reviewer\n---\nreview"),
+	})
+	svc, cfg := newGitCapabilitySyncService(db, reader)
+
+	result, err := svc.SyncRepository(t.Context(), cfg, gitCapabilityTestRepoID, reader.repo.FullName, "main", false,
+		createGitCapabilityLease(t, db, "discover-plugin-flat-2", "lease-plugin-flat-2"))
+	if err != nil {
+		t.Fatalf("discover unambiguous plugin repository: %v", err)
+	}
+	if result.Created != 1 {
+		t.Fatalf("created = %d, want 1", result.Created)
+	}
+	var items []models.CapabilityItem
+	if err := db.Find(&items).Error; err != nil {
+		t.Fatalf("load items: %v", err)
+	}
+	if len(items) != 1 || items[0].ItemType != "plugin" || items[0].SourceRepoPath != ".claude-plugin/plugin.json" {
+		t.Fatalf("plugin internals were promoted: %+v", items)
+	}
+	if items[0].ParentPluginID != nil {
+		t.Fatalf("git discovery must never write parent_plugin_id: %+v", items[0].ParentPluginID)
+	}
+}
+
+// A repository that carries only nested manifests registers nothing and says so.
+// This is the seed/pack shape whose automatic expansion is retired (AC-FP5).
+func TestGitCapabilityDiscovery_NestedOnlyRepositoryRequiresExplicitRegistration(t *testing.T) {
+	db := setupGitCapabilitySyncDB(t)
+	reader := newGitCapabilityReader(map[string][]byte{
+		"skills/alpha/SKILL.md": []byte("---\nname: Alpha\n---\nbody"),
+		"skills/beta/SKILL.md":  []byte("---\nname: Beta\n---\nbody"),
+		"commands/review.md":    []byte("---\nname: Review\n---\nreview"),
+	})
+	svc, cfg := newGitCapabilitySyncService(db, reader)
+
+	result, err := svc.SyncRepository(t.Context(), cfg, gitCapabilityTestRepoID, reader.repo.FullName, "main", false,
+		createGitCapabilityLease(t, db, "discover-nested-only", "lease-nested-only"))
+	if err != nil {
+		t.Fatalf("discover nested-only repository: %v", err)
+	}
+	if result.Created != 0 {
+		t.Fatalf("created = %d, want 0", result.Created)
+	}
+	var count int64
+	if err := db.Model(&models.CapabilityItem{}).Count(&count).Error; err != nil {
+		t.Fatalf("count items: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("nested manifests minted %d rows", count)
+	}
+	var binding models.GitCapabilityRepository
+	if err := db.First(&binding).Error; err != nil {
+		t.Fatalf("load binding: %v", err)
+	}
+	if binding.IdentificationStatus != models.GitCapabilityIdentificationUnknown ||
+		!strings.Contains(binding.LastError, "package content") {
+		t.Fatalf("nested-only repository has no actionable diagnostic: %+v", binding)
 	}
 }
 
@@ -699,7 +803,10 @@ func TestGitCapabilityDiscovery_SkipsExcludedUnboundOwner(t *testing.T) {
 	}
 }
 
-func TestGitCapabilityDiscovery_CreatesPluginPack(t *testing.T) {
+// A "pack" repository — several plugins under plugins/<name>/ — used to mint one
+// row per nested plugin. That is package expansion by another name: the
+// repository never declared which capability it IS, discovery decided for it.
+func TestGitCapabilityDiscovery_PluginPackRequiresExplicitRegistration(t *testing.T) {
 	db := setupGitCapabilitySyncDB(t)
 	reader := newGitCapabilityReader(map[string][]byte{
 		"plugins/alpha/.plugin.json": []byte(discoveryPluginJSON("Alpha", "alpha")),
@@ -707,8 +814,6 @@ func TestGitCapabilityDiscovery_CreatesPluginPack(t *testing.T) {
 	})
 	reader.tree = []gitsync.GitTreeEntry{
 		{Path: "plugins/alpha/.plugin.json", Type: "blob"},
-		// Nested deeply enough that discovery does not classify it as a skill of its
-		// own, so it ships as an asset of the alpha plugin and enters alpha's digest.
 		{Path: "plugins/alpha/skills/internal/SKILL.md", Type: "blob", SHA: strings.Repeat("2", 40)},
 		{Path: "plugins/beta/.plugin.json", Type: "blob"},
 	}
@@ -718,22 +823,23 @@ func TestGitCapabilityDiscovery_CreatesPluginPack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("discover pack: %v", err)
 	}
-	if result.Created != 2 {
-		t.Fatalf("created = %d, want 2", result.Created)
+	if result.Created != 0 {
+		t.Fatalf("created = %d, want 0", result.Created)
+	}
+	var count int64
+	if err := db.Model(&models.CapabilityItem{}).Count(&count).Error; err != nil {
+		t.Fatalf("count items: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("pack repository minted %d rows", count)
 	}
 	var binding models.GitCapabilityRepository
 	if err := db.First(&binding).Error; err != nil {
 		t.Fatalf("load binding: %v", err)
 	}
-	if binding.RepoKind != "pack" || binding.IdentificationStatus != models.GitCapabilityIdentificationClean {
-		t.Fatalf("unexpected pack binding: %+v", binding)
-	}
-	var items []models.CapabilityItem
-	if err := db.Order("slug ASC").Find(&items).Error; err != nil {
-		t.Fatalf("load pack items: %v", err)
-	}
-	if len(items) != 2 || items[0].Slug != "alpha" || items[1].Slug != "beta" {
-		t.Fatalf("plugin internals must not be indexed: %+v", items)
+	if binding.IdentificationStatus != models.GitCapabilityIdentificationUnknown ||
+		!strings.Contains(binding.LastError, "package content") {
+		t.Fatalf("pack repository has no actionable diagnostic: %+v", binding)
 	}
 }
 
@@ -842,30 +948,47 @@ func TestGitCapabilityDiscovery_UnknownRepositoryCanBeIdentifiedByLaterPush(t *t
 	}
 }
 
-func TestGitCapabilityDiscovery_V4OptionalHeuristics(t *testing.T) {
+// `.agent/agent.yaml` is a root-adjacent declaration: the repository saying what
+// it is. It still registers.
+func TestGitCapabilityDiscovery_RootAdjacentAgentManifestStillRegisters(t *testing.T) {
+	db := setupGitCapabilitySyncDB(t)
+	reader := newGitCapabilityReader(map[string][]byte{
+		".agent/agent.yaml": []byte("name: Release Agent\ndescription: Coordinates releases\nversion: 2.0.0\ntags: [release]\n"),
+	})
+	reader.tree = []gitsync.GitTreeEntry{{Path: ".agent/agent.yaml", Type: "blob"}}
+	svc, cfg := newGitCapabilitySyncService(db, reader)
+	result, err := svc.SyncRepository(t.Context(), cfg, gitCapabilityTestRepoID, reader.repo.FullName, "main", false,
+		createGitCapabilityLease(t, db, "discover-agent-yaml", "lease-agent-yaml"))
+	if err != nil {
+		t.Fatalf("discover .agent/agent.yaml: %v", err)
+	}
+	if result.Created != 1 {
+		t.Fatalf("created = %d, want 1", result.Created)
+	}
+	var item models.CapabilityItem
+	if err := db.First(&item).Error; err != nil {
+		t.Fatalf("load discovered item: %v", err)
+	}
+	if item.ItemType != "subagent" || item.Version != "2.0.0" {
+		t.Fatalf("unexpected item: type=%q version=%q", item.ItemType, item.Version)
+	}
+}
+
+// Build manifests are soft matches: `package.json` / `pyproject.toml` /
+// `manifest.json` are recognised as MCP only on a best-effort parse. Letting one
+// decide that a repository is a capability is inference, not registration, so
+// they no longer mint — whether or not the best-effort parse would have
+// succeeded.
+func TestGitCapabilityDiscovery_BuildManifestsNoLongerRegister(t *testing.T) {
 	tests := []struct {
-		name     string
-		path     string
-		content  string
-		itemType string
-		version  string
+		name    string
+		path    string
+		content string
 	}{
-		{
-			name: "agent yaml", path: ".agent/agent.yaml", itemType: "subagent",
-			content: "name: Release Agent\ndescription: Coordinates releases\nversion: 2.0.0\ntags: [release]\n", version: "2.0.0",
-		},
-		{
-			name: "package name", path: "package.json", itemType: "mcp",
-			content: `{"name":"github-mcp","description":"GitHub MCP","version":"1.4.0"}`, version: "1.4.0",
-		},
-		{
-			name: "pep 621 project", path: "pyproject.toml", itemType: "mcp",
-			content: "[project]\nname = \"postgres-mcp\"\nversion = \"3.2.1\"\ndescription = \"Postgres MCP\"\n", version: "3.2.1",
-		},
-		{
-			name: "mcp manifest", path: "manifest.json", itemType: "mcp",
-			content: `{"name":"manifest-mcp","version":"4.0.0","mcp":{"transport":"stdio"}}`, version: "4.0.0",
-		},
+		{name: "package name", path: "package.json", content: `{"name":"github-mcp","description":"GitHub MCP","version":"1.4.0"}`},
+		{name: "pep 621 project", path: "pyproject.toml", content: "[project]\nname = \"postgres-mcp\"\nversion = \"3.2.1\"\ndescription = \"Postgres MCP\"\n"},
+		{name: "mcp manifest", path: "manifest.json", content: `{"name":"manifest-mcp","version":"4.0.0","mcp":{"transport":"stdio"}}`},
+		{name: "ordinary web app", path: "package.json", content: `{"name":"ordinary-web-app"}`},
 	}
 
 	for i, tc := range tests {
@@ -879,42 +1002,25 @@ func TestGitCapabilityDiscovery_V4OptionalHeuristics(t *testing.T) {
 			if err != nil {
 				t.Fatalf("discover %s: %v", tc.path, err)
 			}
-			if result.Created != 1 {
-				t.Fatalf("created = %d, want 1", result.Created)
+			if result.Created != 0 {
+				t.Fatalf("created = %d, want 0", result.Created)
 			}
-			var item models.CapabilityItem
-			if err := db.First(&item).Error; err != nil {
-				t.Fatalf("load discovered item: %v", err)
+			var count int64
+			if err := db.Model(&models.CapabilityItem{}).Count(&count).Error; err != nil {
+				t.Fatalf("count items: %v", err)
 			}
-			if item.ItemType != tc.itemType || item.Version != tc.version {
-				t.Fatalf("unexpected item: type=%q version=%q", item.ItemType, item.Version)
+			if count != 0 {
+				t.Fatalf("%s minted %d rows", tc.path, count)
+			}
+			var binding models.GitCapabilityRepository
+			if err := db.First(&binding).Error; err != nil {
+				t.Fatalf("load binding: %v", err)
+			}
+			if binding.IdentificationStatus != models.GitCapabilityIdentificationUnknown ||
+				!strings.Contains(binding.LastError, "build manifests") {
+				t.Fatalf("build manifest has no actionable diagnostic: %+v", binding)
 			}
 		})
-	}
-}
-
-func TestGitCapabilityDiscovery_UnmatchedOptionalCandidateHasDiagnostic(t *testing.T) {
-	db := setupGitCapabilitySyncDB(t)
-	reader := newGitCapabilityReader(map[string][]byte{
-		"package.json": []byte(`{"name":"ordinary-web-app"}`),
-	})
-	reader.tree = []gitsync.GitTreeEntry{{Path: "package.json", Type: "blob"}}
-	svc, cfg := newGitCapabilitySyncService(db, reader)
-	result, err := svc.SyncRepository(t.Context(), cfg, gitCapabilityTestRepoID, reader.repo.FullName, "main", false,
-		createGitCapabilityLease(t, db, "discover-unmatched", "lease-unmatched"))
-	if err != nil {
-		t.Fatalf("discover unmatched package: %v", err)
-	}
-	if result.Created != 0 || result.Skipped == 0 {
-		t.Fatalf("unexpected result: %+v", result)
-	}
-	var binding models.GitCapabilityRepository
-	if err := db.First(&binding).Error; err != nil {
-		t.Fatalf("load unknown binding: %v", err)
-	}
-	if binding.IdentificationStatus != models.GitCapabilityIdentificationUnknown ||
-		!strings.Contains(binding.LastError, "did not match") {
-		t.Fatalf("unmatched candidate has no diagnostic: %+v", binding)
 	}
 }
 

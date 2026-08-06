@@ -1357,7 +1357,7 @@ func TestForkItem_Git_NonPluginProvisionsRepo(t *testing.T) {
 }
 
 // A plugin without marketplace metadata, and one whose mirror doesn't exist,
-// both stay on the DB path (children and assets copied as before).
+// both stay on the DB path (assets copied as before).
 func TestForkItem_Git_PluginWithoutGiteaSourceKeepsDBFork(t *testing.T) {
 	defer setupTestDB(t)()
 	createPublicRegistry(t)
@@ -1384,12 +1384,14 @@ func TestForkItem_Git_PluginWithoutGiteaSourceKeepsDBFork(t *testing.T) {
 			t.Errorf("%s should stay db-backed, got %q", id, resp.ContentBackend)
 		}
 	}
-	// Legacy behavior intact: sub-items still forked for the DB path.
+	// The DB path forks the plugin and nothing else: bundled content lives in the
+	// fork's own assets, so a row still linked by parent_plugin_id is never
+	// duplicated alongside it (see flattenedPluginArchiveContract).
 	var childForks int64
 	database.GetDB().Model(&models.CapabilityItem{}).
 		Where("forked_from_item_id = ?", "child-9").Count(&childForks)
-	if childForks != 1 {
-		t.Errorf("db fork must copy sub-items, got %d", childForks)
+	if childForks != 0 {
+		t.Errorf("db fork must not copy child rows, got %d", childForks)
 	}
 	if fx.gitea.forkCount() != 0 {
 		t.Errorf("no fork call expected: %d", fx.gitea.forkCount())

@@ -163,15 +163,28 @@ func (s *GitCapabilitySyncService) scanGitCapabilityManifestSet(
 	return discovered, skipped, nil
 }
 
+// discoverGitCapabilityReconciliationCandidates returns the manifest set a bound
+// repository is allowed to reconcile: exactly the manifest paths its existing
+// rows are bound to, and only while the path is still present in the tree.
+//
+// It deliberately does NOT re-run the tree heuristic. Under the flat capability
+// model a repository is not a package of capabilities — one item is one explicit
+// coordinate — so a `skills/<name>/SKILL.md` sitting inside an already-bound
+// plugin repository is that plugin's runtime content, not a new Cloud row.
+// Feeding heuristic hits back in also made every unrelated look-alike file in the
+// repository a hard parse dependency of the bound rows' sync: one unparseable
+// candidate failed the whole projection.
+//
+// A bound path that has left the tree is intentionally absent from the result;
+// the caller reads that absence as "manifest removed" and archives the row.
+//
+// Several entries of one bound manifest (a multi-server `.mcp.json`) still
+// reconcile together, because the unit here is the manifest path, not the entry
+// key. That is the one legitimate way a bound repository still mints rows.
 func discoverGitCapabilityReconciliationCandidates(
 	entries []gitsync.GitTreeEntry,
 	boundItems []models.CapabilityItem,
 ) []gitCapabilityCandidate {
-	candidates := discoverGitCapabilityCandidates(entries)
-	byPath := make(map[string]gitCapabilityCandidate, len(candidates)+len(boundItems))
-	for _, candidate := range candidates {
-		byPath[candidate.Path] = candidate
-	}
 	treePaths := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
 		if entry.Type != "" && !strings.EqualFold(entry.Type, "blob") {
@@ -179,6 +192,7 @@ func discoverGitCapabilityReconciliationCandidates(
 		}
 		treePaths[entry.Path] = struct{}{}
 	}
+	byPath := make(map[string]gitCapabilityCandidate, len(boundItems))
 	for _, item := range boundItems {
 		if _, exists := treePaths[item.SourceRepoPath]; !exists {
 			continue
@@ -223,10 +237,92 @@ func discoverGitCapabilityCandidatesFromDiscovered(discovered []discoveredGitCap
 
 var errGitCapabilityDiscoveryNotMatched = errors.New("file did not match the capability heuristic")
 
+// isRepositoryScopedCapabilityManifest reports whether a manifest path is the
+// repository declaring what IT is, as opposed to a file that merely looks like a
+// capability from inside somebody else's package.
+//
+// Repository-scoped means the manifest sits at the repository root, or is one of
+// the two well-known root-adjacent declarations (`.claude-plugin/plugin.json`,
+// `.agent/agent.yaml`) that describe the repository itself. Everything nested
+// under `skills/`, `commands/`, `agents/`, `subagents/`, `plugins/`, `mcp/`, or
+// `.claude/` is package content: the plugin runtime loads it after installing the
+// repository, and Cloud must not mint a row for it.
+func isRepositoryScopedCapabilityManifest(manifestPath string) bool {
+	normalized := strings.TrimSpace(strings.ReplaceAll(manifestPath, "\\", "/"))
+	parts := strings.Split(strings.ToLower(normalized), "/")
+	switch len(parts) {
+	case 1:
+		return true
+	case 2:
+		return parts[0] == ".claude-plugin" || parts[0] == ".agent"
+	default:
+		return false
+	}
+}
+
+// eligibleUnboundDiscoveryCandidates narrows the tree heuristic to the single
+// coordinate an unbound repository is allowed to register itself as.
+//
+// Two filters, for two different failure modes this used to produce:
+//
+//   - Package expansion. A plugin repository carrying `skills/*/SKILL.md`,
+//     `commands/*.md` and `.mcp.json` minted one Cloud row per file, so editing
+//     "the plugin" could land the user on an inferred child of a different type.
+//     Only repository-scoped manifests survive.
+//   - Soft matches. `package.json` / `manifest.json` / `pyproject.toml` are
+//     recognised as MCP only on a best-effort parse. Letting a build file decide
+//     that a repository is a capability is inference, not registration.
+//
+// A repository that resolves to anything other than exactly one eligible
+// manifest registers nothing and reports why. That is deliberate: guessing which
+// of several roots is "the" capability is the behaviour being retired, and the
+// owner can still bind the coordinate explicitly through provisioning.
+func eligibleUnboundDiscoveryCandidates(candidates []gitCapabilityCandidate) ([]gitCapabilityCandidate, string) {
+	eligible := make([]gitCapabilityCandidate, 0, 1)
+	nested := 0
+	optional := 0
+	for _, candidate := range candidates {
+		if candidate.Optional {
+			optional++
+			continue
+		}
+		if !isRepositoryScopedCapabilityManifest(candidate.Path) {
+			nested++
+			continue
+		}
+		eligible = append(eligible, candidate)
+	}
+	switch {
+	case len(eligible) == 1:
+		return eligible, ""
+	case len(eligible) > 1:
+		paths := make([]string, 0, len(eligible))
+		for _, candidate := range eligible {
+			paths = append(paths, candidate.Path)
+		}
+		sort.Strings(paths)
+		return nil, fmt.Sprintf(
+			"repository declares %d root capability manifests (%s); explicit registration is required to choose one",
+			len(eligible), strings.Join(paths, ", "))
+	case nested > 0:
+		return nil, fmt.Sprintf(
+			"repository has no root capability manifest; %d nested manifest(s) are package content and require explicit registration", nested)
+	case optional > 0:
+		return nil, "repository exposes only build manifests (package.json/manifest.json/pyproject.toml); explicit registration is required"
+	default:
+		return nil, ""
+	}
+}
+
 // discoverGitCapabilities performs the one-time structure inference for a
 // repository with no bound items. The resulting item type/path/entry identity
 // is persisted and all later pushes use ParseGitIndexFile, which never infers
 // the type again.
+//
+// Under the flat capability model this mints at most one manifest coordinate —
+// see eligibleUnboundDiscoveryCandidates. Multiple entries of that one manifest
+// (a multi-server `.mcp.json`) are still separate rows, because entry keys of an
+// explicitly registered manifest are coordinates, not package children.
 func (s *GitCapabilitySyncService) discoverGitCapabilities(
 	ctx context.Context,
 	cfg *gitserver.Config,
@@ -247,9 +343,13 @@ func (s *GitCapabilitySyncService) discoverGitCapabilities(
 	if len(candidates) > maxGitCapabilityDiscoveryCandidates {
 		return nil, fmt.Errorf("repository exposes %d capability manifests; limit is %d", len(candidates), maxGitCapabilityDiscoveryCandidates)
 	}
+	candidates, ineligibleReason := eligibleUnboundDiscoveryCandidates(candidates)
 
 	discovered := make([]discoveredGitCapability, 0, len(candidates))
 	issues := make([]string, 0)
+	if ineligibleReason != "" {
+		issues = append(issues, ineligibleReason)
+	}
 	for _, candidate := range candidates {
 		raw, readErr := reader.ReadFile(ctx, owner, repoName, headSHA, candidate.Path)
 		if readErr != nil {
@@ -315,9 +415,14 @@ func (s *GitCapabilitySyncService) discoverGitCapabilities(
 	status := models.GitCapabilityIdentificationClean
 	if len(discovered) == 0 {
 		status = models.GitCapabilityIdentificationUnknown
-		if len(candidates) == 0 {
+		switch {
+		case len(issues) > 0:
+			// Already explained — an ineligibility reason or a per-manifest
+			// failure. Adding "no supported capability manifest found" on top
+			// would tell the operator to add a manifest they may already have.
+		case len(candidates) == 0:
 			issues = append(issues, "no supported capability manifest found")
-		} else if len(issues) == 0 {
+		default:
 			issues = append(issues, "candidate manifests did not match a supported capability schema")
 		}
 	} else if len(issues) > 0 {

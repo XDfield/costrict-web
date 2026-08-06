@@ -473,7 +473,12 @@ type CapabilityItem struct {
 	Source            string  `json:"source"`                                                                       // 导入来源，如 anthropic/claude-code, superpower, github
 	ForkedFromItemID  *string `gorm:"type:uuid;index:idx_items_forked_from_item" json:"forkedFromItemId,omitempty"` // Fork provenance: 源 item ID（本 item 从另一个 item Fork 出来时填充）
 	ForkedFromOwnerID *string `json:"forkedFromOwnerId,omitempty"`                                                  // 源 item 的 createdBy，用于展示原作者（源删除后仍可解析）
-	ParentPluginID    *string `gorm:"type:uuid;index:idx_item_parent_plugin" json:"parentPluginId,omitempty"`       // Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的 sub-skill 填充）
+	// Deprecated: 扁平能力模型下已无写者。一个 Cloud item 只对应一个显式能力坐标，
+	// plugin 仓库/压缩包内部的文件由运行时加载，不再提升为 Cloud 子行。
+	//
+	// 保留为可空只读列，撑过一个发布兼容窗口：存量行由 `migrate flatten-plugins`
+	// 逐行审计后归档并解链，物理删列是之后的独立任务。任何新写入都是 bug。
+	ParentPluginID *string `gorm:"type:uuid;index:idx_item_parent_plugin" json:"parentPluginId,omitempty"` // Deprecated: 见上；仅存量数据，无新写者
 	// Git backing：fork 到用户 Gitea namespace 的 plugin 只存 metadata，内容真相在仓库里。
 	// ContentBackend 默认 db（content + capability_assets 为真相），存量行与非 git 路径行为不变。
 	SourceRepoURL     string     `gorm:"type:text;not null;default:''" json:"sourceRepoUrl,omitempty"`            // 规范化仓库地址（git_server endpoint + owner/repo）；db-backed 为空

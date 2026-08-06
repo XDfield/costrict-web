@@ -10444,13 +10444,13 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Filter to sub-skills bundled by the given parent plugin item ID",
+                        "description": "DEPRECATED (flat capability model): filter to legacy sub-skills bundled by the given parent plugin item ID. No new rows carry a parent link; the filter exists only for the one-release compatibility window.",
                         "name": "parentPluginId",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "Hide bundled sub-skills from the result when true",
+                        "description": "DEPRECATED (flat capability model): hide legacy bundled sub-skills. Retained for the one-release compatibility window.",
                         "name": "excludeSubSkills",
                         "in": "query"
                     },
@@ -21891,7 +21891,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "parentPluginId": {
-                    "description": "Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的 sub-skill 填充）",
+                    "description": "Deprecated: 扁平能力模型下已无写者。一个 Cloud item 只对应一个显式能力坐标，\nplugin 仓库/压缩包内部的文件由运行时加载，不再提升为 Cloud 子行。\n\n保留为可空只读列，撑过一个发布兼容窗口：存量行由 ` + "`" + `migrate flatten-plugins` + "`" + `\n逐行审计后归档并解链，物理删列是之后的独立任务。任何新写入都是 bug。",
                     "type": "string"
                 },
                 "previewCount": {
@@ -23302,7 +23302,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "parentPluginId": {
-                    "description": "Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的 sub-skill 填充）",
+                    "description": "Deprecated: 扁平能力模型下已无写者。一个 Cloud item 只对应一个显式能力坐标，\nplugin 仓库/压缩包内部的文件由运行时加载，不再提升为 Cloud 子行。\n\n保留为可空只读列，撑过一个发布兼容窗口：存量行由 ` + "`" + `migrate flatten-plugins` + "`" + `\n逐行审计后归档并解链，物理删列是之后的独立任务。任何新写入都是 bug。",
                     "type": "string"
                 },
                 "previewCount": {
@@ -23524,7 +23524,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "parentPluginId": {
-                    "description": "Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的 sub-skill 填充）",
+                    "description": "Deprecated: 扁平能力模型下已无写者。一个 Cloud item 只对应一个显式能力坐标，\nplugin 仓库/压缩包内部的文件由运行时加载，不再提升为 Cloud 子行。\n\n保留为可空只读列，撑过一个发布兼容窗口：存量行由 ` + "`" + `migrate flatten-plugins` + "`" + `\n逐行审计后归档并解链，物理删列是之后的独立任务。任何新写入都是 bug。",
                     "type": "string"
                 },
                 "previewCount": {
@@ -24716,15 +24716,15 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "parentPluginId": {
-                    "description": "sub-skill: 所属父 plugin item ID",
+                    "description": "Deprecated: 三个 parentPlugin* 字段在扁平能力模型下已停止产生新数据，\n仅为存量行保留一个发布兼容窗口。消费方（multica / csc）应停止依赖它们：\nplugin 详情不再展示子项树，也不再有「来自插件 X」的父子关系。",
                     "type": "string"
                 },
                 "parentPluginName": {
-                    "description": "父 plugin 展示名（供「来自插件 X」徽章）",
+                    "description": "Deprecated: 父 plugin 展示名",
                     "type": "string"
                 },
                 "parentPluginSlug": {
-                    "description": "父 plugin slug（供跳转）",
+                    "description": "Deprecated: 父 plugin slug",
                     "type": "string"
                 },
                 "previewCount": {
@@ -25002,7 +25002,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "parentPluginId": {
-                    "description": "Sub-skill provenance: 本 skill 隶属的父 plugin item ID（plugin 展开/上传提升出的 sub-skill 填充）",
+                    "description": "Deprecated: 扁平能力模型下已无写者。一个 Cloud item 只对应一个显式能力坐标，\nplugin 仓库/压缩包内部的文件由运行时加载，不再提升为 Cloud 子行。\n\n保留为可空只读列，撑过一个发布兼容窗口：存量行由 ` + "`" + `migrate flatten-plugins` + "`" + `\n逐行审计后归档并解链，物理删列是之后的独立任务。任何新写入都是 bug。",
                     "type": "string"
                 },
                 "previewCount": {

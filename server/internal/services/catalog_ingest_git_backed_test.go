@@ -290,14 +290,18 @@ func TestIngest_GitBackedRow_AssetsNotReconciled(t *testing.T) {
 	}
 }
 
-// TestIngest_GitBackedChild_NotParentLinked covers gate matrix W17-k. Like the
-// asset pass, reconcileParentPluginLinks deliberately re-queries (so same-batch
-// inserts are visible) and therefore does not inherit the pre-load filter. Its
-// existing scope guard is source_type NOT IN ('archive','fork'), which a
-// git-discovered row (source_type='git') walks straight through.
+// TestIngest_GitBackedChild_NotParentLinked covers gate matrix W17-k. It
+// originally guarded a narrower failure: the deleted reconcileParentPluginLinks
+// re-queried (so same-batch inserts were visible) and therefore did not inherit
+// the pre-load filter, and its scope guard `source_type NOT IN ('archive','fork')`
+// let a git-discovered row (source_type='git') walk straight through.
 //
-// The db-backed child in the same entryDir is the control: it must still be
-// linked, so this fails both on a leaked write and on an over-wide exclusion.
+// Under the flat model no writer of parent_plugin_id remains in ingest at all,
+// so the git-backed row is now protected by construction rather than by a
+// predicate. The test is kept because it still pins the observable contract —
+// ingest touches nothing on that row — and it now also asserts the stronger
+// property that the bundled entry produces no db-backed row to link in the first
+// place.
 func TestIngest_GitBackedChild_NotParentLinked(t *testing.T) {
 	db := newIngestTestDB(t)
 	svc := newIngestService(db)
@@ -311,18 +315,17 @@ func TestIngest_GitBackedChild_NotParentLinked(t *testing.T) {
 		"bundled-child": skillBodyFor("bundled-child"),
 	}
 
-	// First pass creates the plugin and its db-backed child.
+	// First pass creates the plugin only; the bundled child entry is inert.
 	bundle := writeMultiEntryBundle(t, entries, bodies)
 	if _, err := svc.Ingest(context.Background(), IngestSource{Dir: bundle}, IngestOptions{TriggerUser: "tester"}); err != nil {
 		t.Fatalf("first ingest: %v", err)
 	}
 
-	// A git-backed row that shares the child's match key: its parent link is
+	// A git-backed row that shares the bundled child's match key: its identity is
 	// decided by the repository manifest, never by a catalog bundle. Its
 	// source_path is one the bundle ships so the soft-archive sweep leaves it
-	// alone — this test must fail on the parent-link write specifically, not on
-	// an archive that happens first and then hides the link path behind
-	// reconcileParentPluginLinks' own `status <> 'archived'` filter.
+	// alone — this test must fail on a write to the row specifically, not on an
+	// archive that happens first and hides everything else behind it.
 	before := seedGitBackedItem(t, db, models.CapabilityItem{
 		ID: "git-4", Slug: "repo-owned-child", ItemType: "skill", Name: "repo owned child",
 		SourcePath: "skills/bundled-child/SKILL.md", SourceRepoPath: "skill.md", SourceType: "git",
@@ -339,13 +342,17 @@ func TestIngest_GitBackedChild_NotParentLinked(t *testing.T) {
 	}
 	assertItemUnchanged(t, before, after)
 
-	var child models.CapabilityItem
-	if err := db.Where("content_backend = ? AND item_type = ? AND catalog_entry_dir = ?",
-		"db", "skill", "skills/bundled-child").First(&child).Error; err != nil {
-		t.Fatalf("load db-backed child: %v", err)
+	// The control is now the inverse: the bundled entry must not have produced a
+	// db-backed row at all, so there is nothing left in this entryDir for a
+	// parent link to attach to.
+	var dbBacked int64
+	if err := db.Model(&models.CapabilityItem{}).
+		Where("content_backend = ? AND item_type = ? AND catalog_entry_dir = ?",
+			"db", "skill", "skills/bundled-child").Count(&dbBacked).Error; err != nil {
+		t.Fatalf("count db-backed rows for the bundled entry: %v", err)
 	}
-	if child.ParentPluginID == nil {
-		t.Errorf("db-backed child must still be linked to its parent plugin")
+	if dbBacked != 0 {
+		t.Errorf("bundled child entry created %d db-backed rows; the flat model indexes none", dbBacked)
 	}
 }
 
