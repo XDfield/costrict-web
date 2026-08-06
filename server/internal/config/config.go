@@ -112,6 +112,10 @@ const (
 type ClawAgentConfig struct {
 	EncryptionKey string // AES-256-GCM encryption key for API keys
 	Session       ClawAgentSessionConfig
+	// MemoryEnabled controls whether the agent persists and loads per-user
+	// memory. Default false — memory is NOT loaded into the prompt and the
+	// post-reply Refresh merge is a no-op. Flip to true to opt back in.
+	MemoryEnabled bool
 }
 
 type ClawAgentSessionConfig struct {
@@ -322,6 +326,9 @@ func Load() *Config {
 				CompactionKeepRecentMessages: getEnvInt("CLAWAGENT_SESSION_COMPACTION_KEEP_RECENT", 10),
 				NotificationDelaySeconds:     getEnvInt("AI_NOTIFICATION_DELAY_SECONDS", 30),
 			},
+			// MemoryEnabled: default off. When false, MemoryMgr.Load returns
+			// "" (no memory section in the prompt) and Refresh no-ops.
+			MemoryEnabled: getEnvBool("CLAWAGENT_MEMORY_ENABLED", false),
 		},
 		// ProfileGateEnabled: default off for staged rollout.
 		ProfileGateEnabled: getEnvBool("PROFILE_GATE_ENABLED", false),
