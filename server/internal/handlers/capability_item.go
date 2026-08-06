@@ -1177,6 +1177,7 @@ func ListItems(c *gin.Context) {
 	db := database.GetDB()
 	var items []models.CapabilityItem
 	query := db.Where("registry_id = ?", registryId)
+	query = applyGitBrowseVisibilityFilter(query, c, db)
 	if itemType := c.Query("type"); itemType != "" {
 		query = query.Where("item_type = ?", itemType)
 	}
@@ -2599,6 +2600,9 @@ func ListAllItems(c *gin.Context) {
 		if c.Query("includeForks") != "true" {
 			query = query.Where("forked_from_item_id IS NULL")
 		}
+	}
+	query = applyGitBrowseVisibilityFilter(query, c, db)
+	if !isFavoritedQuery {
 		query.Model(&models.CapabilityItem{}).Count(&total)
 	}
 

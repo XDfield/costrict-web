@@ -447,6 +447,40 @@ func TestListMyItems_Success(t *testing.T) {
 	}
 }
 
+func TestListMyItems_GitVisibilityFreshnessDoesNotHideOwner(t *testing.T) {
+	defer setupTestDB(t)()
+	stale := time.Now().Add(-11 * time.Minute)
+	if err := database.DB.Create(&models.CapabilityRegistry{
+		ID: "my-git-freshness-reg", Name: "my git freshness", SourceType: "internal", RepoID: "public", OwnerID: "system",
+	}).Error; err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	if err := database.DB.Create(&models.CapabilityItem{
+		ID: "my-stale-git-item", RegistryID: "my-git-freshness-reg", RepoID: "public", Slug: "my-stale-git", ItemType: "skill",
+		Name: "My stale git item", Status: "active", CreatedBy: "item-owner", ContentBackend: contentBackendGit,
+		GitVisibilityVerifiedAt: &stale, Metadata: datatypes.JSON([]byte("{}")),
+	}).Error; err != nil {
+		t.Fatalf("seed item: %v", err)
+	}
+
+	w := get(newRegistryRouter("item-owner"), "/api/items/my")
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		Total int `json:"total"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if body.Total != 1 || len(body.Items) != 1 || body.Items[0].ID != "my-stale-git-item" {
+		t.Fatalf("owner's stale Git item should remain visible, got %+v", body)
+	}
+}
+
 func TestListMyItems_RepoVisibilityField(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.Repository{

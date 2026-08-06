@@ -479,6 +479,7 @@ func ListMyItems(c *gin.Context) {
 		AllowRegistryID: true,
 		UserID:          ownerID.(string),
 	})
+	query = applyGitBrowseVisibilityFilter(query, c, db)
 
 	var total int64
 	query.Model(&models.CapabilityItem{}).Count(&total)

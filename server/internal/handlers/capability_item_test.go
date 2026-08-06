@@ -521,6 +521,119 @@ func TestListAllItems_SortByPreviewCountDesc(t *testing.T) {
 	}
 }
 
+func TestListAllItems_GitVisibilityFreshness(t *testing.T) {
+	defer setupTestDB(t)()
+
+	const registryID = "reg-git-freshness"
+	const repoID = "repo-git-freshness"
+	if err := database.DB.Create(&models.Repository{ID: repoID, Name: repoID, OwnerID: "repo-owner", Visibility: "public"}).Error; err != nil {
+		t.Fatalf("seed repository: %v", err)
+	}
+	if err := database.DB.Create(&models.CapabilityRegistry{ID: registryID, Name: "git freshness", SourceType: "internal", RepoID: repoID, OwnerID: "repo-owner"}).Error; err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	if err := database.DB.Create(&models.RepoMember{ID: "git-freshness-member", RepoID: repoID, UserID: "member", Role: "member"}).Error; err != nil {
+		t.Fatalf("seed member: %v", err)
+	}
+
+	fresh := time.Now().Add(-time.Minute)
+	stale := time.Now().Add(-11 * time.Minute)
+	for _, item := range []models.CapabilityItem{
+		{ID: "fresh-git", RegistryID: registryID, RepoID: repoID, Slug: "fresh-git", ItemType: "skill", Name: "fresh git", Status: "active", CreatedBy: "author", ContentBackend: contentBackendGit, GitVisibilityVerifiedAt: &fresh, Metadata: datatypes.JSON([]byte("{}"))},
+		{ID: "stale-git-owner", RegistryID: registryID, RepoID: repoID, Slug: "stale-git-owner", ItemType: "skill", Name: "stale git owner", Status: "active", CreatedBy: "owner", ContentBackend: contentBackendGit, GitVisibilityVerifiedAt: &stale, Metadata: datatypes.JSON([]byte("{}"))},
+		{ID: "stale-git-member", RegistryID: registryID, RepoID: repoID, Slug: "stale-git-member", ItemType: "skill", Name: "stale git member", Status: "active", CreatedBy: "author", ContentBackend: contentBackendGit, Metadata: datatypes.JSON([]byte("{}"))},
+		{ID: "db-backed", RegistryID: registryID, RepoID: repoID, Slug: "db-backed", ItemType: "skill", Name: "db backed", Status: "active", CreatedBy: "author", Metadata: datatypes.JSON([]byte("{}"))},
+	} {
+		if err := database.DB.Create(&item).Error; err != nil {
+			t.Fatalf("seed item %s: %v", item.ID, err)
+		}
+	}
+
+	assertList := func(userID string, wantTotal int, wantIDs ...string) {
+		t.Helper()
+		w := get(newItemRouter(userID), "/api/items?pageSize=2&page=1")
+		if w.Code != http.StatusOK {
+			t.Fatalf("list as %q: status=%d body=%s", userID, w.Code, w.Body.String())
+		}
+		var body struct {
+			Items []struct {
+				ID string `json:"id"`
+			} `json:"items"`
+			Total   int  `json:"total"`
+			HasMore bool `json:"hasMore"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+			t.Fatalf("decode list as %q: %v", userID, err)
+		}
+		if body.Total != wantTotal {
+			t.Fatalf("list as %q total=%d, want %d", userID, body.Total, wantTotal)
+		}
+		if body.HasMore != (wantTotal > 2) {
+			t.Fatalf("list as %q hasMore=%v, want %v", userID, body.HasMore, wantTotal > 2)
+		}
+		seen := make(map[string]bool, len(body.Items))
+		for _, item := range body.Items {
+			seen[item.ID] = true
+		}
+		for _, id := range wantIDs {
+			if !seen[id] {
+				t.Fatalf("list as %q missing first-page item %q: %+v", userID, id, seen)
+			}
+		}
+	}
+
+	// Anonymous public browse sees only the fresh Git row and the unaffected DB row.
+	assertList("", 2, "fresh-git", "db-backed")
+	// An item's owner and a repository member retain their local authorization.
+	assertList("owner", 3)
+	assertList("member", 4)
+
+	grantPlatformAdmin(t, "platform-admin")
+	assertList("platform-admin", 4)
+
+	// The registry-scoped list uses the same SQL predicate and reports the filtered total.
+	w := get(newItemRouter(""), "/api/registries/"+registryID+"/items?pageSize=20")
+	var registryBody struct {
+		Total int `json:"total"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&registryBody); err != nil || registryBody.Total != 2 {
+		t.Fatalf("registry list total=%d decodeErr=%v, want 2", registryBody.Total, err)
+	}
+}
+
+func TestListAllItems_FavoritedGitVisibilityFreshness(t *testing.T) {
+	defer setupTestDB(t)()
+	verified := time.Now().Add(-time.Minute)
+	if err := database.DB.Create(&models.CapabilityRegistry{ID: "reg-fav-git-freshness", Name: "favorite git freshness", SourceType: "internal", RepoID: "public", OwnerID: "system"}).Error; err != nil {
+		t.Fatalf("seed registry: %v", err)
+	}
+	for _, item := range []models.CapabilityItem{
+		{ID: "fav-fresh-git", RegistryID: "reg-fav-git-freshness", RepoID: "public", Slug: "fav-fresh-git", ItemType: "skill", Name: "fresh", Status: "active", CreatedBy: "author", ContentBackend: contentBackendGit, GitVisibilityVerifiedAt: &verified, Metadata: datatypes.JSON([]byte("{}"))},
+		{ID: "fav-stale-git", RegistryID: "reg-fav-git-freshness", RepoID: "public", Slug: "fav-stale-git", ItemType: "skill", Name: "stale", Status: "active", CreatedBy: "author", ContentBackend: contentBackendGit, Metadata: datatypes.JSON([]byte("{}"))},
+	} {
+		if err := database.DB.Create(&item).Error; err != nil {
+			t.Fatalf("seed item: %v", err)
+		}
+		if err := database.DB.Create(&models.ItemFavorite{ID: "favorite-" + item.ID, ItemID: item.ID, UserID: "viewer"}).Error; err != nil {
+			t.Fatalf("seed favorite: %v", err)
+		}
+	}
+
+	w := get(newItemRouter("viewer"), "/api/items?favorited=true&paginated=true")
+	var body struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+		Total int `json:"total"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode favorite list: %v", err)
+	}
+	if body.Total != 1 || len(body.Items) != 1 || body.Items[0].ID != "fav-fresh-git" {
+		t.Fatalf("favorite list must exclude stale Git item, got %+v", body)
+	}
+}
+
 func TestListAllItems_SortByInstallCountAsc(t *testing.T) {
 	defer setupTestDB(t)()
 	database.DB.Create(&models.CapabilityRegistry{

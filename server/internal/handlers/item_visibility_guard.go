@@ -30,10 +30,11 @@
 //     a platform operator — are not gated by the remote check. Their permission
 //     does not come from "the repository is public", so a repository going
 //     private cannot revoke it.
-//  3. This is the DETAIL path only. Browse/search freshness filtering is the
-//     other half of the contract and belongs to the reconcile that writes
-//     capability_items.git_visibility_verified_at; that column has no writer
-//     yet, so filtering on it today would hide every Git-backed row.
+//  3. Detail reads use a live check. Browse/list reads use the most recent
+//     successful reconcile verification instead: applyGitBrowseVisibilityFilter
+//     fails closed for public callers when that timestamp is missing or stale,
+//     while preserving local owner/member/operator access without per-item
+//     Gitea probes.
 package handlers
 
 import (
@@ -84,6 +85,13 @@ var (
 	// would hold every request thread until the client gave up. Four seconds
 	// fails closed quickly instead of accumulating requests.
 	gitVisibilityTimeout = envDuration("GIT_VISIBILITY_TIMEOUT_SECONDS", 4*time.Second)
+
+	// gitBrowseVisibilityTTL is the maximum age of a successful reconcile
+	// verification that public browse/list responses may trust. It is deliberately
+	// separate from the detail cache: list pages must not fan out into Gitea
+	// probes, and an unavailable reconciler must hide a Git-backed row rather
+	// than continue exposing its repository coordinate indefinitely.
+	gitBrowseVisibilityTTL = envDuration("GIT_VISIBILITY_BROWSE_FRESHNESS_TTL_SECONDS", 10*time.Minute)
 )
 
 // gitVisibilityCacheCap bounds the cache. Entries are per repository, so the
@@ -109,6 +117,38 @@ func envDuration(name string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+// applyGitBrowseVisibilityFilter keeps publicly-visible list queries from
+// returning a Git-backed item whose remote visibility has not been verified
+// recently. It is intentionally a SQL predicate, so callers use the exact same
+// filtered relation for Count, pagination, and Find.
+//
+// A creator, repository member, or platform admin does not rely on public
+// visibility. Those callers remain able to browse their own locally-authorized
+// rows even while reconcile is delayed. DB-backed rows have no Git visibility
+// to verify and keep their existing behaviour.
+func applyGitBrowseVisibilityFilter(query *gorm.DB, c *gin.Context, db *gorm.DB) *gorm.DB {
+	if query == nil || c == nil {
+		return query
+	}
+	if callerIsPlatformAdmin(c, db) {
+		return query
+	}
+
+	cutoff := time.Now().Add(-gitBrowseVisibilityTTL)
+	userID := c.GetString(middleware.UserIDKey)
+	if userID == "" {
+		return query.Where(
+			"content_backend <> ? OR (git_visibility_verified_at IS NOT NULL AND git_visibility_verified_at >= ?)",
+			contentBackendGit, cutoff,
+		)
+	}
+
+	return query.Where(
+		"content_backend <> ? OR (git_visibility_verified_at IS NOT NULL AND git_visibility_verified_at >= ?) OR created_by = ? OR EXISTS (SELECT 1 FROM repo_members WHERE repo_members.repo_id = capability_items.repo_id AND repo_members.user_id = ?)",
+		contentBackendGit, cutoff, userID, userID,
+	)
 }
 
 // gitVisibilityEntry is one repository's verification result. ready is closed
