@@ -188,14 +188,14 @@ func validateCreateRegistry(c *gin.Context, db *gorm.DB, registryID string) (int
 	if err := db.First(&reg, "id = ?", registryID).Error; err != nil {
 		return http.StatusNotFound, "registry_not_found", false
 	}
-	if reg.SourceType == "external" {
+	if reg.SourceType != "internal" {
 		return http.StatusBadRequest, "external_registry_not_allowed", false
 	}
 	var repo models.Repository
 	if err := db.First(&repo, "id = ?", reg.RepoID).Error; err != nil {
 		return http.StatusNotFound, "repository_not_found", false
 	}
-	if repo.RepoType == "sync" {
+	if repo.RepoType != "normal" {
 		return http.StatusBadRequest, "sync_repository_not_allowed", false
 	}
 	uid := c.GetString(middleware.UserIDKey)
