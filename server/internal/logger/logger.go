@@ -229,6 +229,13 @@ func L() *zap.Logger {
 	return zapLogger
 }
 
+// Debug logs a debug-level message to app.log (and console when below the
+// console min level threshold). Use for high-frequency routine path traces
+// (e.g. per-request auth context setup) that would flood INFO output.
+func Debug(format string, args ...any) {
+	getSugar().Debugf(format, args...)
+}
+
 // Info logs an informational message to app.log.
 func Info(format string, args ...any) {
 	getSugar().Infof(format, args...)

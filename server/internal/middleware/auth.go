@@ -683,7 +683,7 @@ func setAuthContext(c *gin.Context, userInfo *VerifiedUserInfo) {
 	// VerifyTokenWithUser for the internal /auth/verify path.
 	// Phase 6.2: AuthClaims aliases VerifiedUserInfo, so the context value
 	// is the verified-info struct itself — no field copy.
-	logger.Info("[auth-debug] setAuthContext cs-user JWT: trusting sub=%q directly", userID)
+	logger.Debug("[auth-debug] setAuthContext cs-user JWT: trusting sub=%q directly", userID)
 	c.Set(UserIDKey, userID)
 	c.Set(UserNameKey, userName)
 	c.Set(AuthClaimsKey, *userInfo)
