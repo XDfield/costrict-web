@@ -281,7 +281,7 @@ func (s *BehaviorService) UnfavoriteItem(ctx context.Context, itemID, userID str
 		}
 	}()
 
-	count, removed, err := s.unfavoriteItemTx(tx, itemID, userID)
+	count, removed, err := s.unfavoriteItemTx(tx, itemID, userID, models.SyncTombstoneReasonUnfavorited)
 	if err != nil {
 		tx.Rollback()
 		return 0, false, err
@@ -300,11 +300,16 @@ func (s *BehaviorService) UnfavoriteItem(ctx context.Context, itemID, userID str
 // uncommitted distribution status as 'active' and wrongly blocks removing the
 // favorite of a revoked/paused readonly distribution — so the recipient keeps a
 // favorite that the cloud should no longer report, and /hub never unloads it.
-func (s *BehaviorService) UnfavoriteItemTx(tx *gorm.DB, itemID, userID string) (int64, bool, error) {
-	return s.unfavoriteItemTx(tx, itemID, userID)
+//
+// reason attributes the resulting csc tombstone. It is a parameter rather than
+// a constant because the same DELETE means different things to a device: the
+// user let the capability go, or an administrator took it back. Callers pass
+// models.SyncTombstoneReason{Unfavorited,DistributionRevoked}.
+func (s *BehaviorService) UnfavoriteItemTx(tx *gorm.DB, itemID, userID, reason string) (int64, bool, error) {
+	return s.unfavoriteItemTx(tx, itemID, userID, reason)
 }
 
-func (s *BehaviorService) unfavoriteItemTx(tx *gorm.DB, itemID, userID string) (int64, bool, error) {
+func (s *BehaviorService) unfavoriteItemTx(tx *gorm.DB, itemID, userID, reason string) (int64, bool, error) {
 	// Prevent unfavoriting items still required by an ACTIVE readonly
 	// distribution. A distribution that is already revoked/paused on this tx is
 	// (correctly) excluded by status = 'active'.
@@ -330,6 +335,26 @@ func (s *BehaviorService) unfavoriteItemTx(tx *gorm.DB, itemID, userID string) (
 		if err := tx.Model(&models.CapabilityItem{}).
 			Where("id = ?", itemID).
 			UpdateColumn("favorite_count", gorm.Expr("CASE WHEN favorite_count > 0 THEN favorite_count - 1 ELSE 0 END")).Error; err != nil {
+			return 0, false, err
+		}
+		// RowsAffected > 0 is the compare-and-set the tombstone's event-id
+		// rotation rule depends on (F-6). It is true exactly when a favorite
+		// that existed a moment ago no longer does — i.e. at a real
+		// present -> absent transition — so a repeated unfavorite of an item
+		// the user does not have reaches nothing and leaves the existing
+		// tombstone's event id alone, while unfavorite -> refavorite ->
+		// unfavorite rotates it and the device can actually unload the
+		// capability the second time.
+		//
+		// In the same transaction on purpose: a favorite deleted without its
+		// tombstone is a capability the cloud stops reporting and the device
+		// never removes, which is the silent divergence this whole contract
+		// exists to prevent.
+		if err := RecordEntitlementRemovalTx(tx, EntitlementRemoval{
+			UserID: userID,
+			ItemID: itemID,
+			Reason: reason,
+		}); err != nil {
 			return 0, false, err
 		}
 	}

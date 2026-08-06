@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -152,8 +153,52 @@ func (f *fakeForkGitea) treeOf(repo string) []string {
 	return paths
 }
 
+// registerRepoID binds a repository's numeric identity, which is what every
+// git-sync path (and the visibility gate) resolves it by. A fixture that seeds
+// a repository without one models a row shape that occurs once in 538 rows in
+// the live database, and would let a test pass while the production lookup
+// finds nothing.
+func (f *fakeForkGitea) registerRepoID(fullName string, id int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ids[fullName] = id
+}
+
 func (f *fakeForkGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/api/v1")
+
+	// GET /repositories/{id} — the repository by NUMERIC id. This is the lookup
+	// the authorization gate uses, because the id survives rename and transfer
+	// while owner/name in a stored URL do not.
+	if r.Method == http.MethodGet && strings.HasPrefix(path, "/repositories/") {
+		id, err := strconv.ParseInt(strings.TrimPrefix(path, "/repositories/"), 10, 64)
+		if err != nil {
+			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
+			return
+		}
+		f.mu.Lock()
+		fullName, branch, private := "", "", false
+		for name, known := range f.ids {
+			if known != id {
+				continue
+			}
+			if b, exists := f.repos[name]; exists {
+				fullName, branch, private = name, b, f.privateRepos[name]
+			}
+			break
+		}
+		f.mu.Unlock()
+		if fullName == "" {
+			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": id, "name": fullName[strings.Index(fullName, "/")+1:], "full_name": fullName,
+			"default_branch": branch, "private": private,
+		})
+		return
+	}
 
 	// POST /users/{name}/tokens — PAT minting (Basic auth, not token auth).
 	if r.Method == http.MethodPost && strings.HasPrefix(path, "/users/") && strings.HasSuffix(path, "/tokens") {
@@ -940,10 +985,12 @@ func TestForkItem_Git_ProbesTrustedCoordinateForPath(t *testing.T) {
 		Content: "# summary", Metadata: datatypes.JSON([]byte(`{}`)), SourcePath: ".plugin.json",
 		SourceType: "fork", CreatedBy: "bob", CurrentRevision: 1, Status: "active",
 		ContentBackend: "git", SourceRepoURL: fx.srv.URL + "/10002/plug", SourceRepoRef: "main",
+		SourceGitServerID: "gs-1", SourceGitRepoID: 10503,
 	}).Error; err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	fx.gitea.repos["10002/plug"] = "main"
+	fx.gitea.registerRepoID("10002/plug", 10503)
 	// Git-backed sources must retain the authoritative manifest identity too;
 	// a persisted coordinate alone is not enough to accept its content.
 	if err := database.GetDB().Model(&models.CapabilityItem{}).
@@ -979,10 +1026,12 @@ func TestForkItem_Git_TrustedCoordinateWithWrongManifestIsRejected(t *testing.T)
 		Content: "# summary", Metadata: datatypes.JSON([]byte(`{"install":{"plugin_name":"expected"}}`)), SourcePath: ".plugin.json",
 		SourceType: "fork", CreatedBy: "bob", CurrentRevision: 1, Status: "active",
 		ContentBackend: "git", SourceRepoURL: fx.srv.URL + "/10002/plug", SourceRepoRef: "main",
+		SourceGitServerID: "gs-1", SourceGitRepoID: 10504,
 	}).Error; err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	fx.gitea.repos["10002/plug"] = "main"
+	fx.gitea.registerRepoID("10002/plug", 10504)
 	fx.gitea.manifests["10002/plug"] = "another-plugin"
 
 	w := forkReq(newForkRouter("carol"), "fork-src-invalid")
@@ -1378,10 +1427,12 @@ func TestForkItem_Git_ForkOfForkUsesSourceRepo(t *testing.T) {
 		Content: "# summary", Metadata: datatypes.JSON([]byte(`{"install":{"plugin_name":"p"}}`)), SourcePath: ".plugin.json",
 		SourceType: "fork", CreatedBy: "bob", CurrentRevision: 1, Status: "active",
 		ContentBackend: "git", SourceRepoURL: fx.srv.URL + "/10002/plug", SourceRepoRef: "main",
+		SourceGitServerID: "gs-1", SourceGitRepoID: 10502,
 	}).Error; err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	fx.gitea.repos["10002/plug"] = "main"
+	fx.gitea.registerRepoID("10002/plug", 10502)
 
 	w := forkReq(newForkRouter("carol"), "fork-src")
 	if w.Code != http.StatusCreated {
@@ -1427,12 +1478,17 @@ func TestForkItem_Git_ForkOfForkRefusesWhenGitUnavailable(t *testing.T) {
 func TestDownloadPluginZip_GitBackedRefuses(t *testing.T) {
 	defer setupTestDB(t)()
 	createPublicRegistry(t)
+	// The refusal below hands out the repository URL and an archive link, so it
+	// is gated on the repository still being public — which needs a git server
+	// that can answer for the row's numeric coordinate.
+	setupGitContentFixture(t)
 	if err := database.GetDB().Create(&models.CapabilityItem{
 		ID: "git-plug", RegistryID: PublicRegistryID, RepoID: "public", Slug: "git-plug",
 		ItemType: "plugin", Name: "Git Plugin", Descriptions: datatypes.JSON([]byte(`{}`)),
 		Content: "# summary", Metadata: datatypes.JSON([]byte(`{}`)), SourcePath: ".plugin.json",
 		SourceType: "fork", CreatedBy: "bob", CurrentRevision: 1, Status: "active",
 		ContentBackend: "git", SourceRepoURL: "https://git.example/10001/git-plug", SourceRepoRef: "main",
+		SourceGitServerID: gitContentTestServerID, SourceGitRepoID: gitContentTestRepoID,
 	}).Error; err != nil {
 		t.Fatalf("seed: %v", err)
 	}

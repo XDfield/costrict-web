@@ -241,6 +241,25 @@ func setupTestDB(t *testing.T) func() {
 			created_at DATETIME,
 			UNIQUE(item_id, user_id)
 		)`,
+		// Removing a favorite writes a csc snapshot tombstone in the SAME
+		// transaction, so this table is now part of the unfavorite path rather
+		// than an optional extra: a favorite deleted without its tombstone is a
+		// capability the cloud stops reporting and no device ever removes.
+		// created_at/updated_at carry defaults because the model declares them
+		// database-generated (production: DEFAULT now()), so GORM omits them.
+		`CREATE TABLE IF NOT EXISTS capability_sync_tombstones (
+			id               TEXT PRIMARY KEY,
+			user_id          TEXT NOT NULL,
+			item_id          TEXT NOT NULL,
+			reason           TEXT NOT NULL,
+			lifecycle_reason TEXT,
+			source           TEXT NOT NULL,
+			event_id         TEXT NOT NULL UNIQUE,
+			removed_at       DATETIME NOT NULL,
+			created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(user_id, item_id)
+		)`,
 		`CREATE TABLE IF NOT EXISTS item_distributions (
 			id              TEXT PRIMARY KEY,
 			item_id         TEXT NOT NULL,
@@ -401,7 +420,15 @@ func setupTestDB(t *testing.T) func() {
 	}
 
 	database.DB = db
-	return func() { database.DB = nil }
+	// The Git visibility gate memoizes per (git server, numeric repo id), and
+	// those ids are fixtures reused by every test in this package. A warm entry
+	// from the previous case would answer the next one — hiding both a missing
+	// probe and a stale allow. Clear it on the way in and on the way out.
+	resetGitVisibilityCache()
+	return func() {
+		database.DB = nil
+		resetGitVisibilityCache()
+	}
 }
 
 // newRouter builds a minimal Gin router wired to the three registry handlers.

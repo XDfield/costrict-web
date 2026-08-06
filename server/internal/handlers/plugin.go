@@ -249,7 +249,21 @@ func DownloadPluginZip(c *gin.Context) {
 	// plugin. Fail loudly and hand back the repo coordinate instead. Serving
 	// the real bundle from Gitea's archive endpoint belongs to the follow-up
 	// git-backing task.
+	//
+	// The refusal below is itself a disclosure: it hands out the repository URL
+	// and a ready-made archive link. For a caller admitted by the check above
+	// only because the LOCAL visibility column says "public", that coordinate is
+	// exactly what must not be served once the repository has gone private on
+	// Gitea, so it is re-verified first (AC-LH16).
 	if isGitBacked(&item) {
+		if visibility == "public" {
+			herr := requireLivePublicGitRepository(c, &item,
+				"this plugin's git server could not confirm who may read it; try again later")
+			if herr != nil {
+				c.JSON(herr.status, herr.body)
+				return
+			}
+		}
 		c.JSON(http.StatusConflict, gin.H{
 			"error":      "This plugin is stored in git; download it from its repository instead",
 			"error_code": "GIT_BACKED_ITEM",

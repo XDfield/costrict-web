@@ -64,6 +64,26 @@ type Config struct {
 	// generated spec (via swag init) is unaffected — only the HTTP route
 	// is gated.
 	SwaggerEnabled bool
+	// CapabilitySyncSnapshotV2Enabled mounts GET /api/sync/v2/snapshot, the
+	// versioned csc sync contract. Default false: the legacy favorites endpoint
+	// keeps serving every client, and a deployment opts in only once its fleet
+	// is known. When off the route answers 404, which is the "fall back to v1"
+	// signal a mixed fleet needs.
+	CapabilitySyncSnapshotV2Enabled bool
+	// CapabilitySyncLifecyclePropagationEnabled lets Git archival instruct
+	// clients to remove capabilities, by including git_archived tombstones in
+	// snapshots. Default false, and this is the production kill switch.
+	//
+	// It is separate from the endpoint gate because the two risks are different:
+	// serving v2 exposes an API, whereas propagating lifecycle removals deletes
+	// files on user machines. Turning it OFF is always safe — a suppressed
+	// tombstone leaves the item merely absent, and absence is a no-op — so it
+	// can be flipped back at any time without a client-side rollback.
+	//
+	// It must not be enabled until every active sync client supports contract
+	// v2 (or legacy clients are blocked from sync); a mixed fleet would leave
+	// some devices holding capabilities the cloud has removed, indefinitely.
+	CapabilitySyncLifecyclePropagationEnabled bool
 }
 
 // UserServiceConfig selects and configures the read backend for user data.
@@ -330,6 +350,9 @@ func Load() *Config {
 		// SwaggerEnabled: default off — Swagger UI is not mounted unless
 		// explicitly enabled. See field doc above.
 		SwaggerEnabled: getEnvBool("ENABLE_SWAGGER", false),
+		// Both csc snapshot v2 switches default off. See the field docs.
+		CapabilitySyncSnapshotV2Enabled:           getEnvBool("CSC_SNAPSHOT_V2_ENABLED", false),
+		CapabilitySyncLifecyclePropagationEnabled: getEnvBool("CSC_SNAPSHOT_LIFECYCLE_PROPAGATION_ENABLED", false),
 	}
 
 	// DatabaseURL must be provided. Refuses to start when unset (or

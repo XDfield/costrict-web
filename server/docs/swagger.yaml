@@ -2007,6 +2007,122 @@ definitions:
       token:
         type: string
     type: object
+  internal_handlers.CapabilitySyncSnapshotItem:
+    properties:
+      contentMd5:
+        description: |-
+          ContentMD5 / GitSHA are the change keys. Either may be empty depending on
+          where the capability's content lives.
+        type: string
+      gitSha:
+        type: string
+      itemId:
+        type: string
+      itemType:
+        type: string
+      name:
+        type: string
+      slug:
+        type: string
+      sources:
+        description: |-
+          Sources is why the principal has this item — "favorite", "distribution",
+          or both — sorted so the value is stable across servers.
+        items:
+          type: string
+        type: array
+      version:
+        type: string
+    type: object
+  internal_handlers.CapabilitySyncSnapshotPage:
+    properties:
+      complete:
+        description: |-
+          Complete appears only on the final page of a fully materialized snapshot.
+          Nothing may be removed locally until it has been seen, together with every
+          page and a verified digest.
+        type: boolean
+      contractVersion:
+        description: |-
+          ContractVersion is 2 for this endpoint. A client that does not understand
+          it must not act on the body.
+        type: integer
+      generatedAt:
+        description: GeneratedAt is display/diagnostic only. Server clocks move backwards.
+        type: string
+      generation:
+        description: |-
+          Generation is the only ordering signal. It is strictly increasing per
+          principal; a client must reject anything not strictly greater than the
+          generation it last applied, and must never order by generatedAt.
+        type: integer
+      itemCount:
+        description: |-
+          ItemCount / TombstoneCount are whole-snapshot totals, not page totals.
+          Check them against what you reassembled before verifying the digest.
+        type: integer
+      items:
+        description: |-
+          Items are the capabilities the principal is currently entitled to. An
+          item's ABSENCE from this list is never an instruction to remove it.
+
+          The declared element type exists so generated clients get a real shape;
+          the bytes actually transmitted come from rawItems (see MarshalJSON), which
+          carry the canonical form the digest was computed over.
+        items:
+          $ref: '#/definitions/internal_handlers.CapabilitySyncSnapshotItem'
+        type: array
+      pageCount:
+        type: integer
+      pageIndex:
+        type: integer
+      snapshotDigest:
+        description: |-
+          SnapshotDigest is the lowercase SHA-256 hex of the RFC 8785
+          canonicalization of the whole reassembled snapshot.
+        type: string
+      snapshotId:
+        description: |-
+          SnapshotID is opaque and carries no order. Pass it back to fetch further
+          pages of the SAME frozen snapshot.
+        type: string
+      tombstoneCount:
+        type: integer
+      tombstones:
+        description: |-
+          Tombstones are explicit removals. This is the ONLY thing that authorizes a
+          client to unload or disable a capability.
+        items:
+          $ref: '#/definitions/internal_handlers.CapabilitySyncSnapshotTombstone'
+        type: array
+    type: object
+  internal_handlers.CapabilitySyncSnapshotTombstone:
+    properties:
+      eventId:
+        description: EventID is durable and globally unique. Apply each id at most
+          once.
+        type: string
+      itemId:
+        type: string
+      lifecycleReason:
+        description: |-
+          LifecycleReason is manifest_removed | default_branch_missing |
+          repository_deleted, and is present only for reason=git_archived. It is
+          null — never omitted — for the other reasons, so the key set of a
+          tombstone is fixed.
+        type: string
+      reason:
+        description: Reason is git_archived | unfavorited | distribution_revoked.
+        type: string
+      removedAt:
+        description: RemovedAt is the server time of the removal transition (RFC 3339).
+        type: string
+      source:
+        description: |-
+          Source is the producing subsystem: git_lifecycle | favorite |
+          distribution. It is determined by Reason.
+        type: string
+    type: object
   internal_handlers.ConsistencyCheckResponse:
     properties:
       contentMd5:
@@ -15314,6 +15430,74 @@ paths:
                 type: string
             type: object
       summary: Get sync log detail
+      tags:
+      - sync
+  /sync/v2/snapshot:
+    get:
+      description: |-
+        Returns one page of a frozen, versioned snapshot of everything the caller is entitled to, plus explicit tombstones for entitlements that ended.
+
+        **Removal semantics.** A client may unload or disable a locally managed capability ONLY when it holds every page of one snapshot, the reassembled counts match `itemCount`/`tombstoneCount`, the recomputed digest equals `snapshotDigest`, the final page carried `complete=true`, `generation` is strictly greater than the last generation it applied, and that snapshot contains an explicit tombstone for the item. An item that is merely missing from `items` is NOT a removal signal — a network failure, an auth failure, a truncated page and an empty error body all look identical to absence.
+
+        **Paging.** Call without `snapshotId` to obtain the current snapshot's page 0; the response pins `snapshotId` and `pageCount`. Pass that `snapshotId` back with `page=1..pageCount-1` to collect the rest. Pages are deterministic slices of one stored artifact, so the set never shifts underneath a paging client. A snapshot that expires or is superseded past its grace window answers 410; restart from page 0.
+
+        **Digest.** Concatenate every page's `items` in page order, then every page's `tombstones` in page order, build `{contractVersion, snapshotId, generation, generatedAt, pageCount, itemCount, tombstoneCount, items, tombstones}`, serialize with RFC 8785 (JCS) and take the lowercase SHA-256 hex. `pageIndex`, `complete` and `snapshotDigest` are excluded. Re-canonicalize the parsed elements rather than concatenating the transferred text: JSON transports are free to re-escape characters such as `<` and U+2028, so raw bytes may differ while the canonical form does not.
+
+        **Ordering.** `generation` is the only ordering signal. `snapshotId` is opaque and `generatedAt` is diagnostic.
+      parameters:
+      - description: Continue a snapshot already begun; required for page > 0
+        in: query
+        name: snapshotId
+        type: string
+      - description: Zero-based page index, default 0
+        in: query
+        name: page
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.CapabilitySyncSnapshotPage'
+        "400":
+          description: Malformed page or a page > 0 without snapshotId
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Contract v2 is not enabled on this deployment; fall back to
+            the legacy favorites endpoint
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "410":
+          description: Snapshot expired or superseded; restart from page 0
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Fetch a page of the caller's capability sync snapshot (csc contract
+        v2)
       tags:
       - sync
   /tags:

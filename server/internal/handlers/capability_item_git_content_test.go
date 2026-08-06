@@ -48,6 +48,14 @@ type fakeContentGitea struct {
 	rawReads    []string
 	// rawStatus, when non-zero, is returned instead of the file (404/403/500).
 	rawStatus int
+	// private / internal are Gitea's two visibility axes. Both are reported on
+	// the repository payload and both close the repository to an anonymous
+	// visitor (internal means the owning organisation is "limited", so only
+	// signed-in Gitea users may read it).
+	private  bool
+	internal bool
+	// repoStatus, when non-zero, replaces the repository lookup response.
+	repoStatus int
 }
 
 func newFakeContentGitea(token string) *fakeContentGitea {
@@ -66,6 +74,32 @@ func (f *fakeContentGitea) counts() (repoLookups, rawReads int) {
 	return f.repoLookups, len(f.rawReads)
 }
 
+// goPrivate is the event this whole gate exists for, and the one the deployed
+// Gitea 1.24.6 reports through NO webhook at all: the repository stops being
+// public while the local visibility column still says it is.
+func (f *fakeContentGitea) goPrivate() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.private = true
+}
+
+// goInternal is Gitea's other closed state: not private, but owned by a limited
+// organisation, so anonymous visitors are refused. `private == false` alone
+// would read this as world-readable.
+func (f *fakeContentGitea) goInternal() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.internal = true
+}
+
+// vanish makes the repository lookup answer 404, which is what a deleted (or
+// admin-token-invisible) repository looks like.
+func (f *fakeContentGitea) vanish() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.repoStatus = http.StatusNotFound
+}
+
 func (f *fakeContentGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Authorization") != "token "+f.adminToken {
 		http.Error(w, `{"message":"unauthorized"}`, http.StatusUnauthorized)
@@ -77,11 +111,17 @@ func (f *fakeContentGitea) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.repoLookups++
 		fullName := f.fullName
+		private, internal, status := f.private, f.internal, f.repoStatus
 		f.mu.Unlock()
+		if status != 0 {
+			http.Error(w, `{"message":"forced"}`, status)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id": gitContentTestRepoID, "name": strings.Split(fullName, "/")[1],
-			"full_name": fullName, "default_branch": "main", "private": false,
+			"full_name": fullName, "default_branch": "main",
+			"private": private, "internal": internal,
 		})
 		return
 	}
@@ -302,6 +342,13 @@ func TestGetItem_GitBackedContentIsReadThroughAndNotPersisted(t *testing.T) {
 
 // AC (hard red line): an unreachable git server produces an error. Not the
 // stored column, not an empty body.
+//
+// An ANONYMOUS caller stops one step earlier than it used to. Their only claim
+// on this row is "the repository is public", and that claim is now confirmed
+// against the Git server before anything is served, so an unreachable server
+// leaves the claim unproven and the request is refused as unverified rather
+// than as unreadable. The refusal carries no repository coordinate — see the
+// owner's variant below for the content-level error, which does.
 func TestGetItem_GitBackedContentFailsClosedWhenGiteaIsDown(t *testing.T) {
 	defer setupTestDB(t)()
 	gitea := setupGitContentFixture(t)
@@ -310,19 +357,47 @@ func TestGetItem_GitBackedContentFailsClosedWhenGiteaIsDown(t *testing.T) {
 	stopFakeGitea(t)
 
 	w := get(newItemRouter(""), "/api/items/gc-down")
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("expected 502 when git is unreachable, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when git cannot confirm visibility, got %d: %s", w.Code, w.Body.String())
 	}
 	raw := w.Body.String()
 	if strings.Contains(raw, gitContentStaleDBValue) {
 		t.Fatal("the failure path fell back to the stored content column")
 	}
 	body := decodeItemBody(t, w.Body.Bytes())
-	if body["error_code"] != "GIT_CONTENT_UNREACHABLE" {
-		t.Fatalf("error does not identify an upstream failure: %v", body)
+	if body["error_code"] != "GIT_VISIBILITY_UNVERIFIED" {
+		t.Fatalf("error does not identify an unverified visibility: %v", body)
 	}
 	if _, ok := body["content"]; ok {
 		t.Fatal("the failure response carried a content field")
+	}
+	if _, ok := body["repoUrl"]; ok {
+		t.Fatalf("an unverified refusal handed out the repository coordinate: %v", body)
+	}
+}
+
+// The item's owner is not authorized by public visibility, so an unreachable
+// git server does not change WHO may read the row — only whether its content
+// can be fetched. They therefore still receive the content-level upstream
+// error, which is what tells an operator the git server is down rather than
+// that the row was hidden.
+func TestGetItem_GitBackedOwnerStillSeesTheUpstreamErrorWhenGiteaIsDown(t *testing.T) {
+	defer setupTestDB(t)()
+	gitea := setupGitContentFixture(t)
+	gitea.setFile("skill.md", gitContentSkillFile)
+	seedGitContentItem(t, "gc-down-owner", "skill", "skill.md")
+	stopFakeGitea(t)
+
+	w := get(newItemRouter("u1"), "/api/items/gc-down-owner")
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for the owner, got %d: %s", w.Code, w.Body.String())
+	}
+	body := decodeItemBody(t, w.Body.Bytes())
+	if body["error_code"] != "GIT_CONTENT_UNREACHABLE" {
+		t.Fatalf("owner error does not identify an upstream failure: %v", body)
+	}
+	if strings.Contains(w.Body.String(), gitContentStaleDBValue) {
+		t.Fatal("the failure path fell back to the stored content column")
 	}
 }
 
@@ -414,9 +489,22 @@ func TestDownloadItem_GitBackedFailsClosedWhenGiteaIsDown(t *testing.T) {
 	seedGitContentItem(t, "gc-dl-down", "skill", "skill.md")
 	stopFakeGitea(t)
 
+	// Anonymous: the visibility gate refuses before the content read, because an
+	// unreachable git server cannot confirm the public claim this caller relies
+	// on. Either way nothing from the stored column reaches the wire.
 	w := get(newRouter(""), "/api/items/gc-dl-down/download")
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), gitContentStaleDBValue) {
+		t.Fatal("download fell back to the stored content column")
+	}
+
+	// The owner is authorized locally, so they reach the content read and get
+	// the upstream error it produces.
+	w = get(newRouter("u1"), "/api/items/gc-dl-down/download")
 	if w.Code != http.StatusBadGateway {
-		t.Fatalf("expected 502, got %d: %s", w.Code, w.Body.String())
+		t.Fatalf("expected 502 for the owner, got %d: %s", w.Code, w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), gitContentStaleDBValue) {
 		t.Fatal("download fell back to the stored content column")
@@ -631,8 +719,21 @@ func TestListItemAssets_GitBackedReturnsEmptyArrayNotNull(t *testing.T) {
 	}
 	// Listing is live: resolve the stable repository identity and walk its tree,
 	// but do not fetch file bodies until the installer asks for an asset.
-	if repoLookups, rawReads := gitea.counts(); repoLookups != 1 || rawReads != 0 {
+	//
+	// Two repository lookups, not one, and they answer different questions: the
+	// first is the authorization gate confirming the repository is still public
+	// for this anonymous caller, the second is the listing resolving the current
+	// owner/name to walk. The gate's answer is memoized per repository, so a
+	// second request within the TTL adds none — which is what the assertion
+	// below pins.
+	if repoLookups, rawReads := gitea.counts(); repoLookups != 2 || rawReads != 0 {
 		t.Fatalf("the live manifest made %d repo lookups and %d raw reads", repoLookups, rawReads)
+	}
+	if w := get(newItemRouter(""), "/api/items/gc-assets/assets"); w.Code != http.StatusOK {
+		t.Fatalf("second listing: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if repoLookups, _ := gitea.counts(); repoLookups != 3 {
+		t.Fatalf("the visibility gate re-probed instead of reusing its answer: %d lookups", repoLookups)
 	}
 }
 

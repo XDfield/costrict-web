@@ -1299,8 +1299,13 @@ func GetItem(c *gin.Context) {
 		return
 	}
 	userID := c.GetString(middleware.UserIDKey)
-	if !canAccessItem(&item, userID) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this item"})
+	// authorizeItemRead rather than canAccessItem: the detail response carries
+	// the item's content AND its repository coordinate, so for a Git-backed row
+	// a caller admitted only by the (webhook-less, reconcile-lagged) local
+	// visibility column has that visibility confirmed against the Git server
+	// first. AC-LH16.
+	if herr := authorizeItemRead(c, &item); herr != nil {
+		c.JSON(herr.status, herr.body)
 		return
 	}
 
@@ -1342,8 +1347,8 @@ func ListItemAssets(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
 		return
 	}
-	if !canAccessItem(&item, c.GetString(middleware.UserIDKey)) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this item"})
+	if herr := authorizeItemRead(c, &item); herr != nil {
+		c.JSON(herr.status, herr.body)
 		return
 	}
 
@@ -2208,8 +2213,8 @@ func ListItemVersions(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
 		return
 	}
-	if !canAccessItem(&item, c.GetString(middleware.UserIDKey)) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this item"})
+	if herr := authorizeItemRead(c, &item); herr != nil {
+		c.JSON(herr.status, herr.body)
 		return
 	}
 
@@ -2271,8 +2276,8 @@ func GetItemVersion(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "Item not found"})
 		return
 	}
-	if !canAccessItem(&item, c.GetString(middleware.UserIDKey)) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this item"})
+	if herr := authorizeItemRead(c, &item); herr != nil {
+		c.JSON(herr.status, herr.body)
 		return
 	}
 
@@ -2906,6 +2911,16 @@ func (h *ItemHandler) ForkItem(c *gin.Context) {
 	// Cannot fork your own item.
 	if src.CreatedBy == userID {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "You cannot fork your own item", "code": "fork_self"})
+		return
+	}
+
+	// "Public" above is the local column, which no Gitea event keeps current.
+	// Forking a Git-backed source forks its REPOSITORY, so acting on a stale
+	// "public" would copy a repository that has since been taken private into
+	// the caller's own namespace — a durable copy of private content, not just a
+	// transient read. Confirm with the Git server before any side effect.
+	if herr := authorizeGitBackedFork(c, &src); herr != nil {
+		c.JSON(herr.status, herr.body)
 		return
 	}
 

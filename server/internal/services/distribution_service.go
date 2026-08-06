@@ -740,7 +740,13 @@ func (s *DistributionService) UpdateDistribution(ctx context.Context, distID, op
 					// OTHER error is a real failure: propagate it so the whole tx
 					// (including the revoked/paused status change) rolls back rather than
 					// committing a status that's out of sync with the favorite.
-					if _, _, err := s.behaviorSvc.UnfavoriteItemTx(tx, dist.ItemID, receipt.UserID); err != nil && !errors.Is(err, ErrSkillRequired) {
+					// distribution_revoked, not unfavorited: the device shows the
+					// user why a capability disappeared, and "you removed this"
+					// is the wrong answer when an administrator took it back.
+					// Pause revokes entitlement for now in exactly the same way
+					// a revoke does, so it carries the same reason.
+					if _, _, err := s.behaviorSvc.UnfavoriteItemTx(tx, dist.ItemID, receipt.UserID,
+						models.SyncTombstoneReasonDistributionRevoked); err != nil && !errors.Is(err, ErrSkillRequired) {
 						return err
 					}
 				}

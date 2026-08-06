@@ -93,6 +93,9 @@ func seedGitBackedSource(t *testing.T, fx *gitForkFixture, id, slug, repoFullNam
 		t.Fatalf("seed %s source: %v", tc.itemType, err)
 	}
 	fx.gitea.repos[repoFullName] = "main"
+	// The row names repository 4242; the fake has to answer for that id or the
+	// visibility gate reads "this repository is gone" and refuses the fork.
+	fx.gitea.registerRepoID(repoFullName, 4242)
 	fx.gitea.putFile(repoFullName, tc.manifestPath, []byte(tc.manifest))
 }
 

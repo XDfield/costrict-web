@@ -201,6 +201,20 @@ func setupRevokeFavoriteDB(t *testing.T) *gorm.DB {
 			receipt_status TEXT DEFAULT 'unread', forked_item_id TEXT, created_at DATETIME, updated_at DATETIME)`,
 		`CREATE TABLE capability_items (id TEXT PRIMARY KEY, name TEXT, favorite_count INTEGER DEFAULT 0)`,
 		`CREATE TABLE item_favorites (id TEXT PRIMARY KEY, item_id TEXT NOT NULL, user_id TEXT NOT NULL, created_at DATETIME)`,
+		// Removing a favorite now writes a csc tombstone in the SAME
+		// transaction: a favorite deleted without one is a capability the cloud
+		// stops reporting and the device never removes. The table therefore has
+		// to exist here, or this test would be asserting a revoke path that
+		// cannot commit in production.
+		`CREATE TABLE capability_sync_tombstones (
+			id TEXT PRIMARY KEY, user_id TEXT NOT NULL, item_id TEXT NOT NULL,
+			reason TEXT NOT NULL, lifecycle_reason TEXT, source TEXT NOT NULL,
+			event_id TEXT NOT NULL UNIQUE, removed_at DATETIME NOT NULL,
+			-- Defaults mirror production (DEFAULT now()): the model declares
+			-- them as database-generated, so GORM leaves them out of the INSERT.
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE (user_id, item_id))`,
 	}
 	for _, stmt := range stmts {
 		if err := db.Exec(stmt).Error; err != nil {

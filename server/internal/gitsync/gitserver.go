@@ -39,10 +39,17 @@ const (
 // workflow_repo provisioning path. ID is the numeric primary key used in
 // subsequent API calls; FullName is "owner/name" for diagnostics.
 type Repo struct {
-	ID       int64      `json:"id"`
-	Name     string     `json:"name"`
-	FullName string     `json:"full_name"`
-	Private  bool       `json:"private"`
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	FullName string `json:"full_name"`
+	Private  bool   `json:"private"`
+	// Internal is Gitea's second visibility axis: the repository is not private,
+	// but its owning organisation is "limited", so only SIGNED-IN Gitea users can
+	// see it. Anonymous access is refused. It is carried here because the
+	// authorization gate serves anonymous callers, and `private == false` alone
+	// would read a limited-org repository as world-readable. Measured present on
+	// the deployed Gitea 1.24.6 repository payload (2026-08-06).
+	Internal bool       `json:"internal"`
 	Mirror   bool       `json:"mirror"`
 	Owner    *RepoOwner `json:"owner,omitempty"`
 	// OriginalURL is populated for Gitea mirror repositories.

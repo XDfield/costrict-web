@@ -34,8 +34,14 @@ func newGitHistoryRouter(userID string) *gin.Engine {
 	return r
 }
 
-// seedGitHistoryItem plants a repository/registry/item triple. visibility drives
-// canAccessItem, which is the whole authorization surface of this endpoint.
+// seedGitHistoryItem plants a repository/registry/item triple.
+//
+// visibility drives the local half of the authorization decision. The remote
+// half — re-confirming that a Git-backed row's repository is still public
+// before a caller who relies on that serves the timeline — needs a git server
+// that can answer for the row's numeric coordinate, which is why the row is
+// bound to the shared content fixture's server/repository ids rather than to
+// invented ones.
 func seedGitHistoryItem(t *testing.T, visibility, contentBackend string) {
 	t.Helper()
 	db := database.GetDB()
@@ -54,10 +60,20 @@ func seedGitHistoryItem(t *testing.T, visibility, contentBackend string) {
 		 source_git_server_id, source_git_repo_id, source_repo_ref, source_repo_path,
 		 git_sha, git_sync_status, status, created_by, created_at, updated_at)
 		VALUES (?, ?, ?, 'history-skill', 'skill', 'History Skill', '1.0.0', ?,
-		        'gs-1', 77, 'main', 'SKILL.md', ?, 'synced', 'active', 'owner-1', ?, ?)`,
+		        ?, ?, 'main', 'SKILL.md', ?, 'synced', 'active', 'owner-1', ?, ?)`,
 		historyItemID, historyRegistryID, historyRepoID, contentBackend,
+		gitContentTestServerID, gitContentTestRepoID,
 		"1111111111111111111111111111111111111111", time.Now(), time.Now()).Error; err != nil {
 		t.Fatalf("seed item: %v", err)
+	}
+}
+
+// setItemStatus drives the hidden-state branch of the refusal.
+func setItemStatus(t *testing.T, itemID, status string) {
+	t.Helper()
+	if err := database.GetDB().
+		Exec(`UPDATE capability_items SET status = ? WHERE id = ?`, status, itemID).Error; err != nil {
+		t.Fatalf("set status %q: %v", status, err)
 	}
 }
 
@@ -102,6 +118,7 @@ func sha40(prefix byte) string {
 // cursor that keeps its meaning when newer revisions arrive.
 func TestListItemGitHistory_OrdersNewestFirstAndPagesByCursor(t *testing.T) {
 	defer setupTestDB(t)()
+	setupGitContentFixture(t)
 	seedGitHistoryItem(t, "public", contentBackendGit)
 	for i := int64(1); i <= 7; i++ {
 		seedGitRevision(t, i, sha40(byte('a'+i-1)), "1."+string(rune('0'+i))+".0", models.GitRevisionSourcePush)
@@ -147,6 +164,7 @@ func TestListItemGitHistory_OrdersNewestFirstAndPagesByCursor(t *testing.T) {
 
 func TestListItemGitHistory_LimitIsClampedNotRejected(t *testing.T) {
 	defer setupTestDB(t)()
+	setupGitContentFixture(t)
 	seedGitHistoryItem(t, "public", contentBackendGit)
 	for i := int64(1); i <= 25; i++ {
 		seedGitRevision(t, i, sha40(byte('a'))[:38]+string(rune('0'+i/10))+string(rune('0'+i%10)),
@@ -180,6 +198,7 @@ func TestListItemGitHistory_LimitIsClampedNotRejected(t *testing.T) {
 // version, and a history row with a blank version is unrenderable.
 func TestListItemGitHistory_EmptyVersionFallsBackToTheShortSHA(t *testing.T) {
 	defer setupTestDB(t)()
+	setupGitContentFixture(t)
 	seedGitHistoryItem(t, "public", contentBackendGit)
 	const sha = "abcdef0123456789abcdef0123456789abcdef01"
 	seedGitRevision(t, 1, sha, "", models.GitRevisionSourceBackfill)

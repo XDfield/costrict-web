@@ -269,8 +269,8 @@ func DownloadItem(c *gin.Context) {
 	userIDVal, _ := c.Get(middleware.UserIDKey)
 	userID, _ := userIDVal.(string)
 
-	if !canAccessItem(&item, userID) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this item"})
+	if herr := authorizeItemRead(c, &item); herr != nil {
+		c.JSON(herr.status, herr.body)
 		return
 	}
 
@@ -323,20 +323,39 @@ func contentFilename(itemType, slug string) string {
 }
 
 func canAccessItem(item *models.CapabilityItem, userID string) bool {
+	allowed, _ := itemAccessDecision(item, userID)
+	return allowed
+}
+
+// itemAccessDecision is canAccessItem plus the REASON it said yes.
+//
+// The reason matters for Git-backed rows: a caller admitted because the
+// repository is public is relying on a local column that no webhook keeps
+// current (visibility changes are silent on Gitea 1.24.6), whereas a caller
+// admitted because they are a member of a private repository holds a permission
+// the remote repository cannot revoke. Only the first kind needs the live
+// verification in authorizeItemRead — which is why this returns two values
+// instead of collapsing them into one bool.
+//
+// viaPublicVisibility is only meaningful when allowed is true.
+func itemAccessDecision(item *models.CapabilityItem, userID string) (allowed, viaPublicVisibility bool) {
+	if item == nil {
+		return false, false
+	}
 	reg := item.Registry
 	if reg == nil {
-		return false
+		return false, false
 	}
 
 	// Determine visibility from the parent repository
 	visibility := getRepoVisibility(reg.RepoID)
 
 	if visibility == "public" {
-		return true
+		return true, true
 	}
 
 	if userID == "" {
-		return false
+		return false, false
 	}
 
 	// For private repos, check membership
@@ -345,7 +364,7 @@ func canAccessItem(item *models.CapabilityItem, userID string) bool {
 	db.Model(&models.RepoMember{}).
 		Where("repo_id = ? AND user_id = ?", reg.RepoID, userID).
 		Count(&count)
-	return count > 0
+	return count > 0, false
 }
 
 // DownloadRegistryFile godoc
@@ -384,11 +403,8 @@ func DownloadRegistryFile(c *gin.Context) {
 		return
 	}
 
-	userIDVal, _ := c.Get(middleware.UserIDKey)
-	userID, _ := userIDVal.(string)
-
-	if !canAccessItem(&item, userID) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this item"})
+	if herr := authorizeItemRead(c, &item); herr != nil {
+		c.JSON(herr.status, herr.body)
 		return
 	}
 

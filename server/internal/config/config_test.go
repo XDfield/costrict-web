@@ -204,3 +204,63 @@ func TestResolveBindStateSecret(t *testing.T) {
 		})
 	}
 }
+
+// Both csc snapshot v2 switches must default OFF, and the two must be
+// independent.
+//
+// The endpoint gate decides whether v2 exists; lifecycle propagation decides
+// whether Git archival may instruct a device to delete files. Those are
+// different blast radii, so enabling the first must never imply the second —
+// this is the property a rollout depends on, and a default that drifted to true
+// would ship the deletion path to a fleet nobody has checked.
+func TestLoadCapabilitySyncSnapshotSwitchesDefaultOffAndAreIndependent(t *testing.T) {
+	t.Run("both default off", func(t *testing.T) {
+		setSnapshotSwitchBaseline(t)
+
+		cfg := Load()
+		if cfg.CapabilitySyncSnapshotV2Enabled {
+			t.Error("CSC_SNAPSHOT_V2_ENABLED must default to false")
+		}
+		if cfg.CapabilitySyncLifecyclePropagationEnabled {
+			t.Error("CSC_SNAPSHOT_LIFECYCLE_PROPAGATION_ENABLED must default to false")
+		}
+	})
+
+	t.Run("serving v2 does not enable lifecycle propagation", func(t *testing.T) {
+		setSnapshotSwitchBaseline(t)
+		t.Setenv("CSC_SNAPSHOT_V2_ENABLED", "true")
+
+		cfg := Load()
+		if !cfg.CapabilitySyncSnapshotV2Enabled {
+			t.Error("CSC_SNAPSHOT_V2_ENABLED=true was not honoured")
+		}
+		if cfg.CapabilitySyncLifecyclePropagationEnabled {
+			t.Error("enabling the endpoint must not enable the removal path")
+		}
+	})
+
+	t.Run("propagation is opt-in on its own", func(t *testing.T) {
+		setSnapshotSwitchBaseline(t)
+		t.Setenv("CSC_SNAPSHOT_LIFECYCLE_PROPAGATION_ENABLED", "true")
+
+		cfg := Load()
+		if !cfg.CapabilitySyncLifecyclePropagationEnabled {
+			t.Error("CSC_SNAPSHOT_LIFECYCLE_PROPAGATION_ENABLED=true was not honoured")
+		}
+		if cfg.CapabilitySyncSnapshotV2Enabled {
+			t.Error("the endpoint gate must stay independent")
+		}
+	})
+}
+
+// setSnapshotSwitchBaseline gives Load() the minimum it refuses to start
+// without, so these tests state a default rather than inheriting whatever the
+// developer's shell happens to export.
+func setSnapshotSwitchBaseline(t *testing.T) {
+	t.Helper()
+	t.Setenv("BIND_STATE_SECRET", "test-bind-secret")
+	t.Setenv("JWT_SIGN_MODE", "off")
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/db?sslmode=disable")
+	t.Setenv("CSC_SNAPSHOT_V2_ENABLED", "")
+	t.Setenv("CSC_SNAPSHOT_LIFECYCLE_PROPAGATION_ENABLED", "")
+}

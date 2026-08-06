@@ -322,6 +322,16 @@ func main() {
 	distSvc := services.NewDistributionService(db, behaviorSvc, deptSyncClient)
 	distHandler := handlers.NewDistributionHandler(db, distSvc)
 
+	// csc snapshot v2 (the versioned sync contract). Both switches default off:
+	// the endpoint is additive next to /api/items?favorited=true, and lifecycle
+	// propagation — the only path that can instruct a device to delete a
+	// capability — stays dark until the fleet is known to speak v2.
+	syncSnapshotSvc := &services.CapabilitySyncSnapshotService{
+		DB:                   db,
+		LifecyclePropagation: cfg.CapabilitySyncLifecyclePropagationEnabled,
+	}
+	syncSnapshotHandler := handlers.NewCapabilitySyncSnapshotHandler(syncSnapshotSvc, cfg.CapabilitySyncSnapshotV2Enabled)
+
 	r := gin.New()
 
 	casdoorEndpoint := cfg.Casdoor.InternalEndpoint
@@ -694,6 +704,12 @@ func main() {
 			authed.POST("/items/:id/favorite", recommendHandler.FavoriteItem)
 			authed.DELETE("/items/:id/favorite", recommendHandler.UnfavoriteItem)
 			authed.PUT("/items/:id/mcp-config", handlers.UpsertMCPUserConfig)
+
+			// csc sync contract v2. Mounted unconditionally so a disabled
+			// deployment answers 404 ("this server does not speak v2") rather
+			// than 405/misrouting; the legacy /items?favorited=true path is
+			// untouched and keeps serving every existing client.
+			authed.GET("/sync/v2/snapshot", syncSnapshotHandler.GetCapabilitySyncSnapshot)
 
 			// Distribution routes
 			authed.GET("/distributions/my/sent", distHandler.ListSentDistributions)

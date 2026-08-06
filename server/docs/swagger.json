@@ -18264,6 +18264,95 @@
                 }
             }
         },
+        "/sync/v2/snapshot": {
+            "get": {
+                "description": "Returns one page of a frozen, versioned snapshot of everything the caller is entitled to, plus explicit tombstones for entitlements that ended.\n\n**Removal semantics.** A client may unload or disable a locally managed capability ONLY when it holds every page of one snapshot, the reassembled counts match `itemCount`/`tombstoneCount`, the recomputed digest equals `snapshotDigest`, the final page carried `complete=true`, `generation` is strictly greater than the last generation it applied, and that snapshot contains an explicit tombstone for the item. An item that is merely missing from `items` is NOT a removal signal — a network failure, an auth failure, a truncated page and an empty error body all look identical to absence.\n\n**Paging.** Call without `snapshotId` to obtain the current snapshot's page 0; the response pins `snapshotId` and `pageCount`. Pass that `snapshotId` back with `page=1..pageCount-1` to collect the rest. Pages are deterministic slices of one stored artifact, so the set never shifts underneath a paging client. A snapshot that expires or is superseded past its grace window answers 410; restart from page 0.\n\n**Digest.** Concatenate every page's `items` in page order, then every page's `tombstones` in page order, build `{contractVersion, snapshotId, generation, generatedAt, pageCount, itemCount, tombstoneCount, items, tombstones}`, serialize with RFC 8785 (JCS) and take the lowercase SHA-256 hex. `pageIndex`, `complete` and `snapshotDigest` are excluded. Re-canonicalize the parsed elements rather than concatenating the transferred text: JSON transports are free to re-escape characters such as `\u003c` and U+2028, so raw bytes may differ while the canonical form does not.\n\n**Ordering.** `generation` is the only ordering signal. `snapshotId` is opaque and `generatedAt` is diagnostic.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "sync"
+                ],
+                "summary": "Fetch a page of the caller's capability sync snapshot (csc contract v2)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Continue a snapshot already begun; required for page \u003e 0",
+                        "name": "snapshotId",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Zero-based page index, default 0",
+                        "name": "page",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.CapabilitySyncSnapshotPage"
+                        }
+                    },
+                    "400": {
+                        "description": "Malformed page or a page \u003e 0 without snapshotId",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Contract v2 is not enabled on this deployment; fall back to the legacy favorites endpoint",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "410": {
+                        "description": "Snapshot expired or superseded; restart from page 0",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/tags": {
             "get": {
                 "description": "List tags with optional slug keyword search, tag class filtering, and pagination",
@@ -24016,6 +24105,124 @@
                     "type": "string"
                 },
                 "token": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.CapabilitySyncSnapshotItem": {
+            "type": "object",
+            "properties": {
+                "contentMd5": {
+                    "description": "ContentMD5 / GitSHA are the change keys. Either may be empty depending on\nwhere the capability's content lives.",
+                    "type": "string"
+                },
+                "gitSha": {
+                    "type": "string"
+                },
+                "itemId": {
+                    "type": "string"
+                },
+                "itemType": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "slug": {
+                    "type": "string"
+                },
+                "sources": {
+                    "description": "Sources is why the principal has this item — \"favorite\", \"distribution\",\nor both — sorted so the value is stable across servers.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "version": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.CapabilitySyncSnapshotPage": {
+            "type": "object",
+            "properties": {
+                "complete": {
+                    "description": "Complete appears only on the final page of a fully materialized snapshot.\nNothing may be removed locally until it has been seen, together with every\npage and a verified digest.",
+                    "type": "boolean"
+                },
+                "contractVersion": {
+                    "description": "ContractVersion is 2 for this endpoint. A client that does not understand\nit must not act on the body.",
+                    "type": "integer"
+                },
+                "generatedAt": {
+                    "description": "GeneratedAt is display/diagnostic only. Server clocks move backwards.",
+                    "type": "string"
+                },
+                "generation": {
+                    "description": "Generation is the only ordering signal. It is strictly increasing per\nprincipal; a client must reject anything not strictly greater than the\ngeneration it last applied, and must never order by generatedAt.",
+                    "type": "integer"
+                },
+                "itemCount": {
+                    "description": "ItemCount / TombstoneCount are whole-snapshot totals, not page totals.\nCheck them against what you reassembled before verifying the digest.",
+                    "type": "integer"
+                },
+                "items": {
+                    "description": "Items are the capabilities the principal is currently entitled to. An\nitem's ABSENCE from this list is never an instruction to remove it.\n\nThe declared element type exists so generated clients get a real shape;\nthe bytes actually transmitted come from rawItems (see MarshalJSON), which\ncarry the canonical form the digest was computed over.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_handlers.CapabilitySyncSnapshotItem"
+                    }
+                },
+                "pageCount": {
+                    "type": "integer"
+                },
+                "pageIndex": {
+                    "type": "integer"
+                },
+                "snapshotDigest": {
+                    "description": "SnapshotDigest is the lowercase SHA-256 hex of the RFC 8785\ncanonicalization of the whole reassembled snapshot.",
+                    "type": "string"
+                },
+                "snapshotId": {
+                    "description": "SnapshotID is opaque and carries no order. Pass it back to fetch further\npages of the SAME frozen snapshot.",
+                    "type": "string"
+                },
+                "tombstoneCount": {
+                    "type": "integer"
+                },
+                "tombstones": {
+                    "description": "Tombstones are explicit removals. This is the ONLY thing that authorizes a\nclient to unload or disable a capability.",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_handlers.CapabilitySyncSnapshotTombstone"
+                    }
+                }
+            }
+        },
+        "internal_handlers.CapabilitySyncSnapshotTombstone": {
+            "type": "object",
+            "properties": {
+                "eventId": {
+                    "description": "EventID is durable and globally unique. Apply each id at most once.",
+                    "type": "string"
+                },
+                "itemId": {
+                    "type": "string"
+                },
+                "lifecycleReason": {
+                    "description": "LifecycleReason is manifest_removed | default_branch_missing |\nrepository_deleted, and is present only for reason=git_archived. It is\nnull — never omitted — for the other reasons, so the key set of a\ntombstone is fixed.",
+                    "type": "string"
+                },
+                "reason": {
+                    "description": "Reason is git_archived | unfavorited | distribution_revoked.",
+                    "type": "string"
+                },
+                "removedAt": {
+                    "description": "RemovedAt is the server time of the removal transition (RFC 3339).",
+                    "type": "string"
+                },
+                "source": {
+                    "description": "Source is the producing subsystem: git_lifecycle | favorite |\ndistribution. It is determined by Reason.",
                     "type": "string"
                 }
             }

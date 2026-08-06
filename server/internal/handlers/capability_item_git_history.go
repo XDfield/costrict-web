@@ -15,7 +15,6 @@ import (
 	"strings"
 
 	"github.com/costrict/costrict-web/server/internal/database"
-	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -77,7 +76,7 @@ type GitHistoryResponse struct {
 
 // ListItemGitHistory godoc
 // @Summary      List a Git-backed item's recent revisions
-// @Description  Returns the item's most recent successful Git projection transitions, newest first. A revision exists only where a successful projection changed THIS item's own projected content, so a duplicate webhook delivery, a same-content reconcile, and a commit that only touched another capability in the same repository all add nothing, while a revert back to earlier content adds a new revision. `gitSha` is the repository head observed when the change was detected — a coordinate, not the commit that made the change, and it must not be presented as one. `version` is never empty: when the manifest declares no version the short commit SHA is returned instead. Paging uses the item-bound `before_revision` cursor. Authorization is identical to item detail; a DB-backed item returns an empty page with historyBackend=db.
+// @Description  Returns the item's most recent successful Git projection transitions, newest first. A revision exists only where a successful projection changed THIS item's own projected content, so a duplicate webhook delivery, a same-content reconcile, and a commit that only touched another capability in the same repository all add nothing, while a revert back to earlier content adds a new revision. `gitSha` is the repository head observed when the change was detected — a coordinate, not the commit that made the change, and it must not be presented as one. `version` is never empty: when the manifest declares no version the short commit SHA is returned instead. Paging uses the item-bound `before_revision` cursor. Authorization is identical to item detail: a caller who relies on the repository being public has that visibility re-verified against the Git server, so a repository that has gone private answers 404 and an unreachable Git server answers 503 (error_code GIT_VISIBILITY_UNVERIFIED) rather than serving the timeline. A DB-backed item returns an empty page with historyBackend=db.
 // @Tags         items
 // @Produce      json
 // @Param        id               path      string  true   "Item ID"
@@ -88,6 +87,8 @@ type GitHistoryResponse struct {
 // @Failure      403  {object}  object{error=string}
 // @Failure      404  {object}  object{error=string}
 // @Failure      500  {object}  object{error=string}
+// @Failure      503  {object}  object{error=string,error_code=string}
+// @Failure      504  {object}  object{error=string,error_code=string}
 // @Router       /items/{id}/git-history [get]
 func ListItemGitHistory(c *gin.Context) {
 	id := c.Param("id")
@@ -120,6 +121,12 @@ func ListItemGitHistory(c *gin.Context) {
 	// exists, its versions, and where in Git it lives — so it must be gated the
 	// same way or it becomes the unauthenticated read path around the detail
 	// endpoint (the IDOR that /items/{id}/versions was fixed for).
+	//
+	// authorizeItemRead, not canAccessItem: the local repository visibility this
+	// row is judged by is refreshed only by the periodic reconcile (Gitea emits
+	// no event for a visibility change), so for a Git-backed row it has to be
+	// confirmed against the Git server before a caller who relies on it is
+	// handed the commit timeline. AC-LH11 / AC-LH16.
 	var item models.CapabilityItem
 	if err := db.Preload("Registry").First(&item, "id = ?", id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -129,8 +136,8 @@ func ListItemGitHistory(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch item"})
 		return
 	}
-	if !canAccessItem(&item, c.GetString(middleware.UserIDKey)) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "You don't have access to this item"})
+	if herr := authorizeItemRead(c, &item); herr != nil {
+		c.JSON(herr.status, herr.body)
 		return
 	}
 
