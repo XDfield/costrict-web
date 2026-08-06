@@ -1082,16 +1082,20 @@ func main() {
 	gitCapabilityWebhookAPI := handlers.NewGitCapabilityWebhookAPI(db, localGitResolver)
 	r.POST("/api/internal/git-sync/:git_server_id", gitCapabilityWebhookAPI.ReceiveGiteaEvent)
 
-	// Gitea fork binding pre-check (FI-2). Registered on the engine for the
-	// same reason as the webhook above, and with even less choice in the
-	// matter: the fork's checkBinding issues a bare GET with no headers at
-	// all, so InternalAuth would reject every call. The endpoint is designed
-	// to be safe unauthenticated — opaque key in, one enum field out, no
-	// writes, no user-existence oracle. See internal/handlers/git_binding_status.go.
-	// The git_server_id segment comes from the fork's configured
-	// BINDING_CHECK_URL; the fork itself only appends the user id.
-	gitBindingStatusAPI := handlers.NewGitBindingStatusAPI(db)
-	r.GET("/api/internal/git-binding/status/:git_server_id/:user_subject_id", gitBindingStatusAPI.GetBindingStatus)
+	// No binding pre-check endpoint here, deliberately. The fork can call one
+	// (app.ini BINDING_CHECK_URL) before admitting a JWT, but its checkBinding
+	// sends a bare GET with no headers, so such an endpoint cannot be
+	// authenticated — and Gitea runs outside the cluster, so serving it means
+	// accepting unauthenticated inbound traffic from outside. That is not worth
+	// opening: the fork already refuses a JWT whose short_id has no Gitea
+	// account, so the check only adds "disabled in Cloud → refused at Gitea",
+	// which nothing needs today. If that is ever required, push state outward
+	// (as the quota worker does, over the fork's authenticated internal
+	// endpoint) rather than inviting a call inward.
+	//
+	// The user_id claim cs-user emits is unrelated and stays: the fork reads it
+	// when the check IS configured, so not emitting it turns that config key
+	// into a 503-for-everyone trap.
 
 	notificationSvc := notification.NewNotificationService(db, cfg.CloudBaseURL, cfg.Channels.WebhookEnabled, cfg.Channels.WeComEnabled, cfg.Channels.WeComBotEnabled, cfg.Channels.WeComBot.ProxyURL, cfg.Channels.WeComBot.AuthToken)
 	distSvc.SetNotificationService(notificationSvc)

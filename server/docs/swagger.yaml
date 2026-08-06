@@ -2836,10 +2836,40 @@ definitions:
       username:
         type: string
     type: object
-  internal_handlers.gitBindingStatusResponse:
+  internal_handlers.gitQuotaRuleResponse:
     properties:
-      sync_status:
+      created_at:
         type: string
+      git_server_id:
+        type: string
+      max_file_size_mb:
+        type: integer
+      owner:
+        type: string
+      repo:
+        type: string
+      repo_quota_mb:
+        type: integer
+      updated_at:
+        type: string
+      updated_by:
+        type: string
+    type: object
+  internal_handlers.gitQuotaRuleUpsertRequest:
+    properties:
+      git_server_id:
+        type: string
+      max_file_size_mb:
+        type: integer
+      owner:
+        type: string
+      repo:
+        type: string
+      repo_quota_mb:
+        type: integer
+    required:
+    - git_server_id
+    - owner
     type: object
   internal_handlers.gitServerCreateRequest:
     properties:
@@ -6177,6 +6207,104 @@ paths:
       summary: Backfill missing Git bindings (admin)
       tags:
       - admin/users
+  /api/admin/git-quota-rules:
+    delete:
+      parameters:
+      - description: Git server id
+        in: query
+        name: git_server_id
+        required: true
+        type: string
+      - description: owner
+        in: query
+        name: owner
+        required: true
+        type: string
+      - description: repository name; omit for the owner-level rule
+        in: query
+        name: repo
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+          schema:
+            type: string
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Delete one push-quota rule
+      tags:
+      - admin
+    get:
+      parameters:
+      - description: restrict to one Git server
+        in: query
+        name: git_server_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            properties:
+              rules:
+                items:
+                  $ref: '#/definitions/internal_handlers.gitQuotaRuleResponse'
+                type: array
+              total:
+                type: integer
+            type: object
+      summary: List push-quota rules
+      tags:
+      - admin
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: quota rule
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_handlers.gitQuotaRuleUpsertRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.gitQuotaRuleResponse'
+        "400":
+          description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: Create or replace one push-quota rule
+      tags:
+      - admin
   /api/internal/git-servers:
     get:
       produces:
@@ -9350,7 +9478,9 @@ paths:
       - distributions
   /distributions/{id}/dismiss:
     post:
-      description: Dismiss a received distribution from the user's view
+      description: Dismiss a received distribution from the user's view. Readonly
+        (enforced) distributions cannot be dismissed by the recipient while they are
+        active or paused.
       parameters:
       - description: Distribution ID
         in: path
@@ -9369,6 +9499,22 @@ paths:
             type: object
         "400":
           description: Bad Request
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            properties:
+              error:
+                type: string
+              error_code:
+                type: string
+            type: object
+        "404":
+          description: Not Found
           schema:
             properties:
               error:
@@ -9830,41 +9976,6 @@ paths:
       summary: Register gateway
       tags:
       - internal-gateway
-  /internal/git-binding/status/{git_server_id}/{user_subject_id}:
-    get:
-      parameters:
-      - description: Git server id (baked into the fork's BINDING_CHECK_URL)
-        in: path
-        name: git_server_id
-        required: true
-        type: string
-      - description: cs-user subject id (the JWT user_id claim)
-        in: path
-        name: user_subject_id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/internal_handlers.gitBindingStatusResponse'
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties:
-              type: string
-            type: object
-      summary: Report a user's Git account binding status
-      tags:
-      - internal
   /internal/git-sync/{git_server_id}:
     post:
       consumes:

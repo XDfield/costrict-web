@@ -4067,6 +4067,158 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/admin/git-quota-rules": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "List push-quota rules",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "restrict to one Git server",
+                        "name": "git_server_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "rules": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/internal_handlers.gitQuotaRuleResponse"
+                                    }
+                                },
+                                "total": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "put": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Create or replace one push-quota rule",
+                "parameters": [
+                    {
+                        "description": "quota rule",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.gitQuotaRuleUpsertRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_handlers.gitQuotaRuleResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "admin"
+                ],
+                "summary": "Delete one push-quota rule",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Git server id",
+                        "name": "git_server_id",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "owner",
+                        "name": "owner",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "repository name; omit for the owner-level rule",
+                        "name": "repo",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/internal/git-servers": {
             "get": {
                 "security": [
@@ -9092,7 +9244,7 @@ const docTemplate = `{
         },
         "/distributions/{id}/dismiss": {
             "post": {
-                "description": "Dismiss a received distribution from the user's view",
+                "description": "Dismiss a received distribution from the user's view. Readonly (enforced) distributions cannot be dismissed by the recipient while they are active or paused.",
                 "produces": [
                     "application/json"
                 ],
@@ -9123,6 +9275,31 @@ const docTemplate = `{
                     },
                     "400": {
                         "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "error": {
+                                    "type": "string"
+                                },
+                                "error_code": {
+                                    "type": "string"
+                                }
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "type": "object",
                             "properties": {
@@ -9670,59 +9847,6 @@ const docTemplate = `{
                                 "error": {
                                     "type": "string"
                                 }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        "/internal/git-binding/status/{git_server_id}/{user_subject_id}": {
-            "get": {
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "internal"
-                ],
-                "summary": "Report a user's Git account binding status",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Git server id (baked into the fork's BINDING_CHECK_URL)",
-                        "name": "git_server_id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "cs-user subject id (the JWT user_id claim)",
-                        "name": "user_subject_id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/internal_handlers.gitBindingStatusResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
                             }
                         }
                     }
@@ -25337,11 +25461,56 @@ const docTemplate = `{
                 }
             }
         },
-        "internal_handlers.gitBindingStatusResponse": {
+        "internal_handlers.gitQuotaRuleResponse": {
             "type": "object",
             "properties": {
-                "sync_status": {
+                "created_at": {
                     "type": "string"
+                },
+                "git_server_id": {
+                    "type": "string"
+                },
+                "max_file_size_mb": {
+                    "type": "integer"
+                },
+                "owner": {
+                    "type": "string"
+                },
+                "repo": {
+                    "type": "string"
+                },
+                "repo_quota_mb": {
+                    "type": "integer"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "internal_handlers.gitQuotaRuleUpsertRequest": {
+            "type": "object",
+            "required": [
+                "git_server_id",
+                "owner"
+            ],
+            "properties": {
+                "git_server_id": {
+                    "type": "string"
+                },
+                "max_file_size_mb": {
+                    "type": "integer"
+                },
+                "owner": {
+                    "type": "string"
+                },
+                "repo": {
+                    "type": "string"
+                },
+                "repo_quota_mb": {
+                    "type": "integer"
                 }
             }
         },
