@@ -1,4 +1,4 @@
-// rpc_client_tenant_config.go — Phase C3.2 tenant-admin config CRUD.
+// rpc_client_tenant_config.go — tenant-admin config CRUD RPC client.
 //
 // Two methods proxying to cs-user's /api/internal/tenant/config:
 //

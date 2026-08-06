@@ -42,7 +42,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/costrict/costrict-web/server/internal/config"
 	"github.com/costrict/costrict-web/server/internal/logger"
@@ -267,10 +266,10 @@ func (w *RPCWriter) ApplyEnterpriseMapping(ctx context.Context, userSubjectID, p
 	return w.mapWriteError(status, respBody, "apply-enterprise-mapping")
 }
 
-// ReissueToken calls POST /api/internal/users/reissue-token (Phase A7). The
-// server's OAuth callback invokes this (under USER_SERVICE_BACKEND=rpc) to
-// swap the Casdoor-validated claims for a cs-user-signed JWT carrying
-// enterprise claims (Phase A5). cs-user verifies the raw Casdoor JWT against
+// ReissueToken calls POST /api/internal/users/reissue-token. The server's
+// OAuth callback invokes this (under USER_SERVICE_BACKEND=rpc) to swap the
+// Casdoor-validated claims for a cs-user-signed JWT carrying enterprise
+// claims. cs-user verifies the raw Casdoor JWT against
 // its own JWKS, resolves the authoritative user via external_key, reads
 // tenant_id from the user row, joins tenant slug, loads employment_identities
 // (A4), builds claims, signs with its RSA key (A3), and returns
@@ -293,16 +292,15 @@ func (w *RPCWriter) ApplyEnterpriseMapping(ctx context.Context, userSubjectID, p
 // refuses to issue without verifying the upstream JWT itself.
 //
 // Best-effort at the caller — the OAuth callback treats errors as "stick
-// with the Casdoor token" rather than failing login. This is the foundation
-// of Phase A8's 灰度 dual-sign window: when ReissueToken fails, the cookie
-// gets the Casdoor token; when it succeeds, the cookie gets the cs-user
-// token; A8 will introduce an explicit dual-issuance mode that sets both.
-func (w *RPCWriter) ReissueToken(ctx context.Context, audience []string, rawCasdoorJWT string) (string, time.Time, error) {
+// with the Casdoor token" rather than failing login. This is the graceful-
+// degradation contract: when ReissueToken fails, the cookie gets the Casdoor
+// token; when it succeeds, the cookie gets the cs-user token.
+func (w *RPCWriter) ReissueToken(ctx context.Context, audience []string, rawCasdoorJWT string) (*ReissueResult, error) {
 	if !w.Configured() {
-		return "", time.Time{}, ErrNotConfigured
+		return nil, ErrNotConfigured
 	}
 	if rawCasdoorJWT == "" {
-		return "", time.Time{}, errors.New("user rpc writer: reissue-token: empty casdoor_jwt")
+		return nil, errors.New("user rpc writer: reissue-token: empty casdoor_jwt")
 	}
 	body := struct {
 		CasdoorJWT string   `json:"casdoor_jwt"`
@@ -313,30 +311,77 @@ func (w *RPCWriter) ReissueToken(ctx context.Context, audience []string, rawCasd
 	}
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("user rpc writer: marshal reissue-token request: %w", err)
+		return nil, fmt.Errorf("user rpc writer: marshal reissue-token request: %w", err)
 	}
 	status, respBody, transportErr := w.doCapture(ctx, http.MethodPost, "/api/internal/users/reissue-token", bodyBytes)
 	if transportErr != nil {
-		return "", time.Time{}, transportErr
+		return nil, transportErr
 	}
 	if status >= 200 && status < 300 {
-		var resp struct {
-			Token     string    `json:"token"`
-			ExpiresAt time.Time `json:"expires_at"`
-		}
+		// The response carries SubjectID / IsNew / ExternalKey / Profile
+		// alongside {token, expires_at}. Old fields
+		// stay populated so any (theoretical) un-upgraded consumer that
+		// only reads Token / ExpiresAt keeps working.
+		var resp ReissueResult
 		if err := json.Unmarshal(respBody, &resp); err != nil {
-			return "", time.Time{}, fmt.Errorf("user rpc writer: decode reissue-token response: %w", err)
+			return nil, fmt.Errorf("user rpc writer: decode reissue-token response: %w", err)
 		}
 		if resp.Token == "" {
-			return "", time.Time{}, fmt.Errorf("user rpc writer: reissue-token returned empty token")
+			return nil, fmt.Errorf("user rpc writer: reissue-token returned empty token")
 		}
-		return resp.Token, resp.ExpiresAt, nil
+		return &resp, nil
 	}
-	return "", time.Time{}, w.mapWriteError(status, respBody, "reissue-token")
+	return nil, w.mapWriteError(status, respBody, "reissue-token")
+}
+
+// ParseIdentity calls POST /api/internal/auth/parse-identity.
+// The server's bind-identity callback invokes this to swap the raw Casdoor
+// JWT (the newly-bound identity token, or the current session token) for the
+// verified + normalized profile fields + the canonical external_key. cs-user
+// verifies the JWT against its own JWKS, runs NormalizeClaimsMap, and
+// computes external_key.
+//
+// Contract: cs-user is the identity-trust boundary. The only identity-bearing
+// field on the wire is rawJWT — cs-user derives everything from its own
+// verification. Server's bindAuthCallback uses the response's Profile to
+// drive BindIdentityToUser and ExternalKey to populate merge_token state on
+// the identity_already_bound branch.
+//
+// Errors propagate so the handler can surface a 5xx. Under
+// USER_SERVICE_BACKEND=local (deprecated) the local stub returns
+// ErrSelfSignUnavailable and the bind identity callback fails outright.
+func (w *RPCWriter) ParseIdentity(ctx context.Context, rawJWT string) (*ParseIdentityResult, error) {
+	if !w.Configured() {
+		return nil, ErrNotConfigured
+	}
+	if rawJWT == "" {
+		return nil, errors.New("user rpc writer: parse-identity: empty token")
+	}
+	body, err := json.Marshal(struct {
+		Token string `json:"token"`
+	}{Token: rawJWT})
+	if err != nil {
+		return nil, fmt.Errorf("user rpc writer: marshal parse-identity request: %w", err)
+	}
+	status, respBody, transportErr := w.doCapture(ctx, http.MethodPost, "/api/internal/auth/parse-identity", body)
+	if transportErr != nil {
+		return nil, transportErr
+	}
+	if status >= 200 && status < 300 {
+		var resp ParseIdentityResult
+		if err := json.Unmarshal(respBody, &resp); err != nil {
+			return nil, fmt.Errorf("user rpc writer: decode parse-identity response: %w", err)
+		}
+		if resp.Profile == nil {
+			return nil, fmt.Errorf("user rpc writer: parse-identity returned empty profile")
+		}
+		return &resp, nil
+	}
+	return nil, w.mapWriteError(status, respBody, "parse-identity")
 }
 
 // CompleteRegistration calls POST
-// /api/internal/users/:subject_id/complete-registration (R2). Forwards the
+// /api/internal/users/:subject_id/complete-registration. Forwards the
 // cs-user result (200 user envelope, 409 username_taken /
 // registration_already_complete, 400 invalid_username / reserved). The wire
 // shape is JSON {username, display_name} on the request and {user} on the
@@ -372,7 +417,7 @@ func (w *RPCWriter) CompleteRegistration(ctx context.Context, userSubjectID, use
 	return nil, w.mapWriteError(status, respBody, "complete-registration")
 }
 
-// UpdateMyProfile calls POST /api/internal/users/:subject_id/profile (R2).
+// UpdateMyProfile calls POST /api/internal/users/:subject_id/profile.
 // Surfaces cs-user's 4xx error tokens verbatim (invalid_display_name,
 // user_not_found); transport / 5xx collapses to ErrRPCUnavailable.
 func (w *RPCWriter) UpdateMyProfile(ctx context.Context, userSubjectID, displayName string) (*models.User, error) {
@@ -407,7 +452,7 @@ func (w *RPCWriter) UpdateMyProfile(ctx context.Context, userSubjectID, displayN
 
 // IsUsernameAvailable calls GET
 // /api/internal/users/username-available?username=...&exclude_subject_id=...
-// (R2). cs-user's response shape {available, reason} is decoded here;
+// cs-user's response shape {available, reason} is decoded here;
 // invalid_format and reserved surface as available=false rather than as
 // errors so the handler can re-marshal the same JSON the frontend expects.
 func (w *RPCWriter) IsUsernameAvailable(ctx context.Context, username, excludeSubjectID string) (bool, error) {
@@ -439,7 +484,7 @@ func (w *RPCWriter) IsUsernameAvailable(ctx context.Context, username, excludeSu
 	return false, w.mapWriteError(status, respBody, "username-available")
 }
 
-// SuggestProfile calls POST /api/internal/users/suggest-profile (R4).
+// SuggestProfile calls POST /api/internal/users/suggest-profile.
 // Forwards the JWTClaims as the body; cs-user's pure-function
 // MapProviderToProfile returns {username, display_name}. Empty strings on
 // the response are valid (no suggestion) — errors are transport / 5xx only.
@@ -495,8 +540,8 @@ func (w *RPCWriter) doCapture(ctx context.Context, method, path string, body []b
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	// Phase B3b.2b: forward the tenant slug so cs-user resolves the same
-	// tenant on writes (bind/unbind/transfer/get-or-create). Empty slug =
+	// Forward the tenant slug so cs-user resolves the same tenant on writes
+	// (bind/unbind/transfer/get-or-create). Empty slug =
 	// "no signal" → cs-user falls back to default tenant.
 	if slug := tenantSlugFromContext(ctx); slug != "" {
 		req.Header.Set("X-Tenant-Id", slug)

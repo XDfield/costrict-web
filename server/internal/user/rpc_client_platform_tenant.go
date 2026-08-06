@@ -1,4 +1,4 @@
-// rpc_client_platform_tenant.go — Phase C2 step C.
+// rpc_client_platform_tenant.go — platform-tenant CRUD RPC client.
 //
 // 7 RPC methods on *RPCClient that proxy to cs-user's
 // /api/internal/platform/tenants* (the C2 step B endpoints). The server's
@@ -144,7 +144,7 @@ func (c *RPCClient) doPlatformTenantRequest(ctx context.Context, method, path st
 	if slug := tenantSlugFromContext(ctx); slug != "" {
 		req.Header.Set("X-Tenant-Id", slug)
 	}
-	// Forward actor role + platform scope (Phase C4.1) so cs-user's audit-log
+	// Forward actor role + platform scope so cs-user's audit-log
 	// writer captures them in user_center_audit_log rows.
 	applyActorMetaHeaders(req, ctx)
 

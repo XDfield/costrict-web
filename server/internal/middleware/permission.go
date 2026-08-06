@@ -1,8 +1,9 @@
-// Package middleware — permission middlewares (Phase C1).
+// Package middleware — permission middlewares.
 //
 // Three gate middlewares that read AuthClaims (populated by RequireAuth /
-// OptionalAuth from the JWT) and translate the Phase C1 claims
-// (platform_admin / platform_scope / tenant_roles) into HTTP allow/deny:
+// OptionalAuth from the JWT) and translate the platform-admin / tenant
+// claims (platform_admin / platform_scope / tenant_roles) into HTTP
+// allow/deny:
 //
 //   - RequirePlatformAdmin(scope...) — caller must have platform_admin=true
 //     AND, when scope args are passed, a scope that appears in the args.
@@ -10,9 +11,9 @@
 //     named roles in their tenant_roles claim. Platform admins short-circuit
 //     to allowed (platform scope is super-tenant by design — §14.3).
 //   - RequireTenantMember            — caller must have a non-empty TenantID
-//     (every authenticated cs-user token carries it; Casdoor pre-cutover
-//     tokens fall back to "default" via TenantContext). Used as the baseline
-//     "any tenant member" gate below admin tiers.
+//     (every authenticated cs-user token carries it; falls back to "default"
+//     via TenantContext when absent). Used as the baseline "any tenant
+//     member" gate below admin tiers.
 //
 // Auth contract:
 //
@@ -21,11 +22,6 @@
 //     must have authenticated).
 //   - AuthClaims exists but required claim absent → 403 (authenticated but
 //     insufficient). Distinguishes "log in" from "you can't do this".
-//
-// Pre-cutover behavior: Casdoor-issued tokens carry none of the Phase C1
-// claims, so all three middlewares deny. Mount admin routes behind these
-// middlewares ONLY post-cutover, or pair with a feature-flag bypass during
-// the 灰度 window (A8).
 
 package middleware
 

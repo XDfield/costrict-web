@@ -75,7 +75,7 @@ type UserServiceConfig struct {
 	InternalToken string // X-Internal-Token value sent to cs-user
 	TimeoutSec    int    // per-request HTTP timeout in seconds, default 10
 	WriteMode     string // "local" (default, writes go through UserService) or "readonly" (writes return ErrWriteBlocked)
-	// ApexDomains enables Host-subdomain tenant-slug resolution (Phase B3b.2a).
+	// ApexDomains enables Host-subdomain tenant-slug resolution.
 	// Empty (default) disables the subdomain layer — local dev mode. Prod
 	// sets e.g. USER_SERVICE_APEX_DOMAINS=example.com,example.cn.
 	ApexDomains []string
@@ -323,7 +323,7 @@ func Load() *Config {
 				NotificationDelaySeconds:     getEnvInt("AI_NOTIFICATION_DELAY_SECONDS", 30),
 			},
 		},
-		// ProfileGateEnabled (R3): default off for staged rollout.
+		// ProfileGateEnabled: default off for staged rollout.
 		ProfileGateEnabled: getEnvBool("PROFILE_GATE_ENABLED", false),
 		// SwaggerEnabled: default off — Swagger UI is not mounted unless
 		// explicitly enabled. See field doc above.

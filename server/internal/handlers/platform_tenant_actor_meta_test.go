@@ -26,7 +26,7 @@ func (a *actorMetaCapturingRPC) CreateTenant(ctx context.Context, p userpkg.Plat
 	return a.stubPlatformTenantRPC.CreateTenant(ctx, p)
 }
 
-// TestPlatformCreateTenant_InjectsActorMeta verifies the Phase C4.1
+// TestPlatformCreateTenant_InjectsActorMeta verifies the
 // handler-side plumbing: AuthClaims.TenantRoles[0] + AuthClaims.PlatformScope
 // are propagated into the ctx as ActorMeta so the RPC client forwards them
 // as X-Actor-Tenant-Role / X-Actor-Platform-Scope.

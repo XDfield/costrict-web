@@ -381,7 +381,7 @@ type recordingWriter struct {
 	unbind                 int
 	applyEnterpriseMapping int
 	reissueToken           int
-	reissueTokenFn         func(audience []string, rawCasdoorJWT string) (string, time.Time, error)
+	reissueTokenFn         func(audience []string, rawCasdoorJWT string) (*ReissueResult, error)
 	primaryError           error // forces a non-nil return from all methods when set
 	// subjectID overrides the default "usr_recording" returned by
 	// GetOrCreateUser. Used to distinguish Primary vs Secondary users in
@@ -424,15 +424,15 @@ func (r *recordingWriter) ApplyEnterpriseMapping(_ context.Context, _, _ string)
 	r.applyEnterpriseMapping++
 	return r.primaryError
 }
-func (r *recordingWriter) ReissueToken(_ context.Context, audience []string, rawCasdoorJWT string) (string, time.Time, error) {
+func (r *recordingWriter) ReissueToken(_ context.Context, audience []string, rawCasdoorJWT string) (*ReissueResult, error) {
 	r.reissueToken++
 	if r.reissueTokenFn != nil {
 		return r.reissueTokenFn(audience, rawCasdoorJWT)
 	}
 	if r.primaryError != nil {
-		return "", time.Time{}, r.primaryError
+		return nil, r.primaryError
 	}
-	return "token-from-recording", time.Now().Add(time.Hour), nil
+	return &ReissueResult{Token: "token-from-recording", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
 // R2 stubs — kept minimal so DualWriter tests for the new methods compile.
@@ -459,6 +459,12 @@ func (r *recordingWriter) SuggestProfile(_ context.Context, _ *JWTClaims) (strin
 		return "", "", r.primaryError
 	}
 	return "", "", nil
+}
+func (r *recordingWriter) ParseIdentity(_ context.Context, _ string) (*ParseIdentityResult, error) {
+	if r.primaryError != nil {
+		return nil, r.primaryError
+	}
+	return nil, nil
 }
 
 func TestDualWriter_PrimarySuccessFansOutToSecondary(t *testing.T) {
@@ -611,7 +617,7 @@ func TestParseErrorBody(t *testing.T) {
 	}
 }
 
-// --- Phase A4b: ApplyEnterpriseMapping ---
+// --- ApplyEnterpriseMapping ---
 
 func TestRPCWriter_ApplyEnterpriseMapping_HappyPath(t *testing.T) {
 	t.Parallel()
@@ -789,7 +795,7 @@ func TestDualWriter_ApplyEnterpriseMapping_NilSecondarySkipsFanOut(t *testing.T)
 	}
 }
 
-// --- RPCWriter.ReissueToken (Phase A7b) ---
+// --- RPCWriter.ReissueToken ---
 
 // TestRPCWriter_ReissueToken_HappyPath verifies the wire format + response
 // decode. New contract (cs-user identity authority): the ONLY identity
@@ -805,16 +811,16 @@ func TestRPCWriter_ReissueToken_HappyPath(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	token, exp, err := w.ReissueToken(context.Background(), nil, "raw-casdoor-jwt")
+	result, err := w.ReissueToken(context.Background(), nil, "raw-casdoor-jwt")
 	if err != nil {
 		t.Fatalf("ReissueToken: %v", err)
 	}
-	if token != "signed-jwt-xyz" {
-		t.Errorf("token: got %q, want signed-jwt-xyz", token)
+	if result.Token != "signed-jwt-xyz" {
+		t.Errorf("token: got %q, want signed-jwt-xyz", result.Token)
 	}
 	wantExp := time.Date(2026, 7, 17, 13, 0, 0, 0, time.UTC)
-	if !exp.Equal(wantExp) {
-		t.Errorf("expires_at: got %v, want %v", exp, wantExp)
+	if !result.ExpiresAt.Equal(wantExp) {
+		t.Errorf("expires_at: got %v, want %v", result.ExpiresAt, wantExp)
 	}
 
 	// Verify the request body shape: only casdoor_jwt on wire; legacy
@@ -854,7 +860,7 @@ func TestRPCWriter_ReissueToken_CasdoorJWTForwarded(t *testing.T) {
 	w := newTestRPCWriter(t, srv.URL)
 
 	const rawCasdoor = "eyJhbGciOiJSUzI1NiJ9.payload.sig"
-	if _, _, err := w.ReissueToken(context.Background(), nil, rawCasdoor); err != nil {
+	if _, err := w.ReissueToken(context.Background(), nil, rawCasdoor); err != nil {
 		t.Fatalf("ReissueToken: %v", err)
 	}
 
@@ -881,7 +887,7 @@ func TestRPCWriter_ReissueToken_EmptyCasdoorJWTRejected(t *testing.T) {
 	defer srv.Close()
 	w := newTestRPCWriter(t, srv.URL)
 
-	_, _, err := w.ReissueToken(context.Background(), nil, "")
+	_, err := w.ReissueToken(context.Background(), nil, "")
 	if err == nil || !strings.Contains(err.Error(), "empty casdoor_jwt") {
 		t.Fatalf("expected empty-casdoor_jwt error, got %v", err)
 	}
@@ -896,7 +902,7 @@ func TestRPCWriter_ReissueToken_AudienceForwarded(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	if _, _, err := w.ReissueToken(context.Background(), []string{"csc-cli", "ops-portal"}, "raw"); err != nil {
+	if _, err := w.ReissueToken(context.Background(), []string{"csc-cli", "ops-portal"}, "raw"); err != nil {
 		t.Fatalf("ReissueToken: %v", err)
 	}
 
@@ -918,7 +924,7 @@ func TestRPCWriter_ReissueToken_NilAudienceOmitted(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	if _, _, err := w.ReissueToken(context.Background(), nil, "raw"); err != nil {
+	if _, err := w.ReissueToken(context.Background(), nil, "raw"); err != nil {
 		t.Fatalf("ReissueToken: %v", err)
 	}
 
@@ -935,7 +941,7 @@ func TestRPCWriter_ReissueToken_NotConfigured(t *testing.T) {
 	if w.Configured() {
 		t.Fatal("writer should be unconfigured with empty URL+token")
 	}
-	_, _, err := w.ReissueToken(context.Background(), nil, "raw")
+	_, err := w.ReissueToken(context.Background(), nil, "raw")
 	if !errors.Is(err, ErrNotConfigured) {
 		t.Fatalf("expected ErrNotConfigured, got %v", err)
 	}
@@ -950,7 +956,7 @@ func TestRPCWriter_ReissueToken_5xxMapsToErrRPCUnavailable(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	_, _, err := w.ReissueToken(context.Background(), nil, "raw")
+	_, err := w.ReissueToken(context.Background(), nil, "raw")
 	if !errors.Is(err, ErrRPCUnavailable) {
 		t.Fatalf("expected ErrRPCUnavailable, got %v", err)
 	}
@@ -966,7 +972,7 @@ func TestRPCWriter_ReissueToken_4xxSurfacesServerMessage(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	_, _, err := w.ReissueToken(context.Background(), nil, "raw")
+	_, err := w.ReissueToken(context.Background(), nil, "raw")
 	if err == nil || err.Error() != "user not provisioned" {
 		t.Fatalf("expected server message, got %v", err)
 	}
@@ -982,13 +988,13 @@ func TestRPCWriter_ReissueToken_EmptyTokenInResponseErrors(t *testing.T) {
 	})
 	w := newTestRPCWriter(t, srv.URL)
 
-	_, _, err := w.ReissueToken(context.Background(), nil, "raw")
+	_, err := w.ReissueToken(context.Background(), nil, "raw")
 	if err == nil || !strings.Contains(err.Error(), "empty token") {
 		t.Fatalf("expected empty-token error, got %v", err)
 	}
 }
 
-// --- DualWriter.ReissueToken (Phase A7b) ---
+// --- DualWriter.ReissueToken ---
 
 // TestDualWriter_ReissueToken_BypassesPrimary verifies Secondary is the
 // authoritative path — Primary is never called. Unlike ApplyEnterpriseMapping,
@@ -1002,12 +1008,12 @@ func TestDualWriter_ReissueToken_BypassesPrimary(t *testing.T) {
 	secondary := &recordingWriter{}
 	dw := &DualWriter{Primary: primary, Secondary: secondary}
 
-	token, _, err := dw.ReissueToken(context.Background(), nil, "raw")
+	result, err := dw.ReissueToken(context.Background(), nil, "raw")
 	if err != nil {
 		t.Fatalf("ReissueToken: %v", err)
 	}
-	if token != "token-from-recording" {
-		t.Errorf("token: got %q, want token-from-recording", token)
+	if result.Token != "token-from-recording" {
+		t.Errorf("token: got %q, want token-from-recording", result.Token)
 	}
 	if primary.reissueToken != 0 {
 		t.Fatalf("primary must not be called, got %d calls", primary.reissueToken)
@@ -1026,7 +1032,7 @@ func TestDualWriter_ReissueToken_NilSecondaryReturnsErrSelfSignUnavailable(t *te
 	primary := &recordingWriter{}
 	dw := &DualWriter{Primary: primary, Secondary: nil}
 
-	_, _, err := dw.ReissueToken(context.Background(), nil, "raw")
+	_, err := dw.ReissueToken(context.Background(), nil, "raw")
 	if !errors.Is(err, ErrSelfSignUnavailable) {
 		t.Fatalf("expected ErrSelfSignUnavailable, got %v", err)
 	}
@@ -1045,13 +1051,13 @@ func TestDualWriter_ReissueToken_SecondaryErrorPropagates(t *testing.T) {
 	secondary := &recordingWriter{primaryError: fmt.Errorf("cs-user unreachable")}
 	dw := &DualWriter{Primary: primary, Secondary: secondary}
 
-	_, _, err := dw.ReissueToken(context.Background(), nil, "raw")
+	_, err := dw.ReissueToken(context.Background(), nil, "raw")
 	if err == nil || !strings.Contains(err.Error(), "cs-user unreachable") {
 		t.Fatalf("expected secondary error to propagate, got %v", err)
 	}
 }
 
-// --- UserService.ReissueToken local stub (Phase A7b) ---
+// --- UserService.ReissueToken local stub ---
 
 // TestUserService_ReissueToken_LocalStubReturnsErrSelfSignUnavailable
 // verifies the local backend can never satisfy this call. Server has no RSA
@@ -1059,12 +1065,12 @@ func TestDualWriter_ReissueToken_SecondaryErrorPropagates(t *testing.T) {
 func TestUserService_ReissueToken_LocalStubReturnsErrSelfSignUnavailable(t *testing.T) {
 	t.Parallel()
 	var s *UserService // method receiver is nil-safe — no db needed
-	token, _, err := s.ReissueToken(context.Background(), nil, "raw")
+	result, err := s.ReissueToken(context.Background(), nil, "raw")
 	if !errors.Is(err, ErrSelfSignUnavailable) {
 		t.Fatalf("expected ErrSelfSignUnavailable, got %v", err)
 	}
-	if token != "" {
-		t.Errorf("token: got %q, want empty", token)
+	if result != nil {
+		t.Errorf("result: got %+v, want nil (local stub never produces a result)", result)
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/costrict/costrict-web/server/internal/authidentity"
 	"github.com/costrict/costrict-web/server/internal/logger"
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
@@ -30,10 +29,6 @@ type JWTClaims struct {
 	Provider          string `json:"provider,omitempty"`
 	ProviderUserID    string `json:"provider_user_id,omitempty"`
 	Phone             string `json:"phone,omitempty"`
-	// ExternalClaims carries the raw IdP userinfo map (Profile.Raw from the
-	// Casdoor OAuth callback) so cs-user can run field_map extraction on the
-	// tenant's employment_providers config.
-	ExternalClaims map[string]any `json:"external_claims,omitempty"`
 }
 
 // UserService provides user data operations
@@ -759,49 +754,10 @@ func ParseJWTClaimsFromMiddleware(c *gin.Context) (*JWTClaims, error) {
 	}, nil
 }
 
-// ParseJWTClaimsFromAccessToken extracts relevant Casdoor claims from an access token.
-// The token is obtained directly from Casdoor during login, so this helper only decodes
-// claims to enrich profile data when /api/userinfo omits fields like id/universal_id.
-func ParseJWTClaimsFromAccessToken(tokenString string) (*JWTClaims, error) {
-	rawClaims, err := authidentity.ParseUnverifiedTokenClaims(tokenString)
-	if err != nil {
-		return nil, err
-	}
-	normalized := authidentity.NormalizeClaimsMap(rawClaims)
-
-	result := &JWTClaims{
-		ID:                normalized.ID,
-		Sub:               normalized.Sub,
-		UniversalID:       normalized.UniversalID,
-		Name:              normalized.Name,
-		PreferredUsername: normalized.PreferredUsername,
-		Email:             normalized.Email,
-		Picture:           normalized.Picture,
-		Owner:             normalized.Owner,
-		Provider:          normalized.Provider,
-		ProviderUserID:    normalized.ProviderUserID,
-		Phone:             normalized.Phone,
-	}
-
-	if result.ID == "" && result.Sub == "" && result.UniversalID == "" {
-		return nil, fmt.Errorf("no user identifiers found in access token")
-	}
-
-	// Surface the raw Casdoor token payload (properties, signupApplication,
-	// user, ...) as ExternalClaims so cs-user's employment_providers.field_map
-	// can extract per-provider enterprise fields without server hard-coding
-	// each IdP's property namespace. Lets field_map configs like
-	//   properties.oauth_Custom.id → enterprise_uid
-	// work for IdPs routed through Casdoor (idtrust, custom OAuth apps, ...).
-	// We pass the whole raw map rather than cherry-picking keys so future
-	// field_map configs can reach any token field without another server-side
-	// change. cs-user's applyFieldMap walks dotted paths to get inside nested
-	// sub-maps.
-	result.ExternalClaims = rawClaims
-
-	return result, nil
-}
-
+// MergeJWTClaims merges two JWTClaims values, with override taking precedence
+// per-field (see inline comments for field-specific override rules). Handles
+// nil base / nil override defensively — callers (handlers.go OAuth callback
+// fallback, users.go build-flow nil-safe) rely on the no-panic contract.
 func MergeJWTClaims(base, override *JWTClaims) *JWTClaims {
 	if base == nil {
 		if override == nil {
@@ -855,24 +811,6 @@ func MergeJWTClaims(base, override *JWTClaims) *JWTClaims {
 	}
 	if override.Picture != "" {
 		merged.Picture = override.Picture
-	}
-
-	// ExternalClaims is the raw token-payload bag (properties.oauth_Custom_*,
-	// signupApplication, ...). Always prefer override's when present — base
-	// is the manually-constructed claims struct from AuthCallback and never
-	// carries ExternalClaims itself. Shallow-assign on nil-base is enough;
-	// deep-merge when both sides have entries so a future caller that
-	// pre-populates ExternalClaims (e.g. trusted upstream) keeps its keys.
-	if override.ExternalClaims != nil {
-		if merged.ExternalClaims == nil {
-			merged.ExternalClaims = override.ExternalClaims
-		} else {
-			for k, v := range override.ExternalClaims {
-				if _, present := merged.ExternalClaims[k]; !present {
-					merged.ExternalClaims[k] = v
-				}
-			}
-		}
 	}
 
 	return normalizeJWTClaims(&merged)
@@ -932,11 +870,6 @@ func buildExternalKey(claims *JWTClaims) string {
 		return "casdoor-id:" + claims.ID
 	}
 	return ""
-}
-
-// BuildExternalKey is the public wrapper for buildExternalKey.
-func BuildExternalKey(claims *JWTClaims) string {
-	return buildExternalKey(claims)
 }
 
 func legacyExternalKey(claims *JWTClaims) string {

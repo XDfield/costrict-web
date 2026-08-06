@@ -246,7 +246,7 @@ func TestExtractToken_NonBearerAuthHeaderUseCookie(t *testing.T) {
 // 3. introspectToken (cs-user verify contract)
 // ===========================================================================
 
-// TestParseToken_ValidTokenMapsFields pins the response→CasdoorUserInfo field
+// TestParseToken_ValidTokenMapsFields pins the response→VerifiedUserInfo field
 // mapping: the contract between cs-user's verifyTokenResponse JSON and the
 // middleware. Silent drift in either direction fails this test.
 func TestParseToken_ValidTokenMapsFields(t *testing.T) {
@@ -302,9 +302,9 @@ func TestParseToken_ValidTokenMapsFields(t *testing.T) {
 	if info.Issuer != "cs-user" {
 		t.Errorf("Issuer = %q, want cs-user", info.Issuer)
 	}
-	// Phase C1 fields stay zero — server no longer trusts local JWT claims.
+	// Platform-admin fields stay zero — server no longer trusts local JWT claims.
 	if info.PlatformAdmin || info.PlatformScope != "" || info.TenantRoles != nil {
-		t.Errorf("Phase C1 fields must be zero, got admin=%v scope=%q roles=%v", info.PlatformAdmin, info.PlatformScope, info.TenantRoles)
+		t.Errorf("platform-admin fields must be zero, got admin=%v scope=%q roles=%v", info.PlatformAdmin, info.PlatformScope, info.TenantRoles)
 	}
 }
 
@@ -678,25 +678,34 @@ func TestRequireAuth_TokenFromCookie(t *testing.T) {
 	}
 }
 
-// TestRequireAuth_UsesResolvedSubjectID covers the non-cs-user issuer path
-// — when the issuer is NOT "cs-user" (legacy Casdoor tokens during the
-// crossover window), the resolver bridges universal_id → local subject_id.
-func TestRequireAuth_UsesResolvedSubjectID(t *testing.T) {
+// TestRequireAuth_IgnoresSubjectResolver_PostPhase52 pins the contract:
+// middleware's setAuthContext never calls subjectResolver regardless of
+// what issuer the cs-user verify response carries. cs-user is the sole
+// identity authority and signs every token, so the resolver branch is
+// dead in the HTTP-request path. subjectResolver is still wired in
+// main.go but only consumed by authz.Service.VerifyTokenWithUser on the
+// internal /auth/verify path — NOT by HTTP request middleware.
+//
+// Regression guard: if a future change reintroduces a resolver call in
+// setAuthContext, this test fails loudly. The stub returns a non-default
+// issuer ("https://casdoor.example") specifically to defeat any future
+// "iss == cs-user" predicate — there must be no issuer-based branching.
+func TestRequireAuth_IgnoresSubjectResolver_PostPhase52(t *testing.T) {
+	resolverCalled := false
 	defer SetSubjectResolver(nil)
 	SetSubjectResolver(func(claims AuthClaims) (string, string, error) {
-		if claims.UniversalID != "u-legacy-001" {
-			t.Fatalf("resolver: unexpected UniversalID %q", claims.UniversalID)
-		}
-		return "subject-resolved", "resolved-user", nil
+		resolverCalled = true
+		return "should-not-be-used", "should-not-be-used", nil
 	})
 
 	stub := newStubCSUser(t, func(w http.ResponseWriter, r *http.Request, call int32) {
-		// cs-user returns a NON-cs-user issuer so the resolver fires.
+		// Intentionally a non-default issuer to prove no issuer-based
+		// branching exists downstream.
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"active":       true,
-			"sub":          "casdoor-sub-1",
+			"sub":          "usr_trusted_sub",
 			"universal_id": "u-legacy-001",
-			"name":         "Legacy",
+			"name":         "Trusted",
 			"iss":          "https://casdoor.example",
 		})
 	})
@@ -712,16 +721,19 @@ func TestRequireAuth_UsesResolvedSubjectID(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/protected", nil)
-	req.Header.Set("Authorization", "Bearer legacy-token")
+	req.Header.Set("Authorization", "Bearer some-token")
 	w := performRequest(router, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	if capturedUserID != "subject-resolved" {
-		t.Errorf("expected resolved subject id, got %q", capturedUserID)
+	if resolverCalled {
+		t.Errorf("subjectResolver must NOT be called from middleware setAuthContext (post-Phase-5.2)")
 	}
-	if capturedUserName != "resolved-user" {
-		t.Errorf("expected resolved user name, got %q", capturedUserName)
+	if capturedUserID != "usr_trusted_sub" {
+		t.Errorf("UserIDKey: got %q, want raw sub from cs-user response (no resolver override)", capturedUserID)
+	}
+	if capturedUserName != "Trusted" {
+		t.Errorf("UserNameKey: got %q, want raw name from cs-user response", capturedUserName)
 	}
 }
 

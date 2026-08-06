@@ -1,15 +1,10 @@
-// Package middleware — cross-tenant mismatch detection (Phase B3b.2c).
+// Package middleware — cross-tenant mismatch detection.
 //
 // TenantMatch compares the tenant_slug claim embedded in the cs-user-signed JWT
-// (Phase A7) against the runtime-resolved slug stored in the request context
+// against the runtime-resolved slug stored in the request context
 // by ResolveTenantSlug. When both are populated and differ, the request is
 // treated as a cross-tenant access attempt (cookie/JWT stolen from another
 // tenant) and aborted with HTTP 401.
-//
-// Pre-cutover behavior: Casdoor-issued JWTs do NOT carry the tenant_slug claim,
-// so AuthClaims.TenantSlug is empty. The middleware skips comparison in that
-// case (graceful — same as "no runtime signal"). This keeps the gate dormant
-// until cs-user token issuance is fully lit up.
 //
 // Skip conditions (both must hold for the gate to fire):
 //   - JWT carries a non-empty tenant_slug claim (cs-user-signed).
@@ -51,9 +46,9 @@ func TenantMatch() gin.HandlerFunc {
 		}
 		jwtSlug := authClaims.TenantSlug
 		if jwtSlug == "" {
-			// Pre-cutover Casdoor token or A7 token issued without a slug
-			// (e.g. server ran without runtime slug signal at reissue time).
-			// Skip — comparison impossible without both sides populated.
+			// Token issued without a slug (e.g. server ran without runtime
+			// slug signal at reissue time). Skip — comparison impossible
+			// without both sides populated.
 			c.Next()
 			return
 		}

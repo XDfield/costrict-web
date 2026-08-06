@@ -8,8 +8,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// TenantResolver is the read-side surface for tenant lookups against cs-user
-// (Phase B3b.2b-step2b). Local-mode has no tenant data — the server deliberately
+// TenantResolver is the read-side surface for tenant lookups against cs-user.
+// Local-mode has no tenant data — the server deliberately
 // does not duplicate cs-user's tenants table (ADR D1) — so in local mode
 // Module.TenantResolver is nil and handlers must skip the §5 Try 2 layer.
 // In rpc mode, *RPCClient satisfies this interface.
@@ -34,7 +34,7 @@ type TenantResolver interface {
 //     combining both for the rpc+local canary posture. Handlers must call
 //     Writer.X — never Service.X directly — so the (Backend, WriteMode) env
 //     vars are the single knob for write routing.
-//   - TenantResolver: cs-user-backed tenant lookup (Phase B3b.2b-step2b). Nil
+//   - TenantResolver: cs-user-backed tenant lookup. Nil
 //     in local mode (no tenant data on this side); *RPCClient in rpc mode.
 //     Handlers must nil-check before invoking — a nil value means "Try 2 is
 //     unavailable, fall through to default tenant".
@@ -135,8 +135,8 @@ func NewWithConfig(db *gorm.DB, syncIntervalMinutes int, cfg config.UserServiceC
 		Reader:        reader,
 		Writer:        writer,
 	}
-	// Phase B3b.2b-step2b: in rpc mode the same *RPCClient that backs Reader
-	// also satisfies TenantResolver (it has the ResolveTenantByEmail method
+	// In rpc mode the same *RPCClient that backs Reader also satisfies
+	// TenantResolver (it has the ResolveTenantByEmail method
 	// added in rpc_client_tenant.go). Local mode has no tenant data on this
 	// side (ADR D1), so TenantResolver stays nil and handlers must skip the
 	// §5 Try 2 layer.

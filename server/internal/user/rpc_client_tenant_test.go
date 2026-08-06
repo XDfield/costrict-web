@@ -81,7 +81,7 @@ func TestRPCClient_OmitsTenantSlugHeaderWhenEmpty(t *testing.T) {
 	}
 }
 
-// ---- Phase B3b.2b-step2b: ResolveTenantByEmail ----
+// ---- ResolveTenantByEmail ----
 
 // newResolveByEmailServer returns a test server that mirrors cs-user's
 // /api/internal/tenants/resolve-by-email contract: always 200, three-state
@@ -287,7 +287,7 @@ func TestRPCClient_ResolveTenantByEmail_UnknownStatusIsErrRPCUnavailable(t *test
 }
 
 // TestRPCClient_SatisfiesTenantResolverInterface confirms *RPCClient
-// satisfies Module.TenantResolver (Phase B3b.2b-step2b wiring).
+// satisfies Module.TenantResolver.
 func TestRPCClient_SatisfiesTenantResolverInterface(t *testing.T) {
 	var _ TenantResolver = (*RPCClient)(nil)
 }

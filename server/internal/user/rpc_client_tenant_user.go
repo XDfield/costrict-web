@@ -1,4 +1,4 @@
-// rpc_client_tenant_user.go — Phase C3.1 tenant-admin user listing.
+// rpc_client_tenant_user.go — tenant-admin user listing RPC client.
 //
 // C3 sub-slice 1 (本 tenant 用户列表): tenant_admin lists users within
 // their own tenant. cs-user already exposes

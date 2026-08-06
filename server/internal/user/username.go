@@ -141,7 +141,7 @@ func (s *UserService) CompleteRegistration(ctx context.Context, subjectID, usern
 
 // UpdateMyProfile applies user-self edits to display_name only. username is
 // user-side immutable (REGISTRATION_PROFILE_DESIGN §3); admin overrides go
-// through a separate RPC (R5).
+// through a separate admin RPC.
 func (s *UserService) UpdateMyProfile(ctx context.Context, subjectID, displayName string) (*models.User, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("user.Service: nil db")
@@ -234,7 +234,7 @@ func (s *UserService) IsProfileComplete(subjectID string) (bool, error) {
 	return u.ProfileCompletedAt != nil, nil
 }
 
-// SuggestProfile (R4) returns an empty suggestion under the local backend
+// SuggestProfile returns an empty suggestion under the local backend
 // — server has no provider-mapping logic, the authoritative generator
 // lives in cs-user. RPCWriter overrides this to forward to cs-user. The
 // stub exists so the UserWriter interface is uniform across backends.

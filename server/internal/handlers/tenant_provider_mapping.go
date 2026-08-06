@@ -1,4 +1,4 @@
-// Tenant-admin provider_mapping typed-edit handlers (Phase C3.3).
+// Tenant-admin provider_mapping typed-edit handlers.
 //
 // C3 sub-slice 3 typed counterpart to /api/tenant/config. Two public
 // endpoints:
