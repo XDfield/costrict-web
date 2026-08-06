@@ -174,6 +174,40 @@ func assignTagsForItem(tagSvc *services.TagService, itemID string, tagIDs []stri
 	return tagSvc.SetItemTags(itemID, tagIDs, source)
 }
 
+// validateCreateRegistry enforces registry ownership before any content or
+// asset is persisted. Public creation is always allowed; private registries
+// must be internal, attached to a normal repository, and caller-accessible.
+func validateCreateRegistry(c *gin.Context, db *gorm.DB, registryID string) (int, string, bool) {
+	if registryID == "" {
+		registryID = PublicRegistryID
+	}
+	if registryID == PublicRegistryID {
+		return http.StatusCreated, "", true
+	}
+	var reg models.CapabilityRegistry
+	if err := db.First(&reg, "id = ?", registryID).Error; err != nil {
+		return http.StatusNotFound, "registry_not_found", false
+	}
+	if reg.SourceType == "external" {
+		return http.StatusBadRequest, "external_registry_not_allowed", false
+	}
+	var repo models.Repository
+	if err := db.First(&repo, "id = ?", reg.RepoID).Error; err != nil {
+		return http.StatusNotFound, "repository_not_found", false
+	}
+	if repo.RepoType == "sync" {
+		return http.StatusBadRequest, "sync_repository_not_allowed", false
+	}
+	uid := c.GetString(middleware.UserIDKey)
+	if !callerIsPlatformAdmin(c, db) && repo.OwnerID != uid {
+		var member models.RepoMember
+		if err := db.Where("repo_id = ? AND user_id = ?", repo.ID, uid).First(&member).Error; err != nil {
+			return http.StatusForbidden, "repository_membership_required", false
+		}
+	}
+	return http.StatusCreated, "", true
+}
+
 // ---------------------------------------------------------------------------
 // Shared item creation kernel
 // ---------------------------------------------------------------------------
@@ -2832,8 +2866,11 @@ func ListItemFilterOptions(c *gin.Context) {
 // @Param        file        formData  file    false  "Archive file (.zip, .tar.gz, or .tgz) (multipart)"
 // @Param        itemType    formData  string  false  "Item type: skill or mcp (multipart)"
 // @Param        name        formData  string  false  "Item name (multipart)"
+// @Param        registryId  formData  string  false  "Target registry ID; defaults to public (multipart)"
 // @Success      201   {object}  ItemResponse
 // @Failure      400   {object}  object{error=string}
+// @Failure      403   {object}  object{error=string,code=string}
+// @Failure      404   {object}  object{error=string,code=string}
 // @Failure      409   {object}  object{error=string}
 // @Failure      500   {object}  object{error=string}
 // @Router       /items [post]
@@ -2878,6 +2915,10 @@ func (h *ItemHandler) createItemFromJSON(c *gin.Context) {
 	registryID := req.RegistryID
 	if registryID == "" {
 		registryID = PublicRegistryID
+	}
+	if status, code, ok := validateCreateRegistry(c, h.db, registryID); !ok {
+		c.JSON(status, gin.H{"error": code, "code": code})
+		return
 	}
 
 	if req.Slug == "" {
@@ -3363,6 +3404,10 @@ func (h *ItemHandler) createItemFromArchive(c *gin.Context) {
 	createdBy := c.GetString(middleware.UserIDKey)
 	if createdBy == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Authentication required"})
+		return
+	}
+	if status, code, ok := validateCreateRegistry(c, h.db, registryID); !ok {
+		c.JSON(status, gin.H{"error": code, "code": code})
 		return
 	}
 
