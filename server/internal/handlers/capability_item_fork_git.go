@@ -625,15 +625,14 @@ func enqueueInitialGitSync(db *gorm.DB, deliveryID, itemID string, plan *gitFork
 	}
 }
 
-// gitWebBase returns the browser-facing base URL of the tenant's git server,
-// falling back to the API endpoint when no separate web URL is configured
-// (single-address deployments, including local dev).
+// gitWebBase returns the browser-facing base URL of the tenant's git server.
+//
+// The precedence (config.web_url, else the API endpoint) lives in
+// gitserver.BrowserBaseURL and nowhere else: the browser-side trusted-origin
+// allowlist is derived from the same function, so a second copy here would let
+// the coordinate writer and the allowlist disagree.
 func gitWebBase(cfg *gitserver.Config) string {
-	base := strings.TrimSpace(cfg.WebURL)
-	if base == "" {
-		base = cfg.Endpoint
-	}
-	return strings.TrimRight(base, "/")
+	return cfg.BrowserBaseURL()
 }
 
 // locateGiteaSourceRepo returns the first candidate coordinate that actually

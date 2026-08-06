@@ -594,38 +594,53 @@ type ItemResponse struct {
 	// Deprecated: 三个 parentPlugin* 字段在扁平能力模型下已停止产生新数据，
 	// 仅为存量行保留一个发布兼容窗口。消费方（multica / csc）应停止依赖它们：
 	// plugin 详情不再展示子项树，也不再有「来自插件 X」的父子关系。
-	ParentPluginID      *string                     `json:"parentPluginId,omitempty"`   // Deprecated: 存量 sub-skill 的父 plugin item ID
-	ParentPluginName    string                      `json:"parentPluginName,omitempty"` // Deprecated: 父 plugin 展示名
-	ParentPluginSlug    string                      `json:"parentPluginSlug,omitempty"` // Deprecated: 父 plugin slug
-	PreviewCount        int                         `json:"previewCount"`
-	InstallCount        int                         `json:"installCount"`
-	FavoriteCount       int                         `json:"favoriteCount"`
-	Status              string                      `json:"status"`
-	SecurityStatus      string                      `json:"securityStatus"`
-	LastScanID          *string                     `json:"lastScanId,omitempty"`
-	CreatedBy           string                      `json:"createdBy"`
-	UpdatedBy           string                      `json:"updatedBy"`
-	Registry            *models.CapabilityRegistry  `json:"registry,omitempty"`
-	Artifacts           []models.CapabilityArtifact `json:"artifacts,omitempty"`
-	CreatedAt           time.Time                   `json:"createdAt"`
-	UpdatedAt           time.Time                   `json:"updatedAt"`
-	ExperienceScore     float64                     `json:"experienceScore"`
-	Tags                []models.ItemTagDict        `json:"tags,omitempty"`
-	RepoVisibility      string                      `json:"repoVisibility,omitempty"`
-	RepoName            string                      `json:"repoName,omitempty"`
-	Favorited           bool                        `json:"favorited"`
-	IsBuiltIn           bool                        `json:"isBuiltIn"`
-	CurrentVersionLabel string                      `json:"currentVersionLabel"`
-	ForkCount           int                         `json:"forkCount"`                 // 本 item 被 fork 的次数
-	MyForkItemID        *string                     `json:"myForkItemId,omitempty"`    // 当前登录用户对本 item 的已有 fork（用于「查看我的 fork」三态）
-	MCPConfig           *MCPConfigStatus            `json:"mcpConfig,omitempty"`       // per-user MCP 占位参数配置状态（掩码；仅 mcp + 登录用户已配置时出现）
-	ContentBackend      string                      `json:"contentBackend,omitempty"`  // db | git — 内容真相源；git 时正文/文件树在仓库里
-	SourceRepoURL       string                      `json:"sourceRepoUrl,omitempty"`   // 仅 git-backed：仓库地址
-	SourceRepoRef       string                      `json:"sourceRepoRef,omitempty"`   // 仅 git-backed：分支
-	SourceRepoPath      string                      `json:"sourceRepoPath,omitempty"`  // 仅 git-backed：主文件相对路径（用于直达编辑页）；未探测到时为空
-	GitSyncStatus       string                      `json:"gitSyncStatus,omitempty"`   // 仅 git-backed：pending | synced | error | orphaned
-	GitLastSyncedAt     *time.Time                  `json:"gitLastSyncedAt,omitempty"` // 仅 git-backed：最近一次成功写入 Git 投影的时间
+	ParentPluginID        *string                     `json:"parentPluginId,omitempty"`   // Deprecated: 存量 sub-skill 的父 plugin item ID
+	ParentPluginName      string                      `json:"parentPluginName,omitempty"` // Deprecated: 父 plugin 展示名
+	ParentPluginSlug      string                      `json:"parentPluginSlug,omitempty"` // Deprecated: 父 plugin slug
+	PreviewCount          int                         `json:"previewCount"`
+	InstallCount          int                         `json:"installCount"`
+	FavoriteCount         int                         `json:"favoriteCount"`
+	Status                string                      `json:"status"`
+	SecurityStatus        string                      `json:"securityStatus"`
+	LastScanID            *string                     `json:"lastScanId,omitempty"`
+	CreatedBy             string                      `json:"createdBy"`
+	UpdatedBy             string                      `json:"updatedBy"`
+	Registry              *models.CapabilityRegistry  `json:"registry,omitempty"`
+	Artifacts             []models.CapabilityArtifact `json:"artifacts,omitempty"`
+	CreatedAt             time.Time                   `json:"createdAt"`
+	UpdatedAt             time.Time                   `json:"updatedAt"`
+	ExperienceScore       float64                     `json:"experienceScore"`
+	Tags                  []models.ItemTagDict        `json:"tags,omitempty"`
+	RepoVisibility        string                      `json:"repoVisibility,omitempty"`
+	RepoName              string                      `json:"repoName,omitempty"`
+	Favorited             bool                        `json:"favorited"`
+	IsBuiltIn             bool                        `json:"isBuiltIn"`
+	CurrentVersionLabel   string                      `json:"currentVersionLabel"`
+	ForkCount             int                         `json:"forkCount"`                       // 本 item 被 fork 的次数
+	MyForkItemID          *string                     `json:"myForkItemId,omitempty"`          // 当前登录用户对本 item 的已有 fork（用于「查看我的 fork」三态）
+	MCPConfig             *MCPConfigStatus            `json:"mcpConfig,omitempty"`             // per-user MCP 占位参数配置状态（掩码；仅 mcp + 登录用户已配置时出现）
+	ContentBackend        string                      `json:"contentBackend,omitempty"`        // db | git — 内容真相源；git 时正文/文件树在仓库里
+	SourceRepoURL         string                      `json:"sourceRepoUrl,omitempty"`         // 仅 git-backed：仓库地址
+	SourceRepoRef         string                      `json:"sourceRepoRef,omitempty"`         // 仅 git-backed：分支
+	SourceRepoPath        string                      `json:"sourceRepoPath,omitempty"`        // 仅 git-backed：主文件相对路径（用于直达编辑页）；未探测到时为空
+	GitSyncStatus         string                      `json:"gitSyncStatus,omitempty"`         // 仅 git-backed：pending | synced | error | orphaned
+	GitLastSyncedAt       *time.Time                  `json:"gitLastSyncedAt,omitempty"`       // 仅 git-backed：最近一次成功写入 Git 投影的时间
+	GitLifecycleReason    string                      `json:"gitLifecycleReason,omitempty"`    // 仅 git-backed 且 Git 主张归档时：manifest_removed | default_branch_missing | repository_deleted
+	GitLifecycleChangedAt *time.Time                  `json:"gitLifecycleChangedAt,omitempty"` // 该 Reason 所代表的那次转换的观测时间；有 Reason 必有此值
 }
+
+// GitLifecycleReason / GitLifecycleChangedAt 说明「这行为什么被 Git 藏起来」，
+// 而 GitSyncStatus 只说得出「是 sync 藏的」。两者的差别是可恢复性：
+// manifest_removed / default_branch_missing 可由同一 Git 身份自动恢复，
+// repository_deleted 是终态。UI 要据此决定说「文件被删了，push 回去即可恢复」
+// 还是「仓库没了，这个坐标永远打不开」——少了它，两句话只能合并成一句含糊的
+// 「已归档」。
+//
+// 两个字段与 GitSyncStatus / GitLastSyncedAt 同级：只在 git-backed 分支投影
+// （见 buildItemResponseWithGitContent），因此继承同一个可见性 gate
+// （authorizeItemRead / 创建者 / 平台管理员），不新开口子。
+//
+// 注意：本注释刻意不贴在字段上方——swag 会把整段吞进 Swagger 的 description。
 
 type ItemAssetsResponse struct {
 	Assets []itemAssetPayload `json:"assets"`
@@ -829,6 +844,15 @@ func buildItemResponseWithGitContent(c *gin.Context, db *gorm.DB, item models.Ca
 		// UI needs to say so rather than present stale metadata as current.
 		resp.GitSyncStatus = item.GitSyncStatus
 		resp.GitLastSyncedAt = item.GitLastSyncedAt
+		// The lifecycle claim travels with the sync state, not instead of it. An
+		// archived row keeps content_backend='git' (see
+		// archiveGitCapabilitiesForMissingRepository, which never touches the
+		// column), so this branch is exactly the set of rows that can carry a
+		// reason — gating on status would drop it precisely when it is needed.
+		if item.GitLifecycleReason != nil {
+			resp.GitLifecycleReason = *item.GitLifecycleReason
+		}
+		resp.GitLifecycleChangedAt = item.GitLifecycleChangedAt
 	}
 	if item.Registry != nil {
 		resp.RepoVisibility = getRepoVisibility(item.Registry.RepoID)

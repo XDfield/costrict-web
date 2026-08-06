@@ -367,7 +367,7 @@ func (s *GitCapabilitySyncService) SyncRepository(
 	newEntries := remainingDiscoveredGitCapabilities(discovered, discoveredByIdentity)
 
 	now := time.Now()
-	repoURL := strings.TrimRight(firstGitURL(cfg.WebURL, cfg.Endpoint), "/") + "/" + owner + "/" + repoName
+	repoURL := cfg.BrowserBaseURL() + "/" + owner + "/" + repoName
 	err = s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		job, err := assertGitCapabilityLease(tx, lease)
 		if err != nil {
@@ -871,13 +871,4 @@ func validGitSHA(value string) bool {
 		}
 	}
 	return true
-}
-
-func firstGitURL(values ...string) string {
-	for _, value := range values {
-		if value = strings.TrimSpace(value); value != "" {
-			return value
-		}
-	}
-	return ""
 }

@@ -2237,6 +2237,13 @@ definitions:
           with a blank version label is unrenderable.
         type: string
     type: object
+  internal_handlers.GitTrustedOriginsResponse:
+    properties:
+      origins:
+        items:
+          type: string
+        type: array
+    type: object
   internal_handlers.ItemAssetsResponse:
     properties:
       assets:
@@ -2317,6 +2324,13 @@ definitions:
         type: string
       gitLastSyncedAt:
         description: 仅 git-backed：最近一次成功写入 Git 投影的时间
+        type: string
+      gitLifecycleChangedAt:
+        description: 该 Reason 所代表的那次转换的观测时间；有 Reason 必有此值
+        type: string
+      gitLifecycleReason:
+        description: 仅 git-backed 且 Git 主张归档时：manifest_removed | default_branch_missing
+          | repository_deleted
         type: string
       gitSyncStatus:
         description: 仅 git-backed：pending | synced | error | orphaned
@@ -9722,6 +9736,31 @@ paths:
       summary: List enterprise customers
       tags:
       - enterprise-customers
+  /git-servers/trusted-origins:
+    get:
+      description: 'Browser-reachable origins (scheme://host[:port]) of this deployment''s
+        enabled Git servers, for clients that must verify a repository URL belongs
+        to this fleet before rendering it as a link. Derived from the same address
+        the server uses to build repository coordinates: config.web_url when set,
+        otherwise the API endpoint. Carries no credentials, no server identifiers
+        and no cluster-internal detail beyond that address. Public read.'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_handlers.GitTrustedOriginsResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            properties:
+              error:
+                type: string
+            type: object
+      summary: List trusted Git server origins
+      tags:
+      - git-servers
   /internal/gateway/{gatewayID}:
     delete:
       description: Remove a gateway instance from the registry.

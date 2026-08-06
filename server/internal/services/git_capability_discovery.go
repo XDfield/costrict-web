@@ -430,7 +430,7 @@ func (s *GitCapabilitySyncService) discoverGitCapabilities(
 	}
 
 	now := time.Now().UTC()
-	repoURL := strings.TrimRight(firstGitURL(cfg.WebURL, cfg.Endpoint), "/") + "/" + owner + "/" + repoName
+	repoURL := cfg.BrowserBaseURL() + "/" + owner + "/" + repoName
 	ownerID, err := resolveDiscoveredRepositoryOwner(s.DB.WithContext(ctx), cfg.ServerID, gitRepositoryOwnerID(repo), owner)
 	if err != nil {
 		return nil, fmt.Errorf("resolve repository owner %q: %w", owner, err)

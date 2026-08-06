@@ -558,6 +558,13 @@ func main() {
 		api.GET("/updates/check", handlers.UpdateCheckHandler(updateSvc))
 		api.GET("/multica/updates/check", handlers.MulticaUpdateCheckHandler(&services.MulticaUpdateService{DB: db}))
 		api.GET("/registries/public", handlers.GetPublicRegistry)
+		// Browser-reachable Git server origins. Deliberately public and
+		// deliberately NOT under /api/internal/git-servers: that route serves
+		// whole rows (endpoint, config with admin_token/webhook_secret) behind
+		// X-Internal-Token, while this one projects only the origins a client
+		// needs to tell our repository links from a poisoned one. Anonymous
+		// callers see Git-backed items, so they need the allowlist too.
+		api.GET("/git-servers/trusted-origins", handlers.ListTrustedGitOrigins)
 		api.GET("/registries/:id", handlers.GetRegistry)
 		api.GET("/registries/:id/items", handlers.ListItems)
 		api.GET("/registry/:repo/access", handlers.RegistryAccess)
