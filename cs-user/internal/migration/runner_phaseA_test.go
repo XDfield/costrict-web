@@ -1,7 +1,7 @@
 //go:build cgo
 
-// Phase A migration smoke test: verifies the goose runner picks up files
-// with the Phase A naming convention (20260716150000_create_employment_identities.sql
+// Migration smoke test: verifies the goose runner picks up files
+// with the canonical naming convention (20260716150000_create_employment_identities.sql
 // and 20260716160000_create_tenant_configs.sql) and applies them cleanly.
 //
 // This is a plumbing smoke test, not a schema-fidelity test: sqlite can't
@@ -20,7 +20,7 @@ import (
 	"testing/fstest"
 )
 
-// Phase A synthetic migrations: same file names as production, sqlite-friendly
+// Synthetic migrations: same file names as production, sqlite-friendly
 // DDL inside. The partial-unique-index clause is intentionally omitted — see
 // file header for rationale.
 const (
@@ -72,7 +72,7 @@ func TestRunner_PhaseA_UpAppliesBothTables(t *testing.T) {
 			"SELECT name FROM sqlite_master WHERE type='table' AND name=?", tbl,
 		).Scan(&name)
 		if err != nil {
-			t.Errorf("table %s missing after Phase A Up: %v", tbl, err)
+			t.Errorf("table %s missing after Up: %v", tbl, err)
 		}
 	}
 }

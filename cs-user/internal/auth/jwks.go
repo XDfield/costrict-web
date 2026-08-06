@@ -9,7 +9,7 @@ type JWKS struct {
 	Keys []JWK `json:"keys"`
 }
 
-// JWK is a single JSON Web Key entry. Alg is RS256 (Phase A only).
+// JWK is a single JSON Web Key entry. Alg is RS256.
 type JWK struct {
 	Kty string `json:"kty"` // key type: "RSA"
 	Use string `json:"use"` // public key use: "sig"

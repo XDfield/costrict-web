@@ -36,6 +36,9 @@ type ClawAgentConfig struct {
 	SessionMaxTokens        int
 	CompactionKeepRecent    int
 	NotificationDelay       time.Duration
+	// MemoryEnabled gates per-user memory: when false, MemoryMgr.Load returns
+	// "" and Refresh no-ops. Mirrors config.ClawAgentConfig.MemoryEnabled.
+	MemoryEnabled bool
 }
 
 // ClawAgentRuntime is the main entry point for the ClawAgent system.
@@ -96,6 +99,7 @@ func New(db *gorm.DB, cfg *config.Config, gwRegistry *gateway.GatewayRegistry, g
 		SessionMaxTokens:        cfg.ClawAgent.Session.MaxSessionTokens,
 		CompactionKeepRecent:    cfg.ClawAgent.Session.CompactionKeepRecentMessages,
 			NotificationDelay:       time.Duration(cfg.ClawAgent.Session.NotificationDelaySeconds) * time.Second,
+		MemoryEnabled:           cfg.ClawAgent.MemoryEnabled,
 	}
 
 	if agentCfg.SessionDailyResetHour == 0 {
@@ -138,7 +142,7 @@ func New(db *gorm.DB, cfg *config.Config, gwRegistry *gateway.GatewayRegistry, g
 
 	// Initialize sub-managers
 	rt.PersonaMgr = NewPersonaManager(db, agentCfg)
-	rt.MemoryMgr = NewMemoryManager(db)
+	rt.MemoryMgr = NewMemoryManager(db, agentCfg.MemoryEnabled)
 	rt.ProviderMgr = NewProviderManager(db, agentCfg)
 	rt.SessionMeta = NewSessionMetaManager(db)
 	rt.MsgMgr = NewMessageManager(db)

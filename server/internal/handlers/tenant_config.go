@@ -1,4 +1,4 @@
-// Tenant-admin config read/write handlers (Phase C3.2).
+// Tenant-admin config read/write handlers.
 //
 // C3 sub-slice 2 (tenant 配置 CRUD): tenant_admin reads / replaces the
 // per-tenant YAML config blob. Two public endpoints:
@@ -135,7 +135,7 @@ func (a *TenantConfigAPI) UpdateTenantConfig(c *gin.Context) {
 }
 
 // prepareTenantConfigCtx validates auth claims, derives the tenant slug,
-// and returns a ctx with the slug + actor meta (Phase C4.1) injected so the
+// and returns a ctx with the slug + actor meta injected so the
 // RPC client forwards X-Tenant-Id + X-Actor-Tenant-Role / X-Actor-Platform-
 // Scope. Returns (ctx, true) on success; on failure writes the response +
 // returns (nil, false).

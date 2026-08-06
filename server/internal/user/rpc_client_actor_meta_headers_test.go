@@ -23,7 +23,7 @@ func actorMetaStubServer(t *testing.T) (*httptest.Server, *string, *string) {
 	return srv, &gotRole, &gotScope
 }
 
-// TestRPCTenantConfig_ForwardsActorMetaHeaders verifies the Phase C4.1
+// TestRPCTenantConfig_ForwardsActorMetaHeaders verifies the
 // header forwarding: when ctx carries non-empty ActorMeta, both
 // X-Actor-Tenant-Role and X-Actor-Platform-Scope are set on the outbound
 // request.

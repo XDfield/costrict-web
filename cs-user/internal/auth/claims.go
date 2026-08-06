@@ -186,8 +186,8 @@ type IssuanceParams struct {
 	// token. Empty slice means "no aud claim" (some validators reject this;
 	// populate when in doubt).
 	Audience []string
-	// TTL is the time from issuance to expiry. Required (Phase A default
-	// is set by the caller, typically A7 — 1h is a sensible starting point).
+	// TTL is the time from issuance to expiry. Required; the caller picks
+	// a sensible value (1h is a reasonable starting point).
 	TTL time.Duration
 	// JTI is the unique token id. Optional; caller can generate via uuid.
 	JTI string
@@ -197,21 +197,21 @@ type IssuanceParams struct {
 	// Employment carries the enterprise snapshot. May be nil if the user
 	// has no employment_identities row — enterprise fields are then omitted.
 	Employment *models.EmploymentIdentity
-	// TenantID is reserved for Phase B multi-tenancy. Phase A callers
-	// should pass "default" or leave empty.
+	// TenantID is the canonical tenants.tenant_id PK. Pass "default" or
+	// leave empty when the caller has no tenant context.
 	TenantID string
-	// TenantSlug is the URL-friendly tenant key (Phase B). Server's
-	// TenantMatch middleware compares this against the runtime-resolved
-	// slug — empty means "leave the JWT claim unset" (e.g. Casdoor-token
-	// re-sign under pre-cutover conditions).
+	// TenantSlug is the URL-friendly tenant key. Server's TenantMatch
+	// middleware compares this against the runtime-resolved slug — empty
+	// means "leave the JWT claim unset" (e.g. Casdoor-token re-sign under
+	// pre-cutover conditions).
 	TenantSlug string
 	// TenantRoles lists the user's active roles on their current tenant
-	// (Phase C1 — sourced from tenant_admins WHERE revoked_at IS NULL).
-	// Empty / nil for users with no admin role on the tenant.
+	// (sourced from tenant_admins WHERE revoked_at IS NULL). Empty / nil
+	// for users with no admin role on the tenant.
 	TenantRoles []string
 	// PlatformAdmin + PlatformScope mark the user as a platform-level
-	// admin (Phase C1 — sourced from platform_admins). When PlatformAdmin
-	// is false, PlatformScope is ignored.
+	// admin (sourced from platform_admins). When PlatformAdmin is false,
+	// PlatformScope is ignored.
 	PlatformAdmin bool
 	PlatformScope string
 }

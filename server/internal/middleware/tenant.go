@@ -1,4 +1,4 @@
-// Package middleware — server-side tenant slug resolver (Phase B3b.2a).
+// Package middleware — server-side tenant slug resolver.
 //
 // ResolveTenantSlug extracts the per-request tenant slug via the §5
 // three-layer fallback and stores it in the request context (tenant.WithSlug)

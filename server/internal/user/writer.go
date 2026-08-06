@@ -15,9 +15,77 @@ import (
 // cs-user. The OAuth callback treats this as a non-fatal fallback: with
 // Backend=local the deployment can't mint cs-user JWTs, so login falls back
 // to the Casdoor token with a WARN log rather than refusing service.
-//
-// Added in Phase A7b; docstring updated when the JWTSignMode gate was removed.
 var ErrSelfSignUnavailable = errors.New("jwt self-sign requires rpc backend (server has no local signer)")
+
+// ReissueProfile is the verified, normalized IdP userinfo subset cs-user
+// returns in ReissueResult. Field names mirror cs-user's reissueProfile wire
+// type 1:1. AsJWTClaims() projects it into the user.JWTClaims shape that
+// UserWriter.GetOrCreateUser consumes, so the OAuth callback can drive the
+// local mirror write without re-parsing the raw Casdoor JWT.
+type ReissueProfile struct {
+	ID                string `json:"id,omitempty"`
+	Sub               string `json:"sub,omitempty"`
+	UniversalID       string `json:"universal_id,omitempty"`
+	Name              string `json:"name,omitempty"`
+	PreferredUsername string `json:"preferred_username,omitempty"`
+	Email             string `json:"email,omitempty"`
+	Phone             string `json:"phone,omitempty"`
+	Picture           string `json:"picture,omitempty"`
+	Owner             string `json:"owner,omitempty"`
+	Provider          string `json:"provider,omitempty"`
+	ProviderUserID    string `json:"provider_user_id,omitempty"`
+}
+
+// AsJWTClaims projects the profile into a *JWTClaims that UserWriter.
+// GetOrCreateUser consumes. Returns nil when p is nil so callers can chain
+// without a nil-check.
+func (p *ReissueProfile) AsJWTClaims() *JWTClaims {
+	if p == nil {
+		return nil
+	}
+	return &JWTClaims{
+		ID:                p.ID,
+		Sub:               p.Sub,
+		UniversalID:       p.UniversalID,
+		Name:              p.Name,
+		PreferredUsername: p.PreferredUsername,
+		Email:             p.Email,
+		Phone:             p.Phone,
+		Picture:           p.Picture,
+		Owner:             p.Owner,
+		Provider:          p.Provider,
+		ProviderUserID:    p.ProviderUserID,
+	}
+}
+
+// ReissueResult carries the cs-user reissue-token response. Token + ExpiresAt
+// are the legacy fields (always populated on success). ExternalKey /
+// SubjectID / IsNew / Profile are populated by RPCWriter roundtrip;
+// zero-valued on the local-backend stub (which returns
+// ErrSelfSignUnavailable anyway). When Profile is non-nil, the OAuth
+// callback can drive its local mirror GetOrCreateUser directly from this
+// struct without parsing the raw JWT.
+type ReissueResult struct {
+	Token       string          `json:"token"`
+	ExpiresAt   time.Time       `json:"expires_at"`
+	ExternalKey string          `json:"external_key,omitempty"`
+	SubjectID   string          `json:"subject_id,omitempty"`
+	IsNew       bool            `json:"is_new,omitempty"`
+	Profile     *ReissueProfile `json:"profile,omitempty"`
+}
+
+// ParseIdentityResult carries the cs-user parse-identity response.
+// ExternalKey is the canonical casdoor[:<provider>]:<universal_id>
+// cs-user computed from the verified JWT — server uses it for merge_token
+// state on the identity_already_bound branch. Profile is the verified,
+// normalized IdP userinfo subset; Profile.AsJWTClaims() projects it into a
+// *JWTClaims that BindIdentityToUser consumes. RPCWriter populates both
+// fields on success; the local-backend stub returns
+// (nil, ErrSelfSignUnavailable) under USER_SERVICE_BACKEND=local.
+type ParseIdentityResult struct {
+	ExternalKey string          `json:"external_key,omitempty"`
+	Profile     *ReissueProfile `json:"profile,omitempty"`
+}
 
 // UserWriter is the write-side seam over user data, the write-path counterpart
 // to UserReader. *UserService satisfies it directly (local DB); RPCWriter
@@ -26,8 +94,8 @@ var ErrSelfSignUnavailable = errors.New("jwt self-sign requires rpc backend (ser
 // (Backend, WriteMode) combination — see user.go for the selection matrix.
 //
 // Signatures intentionally match *UserService's existing write methods
-// verbatim. Phase B3b.2b added a leading context.Context parameter to every
-// method — RPCWriter uses it to forward the tenant slug (and future tracing
+// verbatim. A leading context.Context parameter is carried on every method —
+// RPCWriter uses it to forward the tenant slug (and future tracing
 // span) as X-Tenant-Id on the outbound cs-user RPC, and the local UserService
 // threads it down to its GORM queries. RPCWriter still wraps the ctx with a
 // per-request timeout internally (rpc_client.go defaultTimeout); cancellation
@@ -44,19 +112,24 @@ type UserWriter interface {
 	// so the local UserService satisfies this with a no-op (see
 	// service.go); only RPCWriter actually performs a write. Best-effort at
 	// every caller — login must never block on this.
-	// Added in Phase A4b.
 	ApplyEnterpriseMapping(ctx context.Context, userSubjectID string, provider string) error
-	// ReissueToken mints a cs-user-signed JWT carrying enterprise claims
-	// (Phase A7). The local UserService has no RSA signing key and returns
-	// ErrSelfSignUnavailable unconditionally; only RPCWriter (Backend=rpc)
-	// can fulfill this. DualWriter routes to Secondary directly, bypassing
-	// the no-op Primary.
+	// ReissueToken mints a cs-user-signed JWT carrying enterprise claims.
+	// The local UserService has no RSA signing key and returns
+	// (nil, ErrSelfSignUnavailable) unconditionally; only RPCWriter
+	// (Backend=rpc) can fulfill this. DualWriter routes to Secondary
+	// directly, bypassing the no-op Primary.
 	//
-	// Returns (token, expiresAt, err). Callers (OAuth callback) treat errors
-	// as best-effort: when ReissueToken fails the cookie keeps the Casdoor
-	// token, when it succeeds the cookie gets the cs-user token.
-	// Added in Phase A7b.
-	ReissueToken(ctx context.Context, audience []string, rawCasdoorJWT string) (string, time.Time, error)
+	// RPCWriter's response carries SubjectID / IsNew / Profile alongside the
+	// token. The OAuth callback uses Profile to drive its local mirror
+	// GetOrCreateUser without re-parsing the raw JWT; IsNew lets it
+	// short-circuit the insert-vs-find expectation. The local stub returns
+	// (nil, ErrSelfSignUnavailable); under USER_SERVICE_BACKEND=local the
+	// OAuth callback's fallback path proceeds with /api/userinfo fields
+	// only (deprecated posture — see .env.example).
+	// Callers (OAuth callback) treat errors as best-effort: when
+	// ReissueToken fails the cookie keeps the Casdoor token, when it
+	// succeeds the cookie gets the cs-user token.
+	ReissueToken(ctx context.Context, audience []string, rawCasdoorJWT string) (*ReissueResult, error)
 	// R2 (REGISTRATION_PROFILE_DESIGN): user-side registration + profile
 	// self-edit. Username uniqueness is tenant-scoped under the rpc backend
 	// (cs-user) and global under the local backend (server has no tenant_id
@@ -64,11 +137,20 @@ type UserWriter interface {
 	CompleteRegistration(ctx context.Context, userSubjectID, username, displayName string) (*models.User, error)
 	UpdateMyProfile(ctx context.Context, userSubjectID, displayName string) (*models.User, error)
 	IsUsernameAvailable(ctx context.Context, username, excludeSubjectID string) (bool, error)
-	// SuggestProfile (R4) is a pure provider → {username, display_name}
+	// SuggestProfile is a pure provider → {username, display_name}
 	// hint. Local backend has no provider-mapping logic — it returns an
 	// empty suggestion; only RPCWriter (Backend=rpc) actually consults
 	// cs-user's MapProviderToProfile.
 	SuggestProfile(ctx context.Context, claims *JWTClaims) (username, displayName string, err error)
+	// ParseIdentity forwards a raw Casdoor JWT to cs-user and gets back the
+	// verified profile + computed external_key. The local UserService has
+	// no Casdoor JWKS client and returns (nil, ErrSelfSignUnavailable)
+	// unconditionally; only RPCWriter (Backend=rpc) can fulfill this.
+	// DualWriter routes to Secondary directly, bypassing the no-op Primary.
+	// Callers (bindAuthCallback) treat ErrSelfSignUnavailable as failure
+	// under USER_SERVICE_BACKEND=local (deprecated — see .env.example).
+	// Added in Phase 3.
+	ParseIdentity(ctx context.Context, rawJWT string) (*ParseIdentityResult, error)
 }
 
 // DualWriter is the canary posture selected by USER_SERVICE_BACKEND=rpc with
@@ -227,24 +309,26 @@ func (d *DualWriter) ApplyEnterpriseMapping(ctx context.Context, userSubjectID, 
 // is authoritative for token issuance.
 //
 // When Secondary is nil (e.g. a future single-primary config), returns
-// ErrSelfSignUnavailable so the OAuth callback surfaces the misconfiguration.
-// Phase A7b.
-func (d *DualWriter) ReissueToken(ctx context.Context, audience []string, rawCasdoorJWT string) (string, time.Time, error) {
+// (nil, ErrSelfSignUnavailable) so the OAuth callback surfaces the
+// misconfiguration. The return shape is *ReissueResult so the OAuth
+// callback can drive its local mirror GetOrCreateUser from the response
+// Profile.
+func (d *DualWriter) ReissueToken(ctx context.Context, audience []string, rawCasdoorJWT string) (*ReissueResult, error) {
 	if d.Secondary == nil {
-		return "", time.Time{}, ErrSelfSignUnavailable
+		return nil, ErrSelfSignUnavailable
 	}
-	token, exp, err := d.Secondary.ReissueToken(ctx, audience, rawCasdoorJWT)
+	result, err := d.Secondary.ReissueToken(ctx, audience, rawCasdoorJWT)
 	if err != nil {
 		// Log + propagate. Unlike ApplyEnterpriseMapping (pure best-effort),
 		// ReissueToken errors must reach the OAuth callback so it can decide
 		// whether to fall back to the Casdoor token or fail the request.
 		logger.Warn("[user-dual-write] secondary ReissueToken failed: %v", err)
-		return "", time.Time{}, err
+		return nil, err
 	}
-	return token, exp, nil
+	return result, nil
 }
 
-// CompleteRegistration (R2) is dual-write: cs-user is the eventual authority,
+// CompleteRegistration is dual-write: cs-user is the eventual authority,
 // but server's local mirror must stay consistent so handlers see the new
 // username immediately. Primary-first for atomic read-back; Secondary failure
 // is logged but does NOT unwind Primary — the caller has already shown the
@@ -262,7 +346,7 @@ func (d *DualWriter) CompleteRegistration(ctx context.Context, userSubjectID, us
 	return u, nil
 }
 
-// UpdateMyProfile (R2) dual-writes the display_name change. username is not
+// UpdateMyProfile dual-writes the display_name change. username is not
 // in scope for user-self edits (admin override uses a separate admin RPC).
 func (d *DualWriter) UpdateMyProfile(ctx context.Context, userSubjectID, displayName string) (*models.User, error) {
 	u, err := d.Primary.UpdateMyProfile(ctx, userSubjectID, displayName)
@@ -277,7 +361,7 @@ func (d *DualWriter) UpdateMyProfile(ctx context.Context, userSubjectID, display
 	return u, nil
 }
 
-// IsUsernameAvailable (R2) consults Primary (the local mirror). The local
+// IsUsernameAvailable consults Primary (the local mirror). The local
 // table has no tenant_id, so uniqueness is global under the local backend;
 // under rpc-only deployments the call is served by RPCWriter and respects
 // cs-user's tenant scope via X-Tenant-Id.
@@ -285,7 +369,7 @@ func (d *DualWriter) IsUsernameAvailable(ctx context.Context, username, excludeS
 	return d.Primary.IsUsernameAvailable(ctx, username, excludeSubjectID)
 }
 
-// SuggestProfile (R4) routes to Secondary (cs-user's pure generator). The
+// SuggestProfile routes to Secondary (cs-user's pure generator). The
 // local Primary has no provider-mapping logic; forwarding to it would
 // always return an empty suggestion and mask Secondary's result. Mirrors
 // ReissueToken's pattern. Errors propagate so the handler can fall back
@@ -295,4 +379,26 @@ func (d *DualWriter) SuggestProfile(ctx context.Context, claims *JWTClaims) (str
 		return "", "", nil
 	}
 	return d.Secondary.SuggestProfile(ctx, claims)
+}
+
+// ParseIdentity routes to Secondary (RPCWriter → cs-user) and skips Primary
+// entirely. Mirrors ReissueToken: the local Primary has no Casdoor JWKS
+// client, so routing through it would always return ErrSelfSignUnavailable
+// and mask Secondary's result. When Secondary is nil (e.g. a single-primary
+// config), returns (nil, ErrSelfSignUnavailable) — under
+// USER_SERVICE_BACKEND=local the bind identity callback fails outright.
+func (d *DualWriter) ParseIdentity(ctx context.Context, rawJWT string) (*ParseIdentityResult, error) {
+	if d.Secondary == nil {
+		return nil, ErrSelfSignUnavailable
+	}
+	result, err := d.Secondary.ParseIdentity(ctx, rawJWT)
+	if err != nil {
+		// Log + propagate. Unlike ApplyEnterpriseMapping (pure best-effort),
+		// ParseIdentity errors must reach the bind callback so it can decide
+		// whether to fall back to the local unverified parse or fail the
+		// request.
+		logger.Warn("[user-dual-write] secondary ParseIdentity failed: %v", err)
+		return nil, err
+	}
+	return result, nil
 }

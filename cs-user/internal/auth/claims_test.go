@@ -301,12 +301,12 @@ func TestEnterpriseClaims_NilReceiverInterfaceSafety(t *testing.T) {
 // pointer to a copy. Mirrors the nullable enterprise column shape.
 func ptrStr(s string) *string { return &s }
 
-// --- Phase C1: permission claims (TenantRoles / PlatformAdmin / PlatformScope) ---
+// --- Permission claims (TenantRoles / PlatformAdmin / PlatformScope) ---
 
 // TestNewEnterpriseClaims_PermissionFieldsRoundTrip verifies the constructor
 // carries the new permission fields straight through to the claims struct.
-// Phase C1: tenant_admins / platform_admins rows are translated into these
-// claims at reissue-token time.
+// tenant_admins / platform_admins rows are translated into these claims at
+// reissue-token time.
 func TestNewEnterpriseClaims_UserOverridesIdentity(t *testing.T) {
 	// cs-user's own user record is the canonical source for profile-shaped
 	// claims. Identity (forwarded by server from Casdoor) is fallback only —
@@ -615,14 +615,14 @@ func TestEnterpriseClaims_UserIDSurvivesSigning(t *testing.T) {
 }
 
 // ===========================================================================
-// Phase A contract lock — reflection-based JSON tag vocabulary test.
+// Contract lock — reflection-based JSON tag vocabulary test.
 //
 // Per-key tests above prove individual fields serialize correctly, but a
 // silent rename or new field wouldn't be caught. This test enumerates the
 // COMPLETE expected JSON tag set on EnterpriseClaims via reflection and
 // fails on any addition/removal/rename. Update the want set deliberately
-// when adding Phase D/E fields, and bump the corresponding server-side
-// consumer test (TestParseJWTToken_EnterpriseClaimsRoundTrip).
+// when adding fields, and bump the corresponding server-side consumer
+// test (TestParseJWTToken_EnterpriseClaimsRoundTrip).
 // ===========================================================================
 
 // TestEnterpriseClaims_JSONTagVocabularyLock is the canonical registry of
@@ -648,7 +648,7 @@ func TestEnterpriseClaims_JSONTagVocabularyLock(t *testing.T) {
 		"provider_user_id":   "ProviderUserID",
 		"phone":              "Phone",
 
-		// Enterprise context (Phase A5 — employment_identities)
+		// Enterprise context (from employment_identities)
 		"enterprise_uid":  "EnterpriseUID",
 		"display_name":    "DisplayName",
 		"employee_number": "EmployeeNumber",
@@ -659,11 +659,11 @@ func TestEnterpriseClaims_JSONTagVocabularyLock(t *testing.T) {
 		"org_path":        "OrgPath",
 		"work_location":   "WorkLocation",
 
-		// Tenant (Phase A reserves / Phase B populates)
+		// Tenant
 		"tenant_id":   "TenantID",
 		"tenant_slug": "TenantSlug",
 
-		// Permission (Phase C1)
+		// Permission
 		"tenant_roles":   "TenantRoles",
 		"platform_admin": "PlatformAdmin",
 		"platform_scope": "PlatformScope",

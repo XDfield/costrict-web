@@ -13,7 +13,7 @@ import (
 // refreshUserProfileFromIdentitiesTx no longer recomputes any user-facing
 // field (display_name / email / phone / avatar_url / organization /
 // username) — provider-tracking fields only. A username set by
-// /register/complete (R2) or an admin override (R5) sticks across
+// /register/complete or an admin override sticks across
 // bind/unbind/transfer regardless of profile_completed_at.
 //
 // This test is a regression lock: if someone reintroduces username

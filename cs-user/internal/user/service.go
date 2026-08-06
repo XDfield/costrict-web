@@ -168,13 +168,13 @@ func (s *Service) SearchUsers(ctx context.Context, keyword string, limit int) ([
 //
 // 与 SearchUsers 不同——后者基于 users 表的 username/display_name/email LIKE；
 // 本方法走 employment_identities JOIN users，因为 employee_number 字段不在
-// users 表上，而是 IdP sync 落到 employment_identities（Phase A4b）。
+// users 表上，而是 IdP sync 落到 employment_identities（enterprise mapping）。
 //
 // tenant 范围由 ctx 上的 tenant.Scope(ctx) 决定，匹配 B5 约定。
 //
 // 非唯一性：本期 (tenant_id, employee_number) 唯一索引未落地（需要 enterprise_uid
 // 字段先落地，见 EmploymentIdentity 模型注释）。命中多行时按 last_synced_at DESC
-// 取最近一条；doc 中 `ambiguous` 严格语义推迟到 Phase B。
+// 取最近一条；doc 中 `ambiguous` 严格语义是后续演进项。
 //
 // 不返回错误：找不到匹配行时返回 (nil, nil) —— server 侧据此映射 HTTP 404。
 func (s *Service) SearchUsersByEmployeeNumber(ctx context.Context, employeeNumber string, limit int) ([]*models.User, error) {
@@ -512,7 +512,7 @@ func (s *Service) GetOrCreateUser(ctx context.Context, claims *models.JWTClaims)
 // not block login — malformed tenant config, missing tenant_configs row, or
 // a transient DB error all leave the user row intact and let the next login
 // retry. TenantID is read from ctx (multi-tenant); empty falls through to
-// ApplyEnterpriseMapping's "default" fallback for Phase A single-tenant mode.
+// ApplyEnterpriseMapping's "default" fallback for single-tenant deployments.
 //
 // claims.Provider empty (legacy Casdoor path without provider routing) skips
 // the call — ApplyEnterpriseMapping would return a validation error anyway.

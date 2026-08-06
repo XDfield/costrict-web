@@ -1,15 +1,14 @@
 // Package auth owns cs-user's JWT signing primitive and JWKS exposure.
 //
-// Phase A3 scope: load an RSA private key from a PEM file (operator-managed
-// via k8s secret / docker secret), expose the public key at
-// /.well-known/jwks, and provide SignJWT for downstream callers (A7 OAuth
-// callback takeover). Key ID (kid) is derived as the RFC 7638 JWK
-// thumbprint of the public key — deterministic from the key, so rotation
-// is purely "swap file + restart pod".
+// Scope: load an RSA private key from a PEM file (operator-managed via k8s
+// secret / docker secret), expose the public key at /.well-known/jwks, and
+// provide SignJWT for downstream callers (the OAuth-callback takeover path).
+// Key ID (kid) is derived as the RFC 7638 JWK thumbprint of the public key —
+// deterministic from the key, so rotation is purely "swap file + restart
+// pod".
 //
-// Not in scope for A3: token TTL/issuer wiring (A5 claims extension),
-// actual issuance paths (A7 OAuth callback takeover), refresh-token
-// rotation (Phase B).
+// Token TTL/issuer wiring, issuance paths, and refresh-token rotation are
+// owned by the callers and downstream evolution of this package.
 package auth
 
 import (
@@ -117,9 +116,8 @@ func NewSignerFromPEM(pemBytes []byte) (*Signer, error) {
 func (s *Signer) KID() string { return s.kid }
 
 // SignJWT issues a signed JWT string for the given claims. alg is fixed to
-// RS256 — Phase A deliberately scopes down to a single alg so audit surface
-// stays small. The kid header is populated so relying parties can route via
-// JWKS lookup.
+// RS256 — scoping down to a single alg keeps the audit surface small. The
+// kid header is populated so relying parties can route via JWKS lookup.
 //
 // `now` is taken as a parameter (not read from time.Now internally) so tests
 // can pin issuance time; production callers pass time.Now().
@@ -186,7 +184,7 @@ func (s *Signer) VerifyJWT(rawJWT, issuer string) (*EnterpriseClaims, error) {
 }
 
 // JWKS returns the JSON-serializable key set exposing the public key.
-// Phase A: single key. Phase B may add a previous-key overlap window so
+// Single key. A future evolution may add a previous-key overlap window so
 // in-flight tokens remain valid through rotation.
 func (s *Signer) JWKS() JWKS {
 	if s == nil {

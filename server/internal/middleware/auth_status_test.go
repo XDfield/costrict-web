@@ -20,7 +20,7 @@ func statusGateRouter(t *testing.T) (router *gin.Engine, token string) {
 		_ = json.NewEncoder(w).Encode(verifyOK("usr_status_subject", "default", "default"))
 	})
 	installVerifier(t, stub.server.URL)
-	token = "status-test-token"
+	token = "status.test.token"
 
 	router = gin.New()
 	router.Use(RequireAuth())

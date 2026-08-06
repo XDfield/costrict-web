@@ -1,4 +1,4 @@
-// Tenant-admin user listing handlers (Phase C3.1 step B).
+// Tenant-admin user listing handlers.
 //
 // C3 sub-slice 1 (本 tenant 用户列表): tenant_admin lists users within
 // their own tenant. Single public endpoint:
@@ -87,7 +87,7 @@ func (a *TenantUserAPI) ListTenantUsers(c *gin.Context) {
 	}
 
 	// Inject the caller's tenant slug into ctx so the RPC client forwards
-	// it as X-Tenant-Id. Prefer TenantSlug (Phase B / A7 JWT claim) and
+	// it as X-Tenant-Id. Prefer TenantSlug (cs-user JWT claim) and
 	// fall back to TenantID (canonical PK) for legacy tokens — cs-user's
 	// ResolveBySlug query accepts both via `WHERE tenant_id = ? OR slug = ?`.
 	ac, ok := readAuthClaims(c)
@@ -164,7 +164,7 @@ func (a *TenantUserAPI) SetTenantUserStatus(c *gin.Context) {
 	}
 
 	// Same slug-injection pattern as ListTenantUsers — prefer TenantSlug
-	// (Phase B / A7 JWT claim), fall back to TenantID for legacy tokens.
+	// (cs-user JWT claim), fall back to TenantID for legacy tokens.
 	// cs-user's ResolveBySlug query accepts both via `WHERE tenant_id = ? OR slug = ?`.
 	slug := ac.TenantSlug
 	if slug == "" {

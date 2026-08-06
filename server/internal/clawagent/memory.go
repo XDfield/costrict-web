@@ -34,15 +34,22 @@ const (
 
 // MemoryManager handles loading, saving, and refreshing agent memory.
 type MemoryManager struct {
-	db *gorm.DB
+	db      *gorm.DB
+	enabled bool
 }
 
-// NewMemoryManager creates a new MemoryManager.
-func NewMemoryManager(db *gorm.DB) *MemoryManager {
-	return &MemoryManager{db: db}
+// NewMemoryManager creates a new MemoryManager. When enabled is false,
+// LoadForAgent returns "" (so the persona builder omits the # Memory section)
+// and Refresh no-ops (no LLM call, no DB write). The raw Load/Save used by
+// the manual /memory REST handlers remain live — users can still inspect and
+// clear their data with the feature switched off.
+func NewMemoryManager(db *gorm.DB, enabled bool) *MemoryManager {
+	return &MemoryManager{db: db, enabled: enabled}
 }
 
-// Load loads the memory content for a user.
+// Load returns the raw persisted memory for a user. Always live — used by the
+// manual /memory REST handlers so users can view/clear their data even when
+// the agent's automatic memory feature is disabled.
 func (m *MemoryManager) Load(ctx context.Context, userID string) (string, error) {
 	var mem Memory
 	err := m.db.WithContext(ctx).Where("user_id = ?", userID).First(&mem).Error
@@ -53,6 +60,17 @@ func (m *MemoryManager) Load(ctx context.Context, userID string) (string, error)
 		return "", err
 	}
 	return mem.Content, nil
+}
+
+// LoadForAgent returns memory content for inclusion in the agent's system
+// prompt. Returns "" when the manager is disabled so the persona builder
+// skips the # Memory section entirely — the persisted row (if any) is left
+// untouched but does not leak into the LLM context.
+func (m *MemoryManager) LoadForAgent(ctx context.Context, userID string) (string, error) {
+	if !m.enabled {
+		return "", nil
+	}
+	return m.Load(ctx, userID)
 }
 
 // Save saves memory content for a user (upsert).
@@ -72,13 +90,17 @@ func (m *MemoryManager) Save(ctx context.Context, userID, content string) error 
 }
 
 // Refresh performs an async LLM merge of old memory with the current conversation.
-// This is called after each final response.
+// This is called after each final response. When the manager is disabled it
+// returns nil immediately — no LLM call, no DB write.
 func (m *MemoryManager) Refresh(
 	ctx context.Context,
 	userID, userMessage, assistantReply string,
 	llmClient llmGenerator,
 	cfg ClawAgentConfig,
 ) error {
+	if !m.enabled {
+		return nil
+	}
 	oldMemory, _ := m.Load(ctx, userID)
 
 	prompt := fmt.Sprintf(memoryMergePrompt, oldMemory, userMessage, assistantReply)

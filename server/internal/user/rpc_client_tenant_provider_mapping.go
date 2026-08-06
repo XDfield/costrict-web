@@ -1,4 +1,4 @@
-// rpc_client_tenant_provider_mapping.go — Phase C3.3 typed provider_mapping RPC.
+// rpc_client_tenant_provider_mapping.go — typed provider_mapping RPC client.
 //
 // Two methods proxying to cs-user's /api/internal/tenant/provider-mapping:
 //

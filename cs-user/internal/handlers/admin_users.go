@@ -283,7 +283,7 @@ func (a *UsersAPI) GetUserProfile(c *gin.Context) {
 }
 
 // adminUpdateProfileRequest is the body for PUT
-// /api/internal/users/:subject_id/profile (R5). Both fields optional, but at
+// /api/internal/users/:subject_id/profile. Both fields optional, but at
 // least one must be non-nil — the service rejects empty patches with 400.
 // username empty preserves the existing value; display_name nil preserves,
 // non-nil empty clears to NULL.

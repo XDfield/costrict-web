@@ -13,7 +13,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/models"
 	userpkg "github.com/costrict/costrict-web/server/internal/user"
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // stubReissueWriter is a UserWriter stand-in that lets the OAuth callback test
@@ -21,6 +21,10 @@ import (
 // arguments. Only the two methods the callback touches are meaningfully
 // implemented — the rest panic if accidentally reached, surfacing misuse
 // loudly rather than silently faking behaviour.
+//
+// ReissueToken returns *ReissueResult. The stub populates Profile + IsNew
+// so the callback's happy path exercises the "drive local mirror
+// GetOrCreateUser from response Profile" branch.
 type stubReissueWriter struct {
 	reissueToken     string
 	reissueErr       error
@@ -33,10 +37,23 @@ func (s *stubReissueWriter) GetOrCreateUser(ctx context.Context, claims *userpkg
 	// branch. isNewUser=false keeps the reg_pending cookie path off.
 	return &models.User{SubjectID: "usr_stub"}, false, nil
 }
-func (s *stubReissueWriter) ReissueToken(ctx context.Context, audience []string, rawCasdoorJWT string) (string, time.Time, error) {
+func (s *stubReissueWriter) ReissueToken(ctx context.Context, audience []string, rawCasdoorJWT string) (*userpkg.ReissueResult, error) {
 	s.gotAudience = audience
 	s.gotRawCasdoorJWT = rawCasdoorJWT
-	return s.reissueToken, time.Now().Add(time.Hour), s.reissueErr
+	if s.reissueErr != nil {
+		return nil, s.reissueErr
+	}
+	return &userpkg.ReissueResult{
+		Token:     s.reissueToken,
+		ExpiresAt: time.Now().Add(time.Hour),
+		Profile: &userpkg.ReissueProfile{
+			ID:          "casdoor-id-1",
+			Sub:         "casdoor-sub-1",
+			UniversalID: "uni-1",
+			Name:        "alice",
+		},
+		IsNew: true,
+	}, nil
 }
 
 func (s *stubReissueWriter) SyncUser(context.Context, *userpkg.JWTClaims) (*models.User, error) {
@@ -65,6 +82,13 @@ func (s *stubReissueWriter) IsUsernameAvailable(context.Context, string, string)
 }
 func (s *stubReissueWriter) SuggestProfile(context.Context, *userpkg.JWTClaims) (string, string, error) {
 	panic("SuggestProfile not expected")
+}
+func (s *stubReissueWriter) ParseIdentity(context.Context, string) (*userpkg.ParseIdentityResult, error) {
+	// OAuth callback fallback path (ReissueToken failure) calls ParseIdentity
+	// for JWT enrichment. Return an error so the fallback proceeds with
+	// userinfo-only claims — the test exercises the cookie-fallback contract,
+	// not the enrichment detail.
+	return nil, userpkg.ErrSelfSignUnavailable
 }
 
 // runAuthCallbackReissueTest performs the common OAuth-callback setup for the
@@ -185,7 +209,7 @@ func TestAuthCallback_ReissueTokenFails_FallsBackToCasdoorToken(t *testing.T) {
 // This test drives the exact shape: request arrives with a Cookie header
 // carrying a Casdoor access token that getUserInfoFunc validates. We assert
 // that ReissueToken fires (provisioning ran) and that the cookie the
-// response sets carries the cs-user-signed JWT (not the legacy Casdoor
+// response sets carries the cs-user-signed JWT (not the input Casdoor
 // value), proving the shortcut now goes through provisionCsUser.
 func TestAuthCallback_SSOShortcut_ProvisionsUser(t *testing.T) {
 	defer setupTestDB(t)()
@@ -249,9 +273,9 @@ func TestAuthCallback_SSOShortcut_ProvisionsUser(t *testing.T) {
 		}
 	}
 	if cookieValue != "CS-USER-MINTED-VIA-SSO" {
-		t.Fatalf("cookie: got %q, want cs-user minted token (SSO shortcut must overwrite the legacy Casdoor cookie)", cookieValue)
+		t.Fatalf("cookie: got %q, want cs-user minted token (SSO shortcut must overwrite the input Casdoor cookie)", cookieValue)
 	}
 	if cookieValue == existingCasdoorToken {
-		t.Fatalf("cookie still equals the legacy Casdoor token — provisioning did not take over")
+		t.Fatalf("cookie still equals the input Casdoor token — provisioning did not take over")
 	}
 }

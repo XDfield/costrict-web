@@ -1,5 +1,5 @@
-// provider_mapping.go — Phase C3.3 typed-edit surface for the
-// provider_mapping subsection of tenant_configs.config_yaml.
+// provider_mapping.go — typed-edit surface for the provider_mapping
+// subsection of tenant_configs.config_yaml.
 //
 // Schema (per docs/identity-tenant/MULTI_TENANCY_DESIGN.md §9.3):
 //
@@ -12,8 +12,8 @@
 //	    enterprise_sync:
 //	      interval: "6h"              # Go duration string
 //
-// C3.2 ships raw YAML blob CRUD. C3.3 layers typed endpoints that parse
-// this subsection into Go structs, validate, and re-serialize — without
+// The raw blob CRUD path stores this subsection verbatim; the typed surface
+// parses it into Go structs, validates, and re-serializes — without
 // disturbing sibling sections (employment_providers, features, etc.) in
 // the larger config_yaml blob.
 //

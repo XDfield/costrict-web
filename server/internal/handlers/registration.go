@@ -198,7 +198,7 @@ func UpdateMyProfile(c *gin.Context) {
 
 // SuggestProfile godoc
 // @Summary      Suggest registration profile from IdP claims
-// @Description  Pure-function hint from the Casdoor-brokered JWT claims (R4). Frontend uses this to pre-fill the registration form. Returns empty strings when the backend has no mapping logic (local) or the provider is unrecognised; caller should treat that as "user must type it in".
+// @Description  Pure-function hint from the Casdoor-brokered JWT claims. Frontend uses this to pre-fill the registration form. Returns empty strings when the backend has no mapping logic (local) or the provider is unrecognised; caller should treat that as "user must type it in".
 // @Tags         me
 // @Produce      json
 // @Security     BearerAuth

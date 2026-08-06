@@ -1,4 +1,4 @@
-// Package handlers — tenant resolution RPC endpoints (Phase B3b.2b-step2).
+// Package handlers — tenant resolution RPC endpoints.
 //
 // /api/internal/tenants/resolve-by-email lets the costrict-web server ask
 // cs-user "which tenant does this email belong to?" without duplicating the

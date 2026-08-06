@@ -1,4 +1,4 @@
-// Package handlers — audit.go provides the Phase C4.1 helper that captures
+// Package handlers — audit.go provides the helper that captures
 // audit-log context from a gin.Context: the actor identity (forwarded by
 // server's RPC client as headers), the tenant context (set by middleware),
 // and the network context (gin c.ClientIP / User-Agent).

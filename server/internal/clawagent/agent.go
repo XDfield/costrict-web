@@ -406,7 +406,7 @@ func (r *AgentRunner) buildSystemPrompt(ctx context.Context, userID string) (str
 		return "", err
 	}
 
-	memoryContent, err := r.rt.MemoryMgr.Load(ctx, userID)
+	memoryContent, err := r.rt.MemoryMgr.LoadForAgent(ctx, userID)
 	if err != nil {
 		return "", err
 	}
@@ -646,7 +646,7 @@ func (r *AgentRunner) RunEventNotifyRelay(ctx context.Context, userID, sessionID
 		}
 
 		toolDefs := r.queryToolDefinitions()
-		maxToolIterations := 6
+		maxToolIterations := 10
 
 		// Device context for query tools — derived from the head event.
 		deviceID, directory, deviceSessionID := "", "", ""
@@ -768,8 +768,54 @@ func (r *AgentRunner) RunEventNotifyRelay(ctx context.Context, userID, sessionID
 			// Loop to let LLM incorporate query results, then emit the relay.
 		}
 
-		slog.Error("[agent] RunEventNotifyRelay: tool iteration limit reached", "sessionID", sessionID)
-		sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: "Tool call iteration limit reached", IsError: true, IsFinal: true})
+		// Iteration limit reached on the relay path. Rather than surface an
+		// error, retract query tools and let the LLM produce a final text
+		// reply so the user still gets a coherent notification — the
+		// conversation continues normally. Only genuine technical failures
+		// (history load / LLM call / empty choices) below fall back to error.
+		slog.Warn("[agent] RunEventNotifyRelay: query iteration limit reached, retracting tools for final reply",
+			"sessionID", sessionID)
+		history, err := r.msgMgr.LoadMessages(runCtx, sessionID)
+		if err != nil {
+			if runCtx.Err() == nil {
+				sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: fmt.Sprintf("Failed to load messages: %v", err), IsError: true, IsFinal: true})
+			}
+			return
+		}
+		messages := []ChatMessage{{Role: "system", Content: systemPrompt}}
+		if extraSystem != "" {
+			messages = append(messages, ChatMessage{Role: "system", Content: extraSystem})
+		}
+		messages = append(messages, history...)
+
+		resp, err := r.llmClient.Generate(runCtx, *provCfg, messages)
+		if err != nil {
+			if runCtx.Err() == nil {
+				sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: fmt.Sprintf("LLM call failed: %v", err), IsError: true, IsFinal: true})
+			}
+			return
+		}
+		if len(resp.Choices) == 0 {
+			if runCtx.Err() == nil {
+				sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: "LLM returned no choices", IsError: true, IsFinal: true})
+			}
+			return
+		}
+		choice := resp.Choices[0]
+		// Strip any text-encoded tool calls (GLM quirk) — they won't execute
+		// since tools are retracted; just clean the leaked markup from content.
+		if parsed, cleaned := parseTextToolCalls(choice.Message.Content); len(parsed) > 0 {
+			choice.Message.Content = cleaned
+			slog.Info("[agent] RunEventNotifyRelay: stripped text-encoded tool calls from recovery reply",
+				"sessionID", sessionID, "count", len(parsed))
+		}
+		r.addAssistantMessage(runCtx, sessionID, choice.Message.Content)
+		if choice.Message.Content != "" {
+			if !sendEvent(runCtx, eventCh, AgentEvent{Type: "token", Content: choice.Message.Content}) {
+				return
+			}
+		}
+		sendEvent(runCtx, eventCh, AgentEvent{Type: "done", IsFinal: true})
 	})
 }
 
@@ -994,8 +1040,59 @@ func (r *AgentRunner) RunEventReply(ctx context.Context, userID, sessionID strin
 			return
 		}
 
-		slog.Error("[agent] RunEventReply: tool call iteration limit reached", "sessionID", sessionID)
-		sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: "Tool call iteration limit reached", IsError: true, IsFinal: true})
+		// Iteration limit reached on the reply path. By this point the LLM
+		// may have already executed reply_permission/reply_question (and thus
+		// marked the event resolved via MarkProcessed), but kept emitting
+		// tool calls without converging on a terminal text turn. Rather than
+		// surface an error, retract all tools and let the LLM produce one
+		// final text reply so the user still gets a coherent acknowledgement
+		// of what was just done. Only genuine technical failures (history
+		// load / LLM call / empty choices) below fall back to error.
+		slog.Warn("[agent] RunEventReply: tool iteration limit reached, retracting tools for final acknowledgement",
+			"sessionID", sessionID)
+		history, err := r.msgMgr.LoadMessages(runCtx, sessionID)
+		if err != nil {
+			if runCtx.Err() == nil {
+				sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: fmt.Sprintf("Failed to load messages: %v", err), IsError: true, IsFinal: true})
+			}
+			return
+		}
+		// Turn-level nudge on top of the persona already in systemPrompt:
+		// say what was done in one line, then stop. Prevents the recovery
+		// from relitigating the event, listing pending items, or slipping
+		// back into chit-chat. Keep it terse so it doesn't fight the persona.
+		recoverySystem := systemPrompt + "\n\n# 本轮收尾\n\n你刚才已经完成了用户请求的处理（批准/驳回/记录答复）。现在只用一句话向用户说明结果，然后停止。不要展开话题、不要追问、不要寒暄、不要提及任何 ID。"
+		messages := []ChatMessage{{Role: "system", Content: recoverySystem}}
+		messages = append(messages, history...)
+
+		resp, err := r.llmClient.Generate(runCtx, *provCfg, messages)
+		if err != nil {
+			if runCtx.Err() == nil {
+				sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: fmt.Sprintf("LLM call failed: %v", err), IsError: true, IsFinal: true})
+			}
+			return
+		}
+		if len(resp.Choices) == 0 {
+			if runCtx.Err() == nil {
+				sendEvent(runCtx, eventCh, AgentEvent{Type: "error", Error: "LLM returned no choices", IsError: true, IsFinal: true})
+			}
+			return
+		}
+		choice := resp.Choices[0]
+		// Strip any text-encoded tool calls (GLM quirk) — they won't execute
+		// since tools are retracted; just clean the leaked markup from content.
+		if parsed, cleaned := parseTextToolCalls(choice.Message.Content); len(parsed) > 0 {
+			choice.Message.Content = cleaned
+			slog.Info("[agent] RunEventReply: stripped text-encoded tool calls from recovery reply",
+				"sessionID", sessionID, "count", len(parsed))
+		}
+		r.addAssistantMessage(runCtx, sessionID, choice.Message.Content)
+		if choice.Message.Content != "" {
+			if !sendEvent(runCtx, eventCh, AgentEvent{Type: "token", Content: choice.Message.Content}) {
+				return
+			}
+		}
+		sendEvent(runCtx, eventCh, AgentEvent{Type: "done", IsFinal: true})
 	}), nil
 }
 

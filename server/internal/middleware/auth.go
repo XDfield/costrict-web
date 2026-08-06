@@ -23,53 +23,18 @@ const InternalSecretHeader = "X-Internal-Secret"
 const SystemTokenHeader = "X-System-Token"
 const AuthCookieName = "zgsmAdminToken"
 
-type SubjectResolver func(claims AuthClaims) (subjectID string, preferredUsername string, err error)
-
-type AuthClaims struct {
-	ID                string
-	Sub               string
-	// Issuer mirrors CasdoorUserInfo.Issuer — the JWT `iss` claim.
-	// Consumed by setAuthContext to skip the legacy subjectResolver for
-	// cs-user-issued JWTs (their `sub` is already canonical). See
-	// CasdoorUserInfo.Issuer for the full rationale.
-	Issuer            string
-	UniversalID       string
-	Name              string
-	PreferredUsername string
-	Email             string
-	Provider          string
-	ProviderUserID    string
-	Phone             string
-	// TenantID (Phase B4): the canonical tenants.tenant_id PK extracted
-	// from the JWT's `tenant_id` claim. cs-user-signed tokens (Phase A7)
-	// always carry this — defaults to "default" at reissue time when the
-	// request omits it. Empty for Casdoor-issued tokens (pre-cutover); the
-	// TenantContext middleware falls back to tenant.DefaultTenantID before
-	// storing in ctx so downstream query scoping never sees "".
-	TenantID string
-	// TenantSlug (Phase B): populated ONLY when the JWT carries the
-	// `tenant_slug` claim — i.e. cs-user-signed tokens (Phase A7).
-	// Empty for Casdoor-issued tokens (pre-cutover). The TenantMatch
-	// middleware compares this against the runtime-resolved slug for
-	// cross-tenant detection (B3b.2c). Empty claim → middleware skips
-	// comparison (graceful pre-cutover behavior).
-	TenantSlug string
-	// PlatformAdmin (Phase C1): populated ONLY when the JWT carries the
-	// `platform_admin` claim — i.e. cs-user-signed tokens issued after the
-	// Phase C1 reissue-token wiring. False for Casdoor-issued tokens and
-	// cs-user tokens for non-platform-admin users. When true, PlatformScope
-	// carries the granularity (full / support / read_only). Consumed by
-	// RequirePlatformAdmin middleware (§15.1 auth chain).
-	PlatformAdmin bool
-	// PlatformScope (Phase C1): granularity of the platform-admin grant.
-	// Only meaningful when PlatformAdmin is true. Empty otherwise.
-	PlatformScope string
-	// TenantRoles (Phase C1): the user's active roles on AuthClaims.TenantID
-	// (e.g. ["owner"]). Empty for regular tenant members. Consumed by
-	// RequireTenantAdmin middleware. Sourced from the `tenant_roles` JWT
-	// claim which cs-user populates from tenant_admins WHERE revoked_at IS NULL.
-	TenantRoles []string
-}
+// SubjectResolver bridges a verified JWT's claim set to the canonical local
+// subject_id stored in the users table. Only used by authz.Service.
+// VerifyTokenWithUser (the internal /auth/verify path) today — cs-user JWTs
+// carry the canonical subject_id in `sub` so the resolver is effectively a
+// no-op; it remains for any future IdP that does not embed the local PK in
+// the JWT.
+//
+// Phase 6.2: claims parameter type is VerifiedUserInfo (the unique external
+// representation produced by introspectToken / ParseToken). AuthClaims is a
+// type alias for VerifiedUserInfo carried in gin context, so the same value
+// flows through both paths without field copying.
+type SubjectResolver func(claims VerifiedUserInfo) (subjectID string, preferredUsername string, err error)
 
 var subjectResolver SubjectResolver
 
@@ -314,7 +279,7 @@ var (
 const tokenCacheTTL = 5 * time.Minute
 
 type tokenCacheEntry struct {
-	info      *CasdoorUserInfo
+	info      *VerifiedUserInfo
 	expiresAt time.Time
 }
 
@@ -383,8 +348,20 @@ func InvalidateTokenCache(token string) {
 //   - errInvalidToken:        cs-user returned 401/400 → token rejected.
 //   - errVerifierUnavailable: cs-user unconfigured, network error, or 5xx.
 //                             Caller must NOT fall back to local decoding.
-func introspectToken(token string) (*CasdoorUserInfo, error) {
+func introspectToken(token string) (*VerifiedUserInfo, error) {
 	if token == "" {
+		return nil, errInvalidToken
+	}
+	// JWT-shape heuristic: cs-user only signs JWTs (exactly 3 dot-separated
+	// segments — header.payload.signature). Device tokens are random 32-byte
+	// base64-URL strings with no dots; rejecting them here avoids burning a
+	// cs-user verify RPC that would 401 anyway. This is the universal safety
+	// net for device-token-only routes that escape the OptionalAuth path
+	// whitelist (e.g. future routes registered before OptionalAuth is mounted,
+	// or handlers under requireUserOrDeviceAuth that opt into device auth).
+	// OptionalAuth fails open on errInvalidToken; RequireAuth returns 401;
+	// requireUserOrDeviceAuth falls back to VerifyDeviceToken.
+	if strings.Count(token, ".") != 2 {
 		return nil, errInvalidToken
 	}
 
@@ -411,6 +388,18 @@ func introspectToken(token string) (*CasdoorUserInfo, error) {
 		return nil, err
 	}
 
+	// Cache skip: when cs-user just reissued a fresh cs-user token (the
+	// Casdoor-JWT fallback path), the browser will overwrite its cookie with
+	// ReissuedToken on this very response — subsequent requests carry the
+	// NEW token, so this OLD-token cache entry is dead weight. Worse, caching
+	// here would amplify a stale entry across the 5-min TTL even after the
+	// user's Casdoor session expired. The fallback is rare (one rewrite per
+	// user per cutover); the fast path (cs-user JWT in / cs-user JWT out)
+	// remains cached.
+	if info.ReissuedToken != "" {
+		return info, nil
+	}
+
 	tokenCacheMu.Lock()
 	tokenCache[cacheKey] = tokenCacheEntry{info: info, expiresAt: now.Add(tokenCacheTTL)}
 	tokenCacheMu.Unlock()
@@ -419,7 +408,7 @@ func introspectToken(token string) (*CasdoorUserInfo, error) {
 
 // introspectTokenViaCSUser performs the actual HTTP POST to cs-user. Split
 // from introspectToken so the cache wrapper stays readable.
-func introspectTokenViaCSUser(cfg tokenVerifierConfig, token string) (*CasdoorUserInfo, error) {
+func introspectTokenViaCSUser(cfg tokenVerifierConfig, token string) (*VerifiedUserInfo, error) {
 	body, _ := json.Marshal(map[string]string{"token": token})
 	url := cfg.baseURL + "/api/internal/auth/verify"
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
@@ -468,6 +457,13 @@ func introspectTokenViaCSUser(cfg tokenVerifierConfig, token string) (*CasdoorUs
 		TenantID    string `json:"tenant_id,omitempty"`
 		TenantSlug  string `json:"tenant_slug,omitempty"`
 		Issuer      string `json:"iss,omitempty"`
+
+		// ReissuedToken / ReissuedExpiresAt are populated ONLY when cs-user
+		// took the Casdoor-JWT fallback path AND the user is known.
+		// Currently parsed but DORMANT — no action is taken (cookie rewrite
+		// disabled). Plumbing retained for re-enablement.
+		ReissuedToken     string    `json:"reissued_token,omitempty"`
+		ReissuedExpiresAt time.Time `json:"reissued_expires_at,omitempty"`
 	}
 	if err := json.Unmarshal(respBody, &verified); err != nil {
 		logger.Warn("[introspectToken] decode cs-user response failed: %v", err)
@@ -480,7 +476,7 @@ func introspectTokenViaCSUser(cfg tokenVerifierConfig, token string) (*CasdoorUs
 		return nil, errInvalidToken
 	}
 
-	info := &CasdoorUserInfo{
+	info := &VerifiedUserInfo{
 		ID:                verified.Subject,
 		Sub:               verified.Subject,
 		UniversalID:       verified.UniversalID,
@@ -491,13 +487,39 @@ func introspectTokenViaCSUser(cfg tokenVerifierConfig, token string) (*CasdoorUs
 		TenantID:          verified.TenantID,
 		TenantSlug:        verified.TenantSlug,
 		Issuer:            verified.Issuer,
+		ReissuedToken:     verified.ReissuedToken,
+		ReissuedExpiresAt: verified.ReissuedExpiresAt,
 	}
-	if info.Issuer == "" {
-		// cs-user is the only issuer now; default so setAuthContext
-		// always takes the "trust sub directly" branch.
-		info.Issuer = csUserIssuer
-	}
+	// Issuer is purely informational — no downstream branch switches on it.
 	return info, nil
+}
+
+// deviceTokenRoutePrefixes lists path prefixes mounted WITHOUT RequireAuth
+// whose handlers authenticate via DeviceService.VerifyDeviceToken (an opaque
+// base64 token, never a JWT). OptionalAuth skips cs-user introspection for
+// these so a device-token request doesn't burn a verify RPC (which would 401
+// anyway) on every poll. The handler still runs VerifyDeviceToken itself.
+//
+// Precise prefixes only — `/cloud/device/:deviceID/proxy/*path` requires
+// RequireAuth and must NOT be whitelisted, so `/cloud/device/` (bare) is
+// intentionally absent. The JWT-shape heuristic in introspectToken is the
+// universal safety net for any device-only route missed here; this list is
+// the explicit primary filter.
+var deviceTokenRoutePrefixes = []string{
+	"/cloud/device/notify",      // covers /notify and /notify/responded
+	"/cloud/device/gateway-assign",
+	"/cloud/devices/",           // :deviceID/commands/:commandID/result etc.
+}
+
+// isDeviceTokenRoute reports whether the request path is served by a
+// device-token-only handler. See deviceTokenRoutePrefixes for the contract.
+func isDeviceTokenRoute(path string) bool {
+	for _, prefix := range deviceTokenRoutePrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // OptionalAuth delegates token verification to cs-user via introspectToken.
@@ -507,8 +529,18 @@ func introspectTokenViaCSUser(cfg tokenVerifierConfig, token string) (*CasdoorUs
 // request degrades to anonymous rather than failing closed, because
 // optional routes (public reads, swagger, etc.) must stay reachable even
 // during a cs-user outage.
+//
+// Device-token-only routes (see deviceTokenRoutePrefixes) short-circuit
+// before introspection: the handler authenticates via VerifyDeviceToken, so
+// spending a cs-user RPC here is pure waste. The whitelist is the primary
+// filter; the JWT-shape check in introspectToken is the universal fallback.
 func OptionalAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if isDeviceTokenRoute(c.Request.URL.Path) {
+			c.Next()
+			return
+		}
+
 		token := ExtractToken(c)
 		if token == "" {
 			c.Next()
@@ -568,17 +600,12 @@ func RequireAuth() gin.HandlerFunc {
 	}
 }
 
-type CasdoorUserInfo struct {
+type VerifiedUserInfo struct {
 	ID                string `json:"id"`
 	Sub               string `json:"sub"`
-	// Issuer carries the JWT's `iss` claim. Used by setAuthContext to
-	// decide whether the local users-table resolver should run: cs-user
-	// JWTs (iss="cs-user") already carry the canonical subject_id in
-	// `sub`, so resolver lookup is unnecessary AND can return a stale
-	// local subject_id from the pre-cs-user era (when users.subject_id
-	// was set to Casdoor's universal_id). For Casdoor JWTs (iss=anything
-	// else, typically the Casdoor issuer URL), the resolver is the only
-	// way to bridge universal_id → local subject_id.
+	// Issuer carries the JWT's `iss` claim. Purely informational —
+	// cs-user-signed tokens always carry the canonical subject_id in
+	// `sub`, so no downstream branch switches on this field.
 	Issuer            string `json:"iss,omitempty"`
 	UniversalID       string `json:"universal_id"`
 	Name              string `json:"name"`
@@ -587,94 +614,79 @@ type CasdoorUserInfo struct {
 	Provider          string `json:"provider"`
 	ProviderUserID    string `json:"provider_user_id"`
 	Phone             string `json:"phone"`
-	// TenantID (Phase B4): canonical tenants.tenant_id PK. Read directly
+	// TenantID: canonical tenants.tenant_id PK. Read directly
 	// from MapClaims ("tenant_id") — NormalizeClaimsMap only handles
-	// standard Casdoor fields. cs-user-signed tokens (Phase A7) always
-	// carry this (defaults to "default" at reissue). Empty for Casdoor
-	// tokens — the TenantContext middleware falls back to "default".
+	// standard fields. cs-user-signed tokens always carry this
+	// (defaults to "default" at reissue). The TenantContext middleware
+	// falls back to "default" when absent.
 	TenantID string `json:"tenant_id,omitempty"`
-	// TenantSlug (Phase B / A7): populated ONLY when the JWT carries the
+	// TenantSlug: populated ONLY when the JWT carries the
 	// custom `tenant_slug` claim — i.e. tokens signed by cs-user's
-	// /api/internal/users/reissue-token (Phase A7). Empty for Casdoor-issued
-	// tokens (pre-cutover). Read directly from the MapClaims map because
-	// authidentity.NormalizeClaimsMap only handles standard Casdoor fields.
+	// /api/internal/users/reissue-token. Read directly from the MapClaims
+	// map because cs-user's NormalizeClaimsMap (the single source of
+	// truth) only handles standard fields.
 	TenantSlug string `json:"tenant_slug,omitempty"`
-	// PlatformAdmin (Phase C1): true when the JWT carries
+	// PlatformAdmin: true when the JWT carries
 	// `platform_admin:true` — only emitted by cs-user for users with a row
 	// in platform_admins. Read straight from the map (NormalizeClaimsMap
-	// doesn't handle Phase C1 fields). Consumed by RequirePlatformAdmin.
+	// doesn't handle platform-admin fields). Consumed by RequirePlatformAdmin.
 	PlatformAdmin bool `json:"platform_admin,omitempty"`
-	// PlatformScope (Phase C1): the granularity string (full / support /
+	// PlatformScope: the granularity string (full / support /
 	// read_only). Only meaningful when PlatformAdmin is true.
 	PlatformScope string `json:"platform_scope,omitempty"`
-	// TenantRoles (Phase C1): user's active roles on TenantID. Sourced from
+	// TenantRoles: user's active roles on TenantID. Sourced from
 	// the `tenant_roles` JWT array claim emitted by cs-user. nil/empty for
 	// regular tenant members.
 	TenantRoles []string `json:"tenant_roles,omitempty"`
+
+	// ReissuedToken carries a freshly-minted cs-user JWT when cs-user took
+	// the Casdoor-JWT fallback path for a known user. Currently DORMANT —
+	// parsed off the verify response and threaded through VerifiedUserInfo
+	// but no middleware branch acts on it. The active cookie-rewrite was
+	// disabled ("server 先不做 cookie rewrite"); the field plumbing stays
+	// so re-enabling only needs a helper + call sites. Empty on the cs-user
+	// JWT fast path and on every rejection.
+	ReissuedToken string `json:"reissued_token,omitempty"`
+	// ReissuedExpiresAt is the exp claim of ReissuedToken. Always paired
+	// with ReissuedToken; never emitted alone. Currently dormant alongside
+	// ReissuedToken.
+	ReissuedExpiresAt time.Time `json:"reissued_expires_at,omitempty"`
 }
 
-// csUserIssuer is the iss claim value cs-user stamps on its JWTs. Sourced
-// here as a string rather than imported from the cs-user module (separate
-// go.mod) to keep middleware's dependency surface minimal.
-const csUserIssuer = "cs-user"
+// AuthClaims is the gin-context representation of the verified identity. It is
+// a type alias (not a distinct type) for VerifiedUserInfo — the unique external
+// representation produced by introspectToken / ParseToken. Phase 6.2 collapsed
+// the prior field-by-field duplicate of VerifiedUserInfo (which only existed
+// because AuthClaims was serialised nowhere — no JSON tags — and so was already
+// internal-only in practice); the alias makes "external verify response" and
+// "internal context value" the same Go type without churning 30+ call sites.
+//
+// Readers do `c.Get(AuthClaimsKey).(middleware.AuthClaims)`; the alias keeps
+// that assertion, struct-literal construction, and field access identical.
+type AuthClaims = VerifiedUserInfo
 
 // ParseToken delegates token verification to cs-user via introspectToken.
 // Used by authz.Service.VerifyTokenWithUser (the internal /auth/verify
 // handler). Mirrors RequireAuth's failure contract: errInvalidToken on
 // explicit rejection, errVerifierUnavailable on cs-user outage — the caller
 // decides how to surface those to its caller.
-func ParseToken(token string) (*CasdoorUserInfo, error) {
+func ParseToken(token string) (*VerifiedUserInfo, error) {
 	return introspectToken(token)
 }
 
-func setAuthContext(c *gin.Context, userInfo *CasdoorUserInfo) {
+func setAuthContext(c *gin.Context, userInfo *VerifiedUserInfo) {
 	userID := userInfo.Sub
 	userName := userInfo.PreferredUsername
-	authClaims := AuthClaims{
-		ID:                userInfo.ID,
-		Sub:               userInfo.Sub,
-		Issuer:            userInfo.Issuer,
-		UniversalID:       userInfo.UniversalID,
-		Name:              userInfo.Name,
-		PreferredUsername: userInfo.PreferredUsername,
-		Email:             userInfo.Email,
-		Provider:          userInfo.Provider,
-		ProviderUserID:    userInfo.ProviderUserID,
-		Phone:             userInfo.Phone,
-		TenantID:          userInfo.TenantID,
-		TenantSlug:        userInfo.TenantSlug,
-		PlatformAdmin:     userInfo.PlatformAdmin,
-		PlatformScope:     userInfo.PlatformScope,
-		TenantRoles:       userInfo.TenantRoles,
-	}
-	// cs-user JWTs already carry the canonical subject_id in `sub` —
-	// skip the local users-table resolver entirely. The resolver exists
-	// to bridge Casdoor JWTs (which lack a local subject_id) to the
-	// local table; running it on cs-user JWTs can return stale local
-	// rows whose subject_id predates cs-user (e.g. legacy rows where
-	// users.subject_id was set to Casdoor's universal_id), which then
-	// 404 against cs-user's GET /api/internal/users/:subject_id.
-	if userInfo.Issuer == csUserIssuer {
-		logger.Info("[auth-debug] setAuthContext cs-user JWT: trusting sub=%q directly (resolver skipped)", userID)
-	} else if subjectResolver != nil {
-		resolvedID, resolvedName, err := subjectResolver(authClaims)
-		logger.Info("[auth-debug] setAuthContext resolver in: id=%q sub=%q universal_id=%q provider=%q",
-			authClaims.ID, authClaims.Sub, authClaims.UniversalID, authClaims.Provider)
-		if err == nil {
-			if resolvedID != "" {
-				userID = resolvedID
-			}
-			if resolvedName != "" {
-				userName = resolvedName
-			}
-		} else {
-			logger.Warn("[auth-debug] setAuthContext resolver err=%v", err)
-		}
-		logger.Info("[auth-debug] setAuthContext resolver out: resolved_id=%q resolved_name=%q final_userID=%q", resolvedID, resolvedName, userID)
-	}
+	// cs-user is the sole identity authority — every token that reaches
+	// here is cs-user-signed and carries the canonical subject_id in
+	// `sub`. subjectResolver is only used by authz.Service.
+	// VerifyTokenWithUser for the internal /auth/verify path.
+	// Phase 6.2: AuthClaims aliases VerifiedUserInfo, so the context value
+	// is the verified-info struct itself — no field copy.
+	logger.Debug("[auth-debug] setAuthContext cs-user JWT: trusting sub=%q directly", userID)
 	c.Set(UserIDKey, userID)
 	c.Set(UserNameKey, userName)
-	c.Set(AuthClaimsKey, authClaims)
+	c.Set(AuthClaimsKey, *userInfo)
 }
 
 // cookieDomain mirrors handlers.cookieDomain — Domain attribute used when

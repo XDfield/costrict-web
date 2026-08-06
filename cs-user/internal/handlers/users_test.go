@@ -169,7 +169,7 @@ func newUsersAPI(svc UserService) (*UsersAPI, *gin.Engine) {
 	r.POST("/api/internal/users/transfer-identity", api.TransferIdentity)
 	r.POST("/api/internal/users/:subject_id/bind-identity", api.BindIdentity)
 	r.DELETE("/api/internal/users/:subject_id/identities/:provider", api.UnbindIdentity)
-	// Phase A4b route.
+	// Enterprise mapping route.
 	r.POST("/api/internal/users/apply-enterprise-mapping", api.ApplyEnterpriseMapping)
 	// Admin user-management route (admin-user-migration slice).
 	r.GET("/api/internal/users/list", api.ListUsers)
@@ -927,7 +927,7 @@ func TestUnbindIdentity_ServiceError(t *testing.T) {
 	}
 }
 
-// --- Phase A4b: ApplyEnterpriseMapping handler ---
+// --- ApplyEnterpriseMapping handler ---
 
 // TestApplyEnterpriseMapping_AppliedTrue verifies the happy path: service
 // returns nil → handler responds 200 with `{"applied": true}`.

@@ -1,10 +1,10 @@
-// Platform-tenant CRUD handlers (Phase C2 step D).
+// Platform-tenant CRUD handlers.
 //
 // 7 thin handlers at /api/platform/tenants* that proxy to cs-user's
 // /api/internal/platform/tenants* via RPCClient. The route group is gated
-// by middleware.RequirePlatformAdmin (first real consumer of the C1
-// middleware — previously test-only). cs-user remains the sole owner of
-// tenant data (ADR D1).
+// by middleware.RequirePlatformAdmin (first real consumer of the
+// permission middleware — previously test-only). cs-user remains the sole
+// owner of tenant data (ADR D1).
 //
 // Error mapping (translates RPCClient sentinels → HTTP):
 //   - ErrRPCUnavailable / ErrNotConfigured → 502
@@ -49,8 +49,8 @@ type PlatformTenantAPI struct {
 }
 
 // platformActorCtx returns the request ctx augmented with actor meta
-// (Phase C4.1) derived from AuthClaims. The RPC client forwards the meta
-// as X-Actor-Tenant-Role / X-Actor-Platform-Scope headers so cs-user's
+// derived from AuthClaims. The RPC client forwards the meta as
+// X-Actor-Tenant-Role / X-Actor-Platform-Scope headers so cs-user's
 // audit-log writer captures them. No-op (returns ctx unchanged) when
 // AuthClaims is absent — the route is behind RequirePlatformAdmin so this
 // is defensive only.

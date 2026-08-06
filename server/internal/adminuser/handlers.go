@@ -224,7 +224,7 @@ type setStatusRequest struct {
 	Status string `json:"status" binding:"required"`
 }
 
-// updateProfileRequest is the body for PUT /api/admin/users/:id/profile (R5).
+// updateProfileRequest is the body for PUT /api/admin/users/:id/profile (admin override).
 // Both fields optional, but at least one must be present — empty patch is
 // rejected by cs-user with 400. username empty preserves; display_name null
 // preserves, non-null empty clears to NULL.
@@ -236,7 +236,7 @@ type updateProfileRequest struct {
 // UpdateProfileHandler godoc
 //
 //	@Summary		Override member username / display_name (admin)
-//	@Description	Admin-side profile override (R5). Unlike the user-self PATCH /api/users/me/profile (display_name only), this path may mutate BOTH username and display_name and works regardless of profile_completed_at. Username changes are tenant-scoped-unique-checked (409 on collision). Proxied to cs-user — the source of truth for users.username/display_name. The platform-admin guard is applied by the caller (main.go's /admin group).
+//	@Description	Admin-side profile override. Unlike the user-self PATCH /api/users/me/profile (display_name only), this path may mutate BOTH username and display_name and works regardless of profile_completed_at. Username changes are tenant-scoped-unique-checked (409 on collision). Proxied to cs-user — the source of truth for users.username/display_name. The platform-admin guard is applied by the caller (main.go's /admin group).
 //	@Tags			admin/users
 //	@Accept			json
 //	@Produce		json

@@ -1,4 +1,4 @@
-// rpc_client_tenant.go — Phase B3b.2b-step2b.
+// rpc_client_tenant.go — tenant resolve-by-email RPC client.
 //
 // ResolveTenantByEmail wraps cs-user's POST /api/internal/tenants/resolve-by-email.
 // The server's OAuth callback uses it for the §5 Try 2 layer: when middleware's

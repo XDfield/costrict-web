@@ -26,7 +26,7 @@ func TestPersonaManager_Load_ReturnsHardcoded(t *testing.T) {
 	if p.SoulContent == "" {
 		t.Error("default persona should have SoulContent")
 	}
-	if !strings.Contains(p.SoulContent, "个人助理") {
+	if !strings.Contains(p.SoulContent, "事件处理中心") {
 		t.Error("default persona missing expected content")
 	}
 	if p.IdentityContent != defaultIdentityContent {

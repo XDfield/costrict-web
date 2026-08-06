@@ -96,7 +96,7 @@ type UserServiceConfig struct {
 	InternalToken string // X-Internal-Token value sent to cs-user
 	TimeoutSec    int    // per-request HTTP timeout in seconds, default 10
 	WriteMode     string // "local" (default, writes go through UserService) or "readonly" (writes return ErrWriteBlocked)
-	// ApexDomains enables Host-subdomain tenant-slug resolution (Phase B3b.2a).
+	// ApexDomains enables Host-subdomain tenant-slug resolution.
 	// Empty (default) disables the subdomain layer — local dev mode. Prod
 	// sets e.g. USER_SERVICE_APEX_DOMAINS=example.com,example.cn.
 	ApexDomains []string
@@ -133,6 +133,10 @@ const (
 type ClawAgentConfig struct {
 	EncryptionKey string // AES-256-GCM encryption key for API keys
 	Session       ClawAgentSessionConfig
+	// MemoryEnabled controls whether the agent persists and loads per-user
+	// memory. Default false — memory is NOT loaded into the prompt and the
+	// post-reply Refresh merge is a no-op. Flip to true to opt back in.
+	MemoryEnabled bool
 }
 
 type ClawAgentSessionConfig struct {
@@ -344,8 +348,11 @@ func Load() *Config {
 				CompactionKeepRecentMessages: getEnvInt("CLAWAGENT_SESSION_COMPACTION_KEEP_RECENT", 10),
 				NotificationDelaySeconds:     getEnvInt("AI_NOTIFICATION_DELAY_SECONDS", 30),
 			},
+			// MemoryEnabled: default off. When false, MemoryMgr.Load returns
+			// "" (no memory section in the prompt) and Refresh no-ops.
+			MemoryEnabled: getEnvBool("CLAWAGENT_MEMORY_ENABLED", false),
 		},
-		// ProfileGateEnabled (R3): default off for staged rollout.
+		// ProfileGateEnabled: default off for staged rollout.
 		ProfileGateEnabled: getEnvBool("PROFILE_GATE_ENABLED", false),
 		// SwaggerEnabled: default off — Swagger UI is not mounted unless
 		// explicitly enabled. See field doc above.

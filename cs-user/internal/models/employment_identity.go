@@ -7,15 +7,15 @@ import (
 )
 
 // EmploymentIdentity is the per-user enterprise-identity snapshot written by
-// ApplyEnterpriseMapping in the OAuth callback (lands in Phase A4).
+// ApplyEnterpriseMapping in the OAuth callback.
 //
-// Phase B2 added TenantID + FK to tenants(tenant_id) + the (tenant_id,
-// user_subject_id) composite index. Slice 1 of the field_map feature
-// (2026-07-23) landed EnterpriseUID + a partial unique index on
-// (tenant_id, enterprise_uid) WHERE enterprise_uid IS NOT NULL — slice 2's
-// real provider clients + JWT claims populate the column via the tenant's
-// field_map config. The A1 partial unique index on user_subject_id WHERE
-// deleted_at IS NULL stays as the per-user scope uniqueness guarantee.
+// The model carries TenantID + FK to tenants(tenant_id) + the (tenant_id,
+// user_subject_id) composite index. The field_map feature landed
+// EnterpriseUID + a partial unique index on (tenant_id, enterprise_uid)
+// WHERE enterprise_uid IS NOT NULL — real provider clients + JWT claims
+// populate the column via the tenant's field_map config. The partial unique
+// index on user_subject_id WHERE deleted_at IS NULL stays as the per-user
+// scope uniqueness guarantee.
 //
 // App-layer references to users.subject_id (no SQL FK — same convention as
 // UserAuthIdentity). Sync cadence is driven by next_sync_due_at + the

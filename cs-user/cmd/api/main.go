@@ -86,8 +86,8 @@ func main() {
 	defer rootCancel()
 
 	// Construct the user Service bound to the pool. P0-3 wires only the
-	// read methods; write methods (bind/unbind/transfer) land in Phase A
-	// once JWT-claims plumbing is available.
+	// read methods; write methods (bind/unbind/transfer) require JWT-claims
+	// plumbing and are exposed on the OAuth-callback / admin surfaces.
 	userSvc := user.NewService(pool.Gorm)
 
 	auditSvc := auditlog.NewService(pool.Gorm, nil)
@@ -145,11 +145,10 @@ func main() {
 		logger.L().Info("auto-migrate applied")
 	}
 
-	// Load the JWT signer when configured (Phase A3). When the env var is
+	// Load the JWT signer when configured. When the env var is
 	// unset, signer stays nil and /.well-known/jwks returns 503 — this keeps
-	// Phase A boot optional so a deployment that hasn't cutover to JWT
-	// self-signing can still run. A7 (OAuth callback takeover) will tighten
-	// this to required.
+	// boot optional so a deployment that hasn't cutover to JWT
+	// self-signing can still run. The OAuth callback takeover requires it.
 	var signer *auth.Signer
 	if cfg.JWT.SigningKeyPath != "" {
 		signer, err = auth.NewSignerFromPEMPath(cfg.JWT.SigningKeyPath)

@@ -14,16 +14,16 @@ import (
 	"gorm.io/gorm"
 )
 
-// defaultTenantID mirrors the bootstrap row shipped in A6
-// (tenant_id="default"). Phase A runs in implicit-single-tenant mode per
-// ROADMAP §5; Phase B introduces real tenant routing.
+// defaultTenantID mirrors the bootstrap row shipped by the tenants
+// migration (tenant_id="default"). Deployments that have not wired
+// dynamic tenant routing run in implicit-single-tenant mode.
 const defaultTenantID = "default"
 
 // employmentSyncInterval bounds how often ApplyEnterpriseMapping re-syncs an
 // existing employment_identities row. Repeat logins inside this window skip
-// the provider call. Phase A uses a fixed 24h because per-provider interval
-// config (MULTI_TENANCY §9.2 lines 589-597) ships with the real provider
-// clients in a follow-up.
+// the provider call. The default is a fixed 24h; per-provider interval
+// config (MULTI_TENANCY §9.2 lines 589-597) overrides this where the
+// tenant has configured it.
 const employmentSyncInterval = 24 * time.Hour
 
 // EmploymentMappingParams captures the inputs to ApplyEnterpriseMapping.
@@ -31,7 +31,7 @@ const employmentSyncInterval = 24 * time.Hour
 // churning every caller.
 type EmploymentMappingParams struct {
 	// TenantID is the tenant scope for the config lookup. Empty falls back
-	// to defaultTenantID — Phase A always uses the bootstrap row.
+	// to defaultTenantID (the bootstrap row).
 	TenantID string
 
 	// UserSubjectID is the user's stable application-level identifier
@@ -365,9 +365,9 @@ func (s *Service) loadEmploymentProvidersConfig(ctx context.Context, tenantID st
 }
 
 // upsertEmploymentIdentity writes (or refreshes) the user's
-// employment_identities row. Phase A semantics: update-in-place when a row
-// exists, create when it doesn't. Soft-delete-then-create for audit trail
-// is a follow-up — Phase A's row doesn't carry load-bearing data yet.
+// employment_identities row. Semantics: update-in-place when a row exists,
+// create when it doesn't. Soft-delete-then-create for audit trail is a
+// follow-up — the row doesn't carry load-bearing data yet.
 //
 // The 24h NextSyncDueAt window pairs with a future refresh_if_stale
 // short-circuit: a caller can check time.Now().Before(NextSyncDueAt) to

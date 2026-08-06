@@ -158,7 +158,7 @@ func TestSwaggerUI_DefaultOffReturns404(t *testing.T) {
 
 // TestJWKS_RouteRegisteredAs503WhenSignerMissing confirms /.well-known/jwks is
 // publicly routable (no X-Internal-Token required) and returns 503 when no
-// signer is wired. Phase A3 boot posture: endpoint exists, but signing is
+// signer is wired. Boot posture: endpoint exists, but signing is
 // disabled until the operator sets CS_USER_JWT_SIGNING_KEY_PATH.
 func TestJWKS_RouteRegisteredAs503WhenSignerMissing(t *testing.T) {
 	r := NewRouter(newCfg("tok"), Deps{})
