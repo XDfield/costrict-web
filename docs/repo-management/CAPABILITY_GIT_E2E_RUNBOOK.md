@@ -3,6 +3,8 @@
 > 与 `E2E_TESTING.md` 不同：那份是 Team Namespace API 的 Go 测试套件，
 > **这份是人工执行的真实端到端**，链路为 multica 前端 → costrict-web → Gitea → webhook → worker → csc 落盘。
 > 单测证明不了这条链路——历史上多次"测试全绿但链路是断的"。
+> 跑的过程中出现异常，先查 `V4_TROUBLESHOOTING.md`（症状 → 原因 → 修法）；
+> 需要手工重放 webhook / 触发 resync 见 `V4_OPERATIONS.md`。目录导航见 `README.md`。
 
 ## 0. 为什么必须人工跑
 
@@ -125,6 +127,11 @@ HOME=<隔离HOME> COSTRICT_BASE_URL=http://127.0.0.1:8099 \
 响应里**不含**那段残值；列表仍 200（本就置空 content、零出站，是正确行为）。
 重启后应**无需干预即自愈**。
 
+> 「停进程」这一种故障才映射到 `GIT_CONTENT_UNREACHABLE`。同一族还有四个码
+> （`_MISSING` / `_FORBIDDEN` / `_COORDINATE_INVALID` 都是 502，`_SERVER_UNAVAILABLE` 是 **503**），
+> 分别对应 404 / 401-403 / 行坐标残缺 / git_servers 配置问题 —— 见 `V4_TROUBLESHOOTING.md` §F3。
+> 验收时**断言具体的 error_code**，只断言「5xx」会把配置错误当成 Gitea 挂掉。
+
 ### AC6 灰度回归
 FIX-06 的详情 content、`/download` 字节、订阅、csc 落盘 SHA 与改造前基线**逐字节一致**。
 
@@ -152,9 +159,17 @@ Cloud 显示新版本 → **csc 下一轮 reconcile 后本地副本的 name/vers
 export COSTRICT_PLUGIN_MARKETPLACE_URL=http://127.0.0.1:8099/cloud-api/api/marketplace/costrict-plugins/marketplace.json
 ```
 
-**2. worker 按 ~10 分钟 tick 排空 `git_capability_sync_jobs`，不是按需触发。**
-实测有 job 从 pending 到开始等了 2 分 27 秒；另一轮恰好撞上 tick 只等了 5 秒、看起来像实时。
+**2. `git_capability_sync_jobs` 是轮询排空的，不是按需触发。**
+
+准确的机制（`internal/worker/git_capability_worker.go`）：每个 worker goroutine **每个 tick 只处理
+一个 job**，tick 周期是 `PollInterval`（来自 `WORKER_POLL_INTERVAL_SECONDS`，**默认 30 秒**），
+并发是 `GIT_CAPABILITY_WORKER_CONCURRENCY`（**默认 2**）。
+⇒ 默认吞吐 **4 job/分钟**。`GIT_CAPABILITY_RECONCILE_INTERVAL`（默认 10 分钟）是**周期巡检的入队节奏**，
+不是排空节奏 —— 别把两者混为一谈。
+
+实测有 job 从 pending 到开始等了 2 分 27 秒；另一轮队列刚好空着只等了 5 秒、看起来像实时。
 **验收脚本里不要写秒级等待**，否则会把"还没轮到"误判成"链路断了"。
+判据用「队列是否单调下降」，不是单次快照。
 
 ---
 

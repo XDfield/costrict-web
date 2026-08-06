@@ -3,6 +3,8 @@
 > 适用范围：**skill / subagent / command / mcp** 四类。plugin 走另一条路（marketplace 投影 + mirror），见 §7。
 > 本文是**执行方案**；策略决策见 `.trellis/tasks/08-04-v4-git-registry-rollout/prd.md` 的 U2，
 > 终态定义见 `CAPABILITY_GIT_REGISTRY_PROPOSAL_V4.md` §2.1。
+> 上线序列见 `V4_PRODUCTION_ROLLOUT.md`；迁移中出问题见 `V4_TROUBLESHOOTING.md`；
+> 日常操作（resync / 队列 / git_servers）见 `V4_OPERATIONS.md`。目录导航见 `README.md`。
 
 ## 0. 一句话
 
@@ -38,9 +40,13 @@
 GORM hook（`models/capability_item_git_guard.go`）对 git 行**默认拒绝**所有内容写入，
 git sync worker 自己带放行标记。这样新写的代码不需要记得加守卫 —— 忘了就会被拒绝，而不是悄悄写坏数据。
 
-⚠️ **hook 有四个已知盲区**，它们只能在 SQL 层解决，不要指望 hook：
-`tx.Exec` 裸 SQL · `tx.Table()` · `UpdateColumn(s)`/`Session{SkipHooks}` ·
-`db.Save(&[]T{})` 传 slice（GORM 转成 `Create`+`ON CONFLICT UpdateAll`，`BeforeUpdate` 从不触发）。
+⚠️ **hook 有三个已知盲区**，它们只能在 SQL 层解决，不要指望 hook：
+`tx.Exec` 裸 SQL · `tx.Table()` · `UpdateColumn(s)`/`Session{SkipHooks}`。
+这些调用点必须自带 `content_backend = 'db'` 谓词。
+
+> `db.Save(&[]T{})` 传 slice 曾经是第四个（GORM 转成 `Create`+`ON CONFLICT UpdateAll`，
+> `BeforeUpdate` 确实从不触发），**现已由 `BeforeCreate` → `guardGitOwnedCapabilityUpsert` 堵上**
+> （`models/capability_item_git_guard.go:144`）。旧文档里「四个盲区」的说法已过时。
 
 ---
 
@@ -75,12 +81,34 @@ export CS_BOT_TOKEN_KEY=<base64 32 字节>
 一批出问题时要能一眼看出影响面。
 
 ```bash
+cd server
+export CS_BOT_TOKEN_KEY='<base64 32 字节>'     # 必须真实导出，见 §3
+
 # 1. 先看这批会动什么（默认 dry-run，零写入）
-migrate capability-to-git --owner <subject_id> --type skill
+go run ./cmd/migrate capability-to-git --type=skill --owner=<short_id|subject_id>
 
 # 2. 确认无误后执行
-migrate capability-to-git --owner <subject_id> --type skill --apply
+go run ./cmd/migrate capability-to-git --type=skill --owner=<short_id|subject_id> --confirm
 ```
+
+⚠️ **两个容易写错的地方**：
+
+- **执行开关是 `--confirm`，不是 `--apply`**（`--apply` 会被当成未知 flag 直接报错。
+  用 `--apply` 的是另一个工具 `scripts/import-bundle-to-gitea.sh`，别混）。
+- **flag 必须用 `=` 形式**（`--type=skill`），空格分隔同样报 `unknown flag`。
+
+其余 flag（`cmd/migrate/capability_to_git.go:86 parseCapabilityToGitArgs`）：
+
+| flag | 默认 | 说明 |
+|---|---|---|
+| `--ids=a,b,c` | — | 精确指定 |
+| `--limit=N` | **50** | |
+| `--tenant=<id>` | `default` | |
+| `--include-catalog` | 关 | 默认**跳过** catalog 镜像行（真相在上游 GitHub，republish 会造出第二真相源） |
+| `--clear-stale-content` | 关 | **另一件事**：清空「已经是 git-backed 但还残留旧 content 快照」的行 |
+
+**必须至少给一个 `--type=` / `--owner=` / `--ids=`**，否则命令直接拒绝——
+无范围的 plan 会打出上万条 catalog 镜像，且离误执行只差一个 flag。
 
 ### 4.2 每批必须验证的三件事
 
@@ -134,13 +162,24 @@ plugin 的内容从来不在 DB 列里（`.plugin.json` 是 manifest，真内容
 所以它没有"交出内容所有权"的问题。plugin 的 Git 化 = **把上游仓库镜像进自建 Gitea**，
 让 fork 探测得到，见 `BUNDLE_TO_GITEA_IMPORT.md`。
 
-⚠️ 大批量导入前**必须**配 namespace 排除，否则 discovery 会把每个 mirror 仓库当成新能力项索引，
-造出数千条重复行：
+⚠️ 大批量导入前**必须**确认 namespace 排除生效，否则 discovery 会把每个 mirror 仓库当成新能力项索引，
+造出数千条重复行（本地实测：单个 plugin 仓库能一口气造出 8 / 15 / 28 条）。
+
+排除集合 = **`PLUGIN_GIT_MIRROR_OWNER`（默认 `costrict-plugins-repo`，恒定包含）**
+∪ `GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS`（逗号分隔，默认空）——
+见 `internal/gitcapability/discovery_policy.go:24 DiscoveryOwnerExcluded`。
 
 ```
 PLUGIN_GIT_MIRROR_OWNER=costrict-plugins-repo
-GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS=costrict-plugins-repo
+GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS=costrict-plugins-repo   # 导进默认 namespace 时是冗余的
 ```
+
+⇒ **导进默认 namespace 时第二行可以省**；**导进任何其它 namespace 时，那个 namespace 必须显式加进
+`GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS`**，默认值救不了你。
+
+排除在 **webhook ingress 与 worker 同步两层各执行一次**
+（`handlers/git_capability_webhook.go:163` / `services/git_capability_sync_service.go:235`），
+所以漏配一层不会立刻出事，但两个变量都走裸 `os.Getenv`，**api 与 worker 都要配，且改完必须重启**。
 
 ---
 
@@ -148,10 +187,14 @@ GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS=costrict-plugins-repo
 
 | 差异 | DB-backed | Git-backed |
 |---|---|---|
-| 编辑入口 | 站内编辑 | **跳转 Gitea**（U3 决策：Cloud 只展示不编辑） |
-| 版本号 | 站内版本行 | 取自 frontmatter；**改正文不改版本号** |
-| 历史版本 | `/versions` 可查 | 不服务存量快照，锚点在 git 历史 |
-| Gitea 不可用时 | 无影响 | 详情/下载/assets **502 fail-closed**，不回落旧值 |
+| 编辑入口 | 站内编辑 | **跳转 Gitea**（U3 决策：Cloud 只展示不编辑）；站内写入返回 409 `GIT_BACKED_ITEM` |
+| 版本号 | 站内版本行 | 取自 frontmatter；**改正文不改版本号**。对外投影成 `<version>+<git_sha[:7]>` |
+| 历史版本 | `/versions` 可查 | `/versions` 返回空数组 + `versionBackend:"git"`，取单个版本 404 `GIT_VERSION_NOT_SERVED`；改用 `/git-history` |
+| Gitea 不可用时 | 无影响 | 详情/下载/assets **fail-closed**，不回落旧值；列表仍 200（本就置空 content、零出站） |
+
+Gitea 侧异常按原因分成五个错误码（`GIT_CONTENT_UNREACHABLE` / `_MISSING` / `_FORBIDDEN` /
+`_COORDINATE_INVALID` 都是 502，`GIT_CONTENT_SERVER_UNAVAILABLE` 是 **503**）——
+分诊表见 `V4_TROUBLESHOOTING.md` §F3。
 
 **这些差异对同一个列表里的两种项同时存在**，且列表上不加标记（用户裁决）。
 产品侧需要接受"用户点进去才知道是哪一种"。

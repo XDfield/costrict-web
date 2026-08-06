@@ -3,6 +3,8 @@
 > **脚本**：`scripts/import-bundle-to-gitea.sh`
 > **做什么**：把 costrict marketplace bundle 里的 plugin 仓库导入自建 Gitea，让 Cloud 上的 plugin fork 走 Git 通道而不是回落到旧的 DB 编辑页。
 > **读者**：执行导入的运维/研发。生产执行需单独批准（见 §10）。
+> **上下文**：V4 整体上线序列见 `V4_PRODUCTION_ROLLOUT.md`；导入后出问题（尤其是「冒出一堆重复行」）
+> 见 `V4_TROUBLESHOOTING.md` §F11；目录导航见 `README.md`。
 
 ### 本手册的验证状态（2026-08-04）
 
@@ -312,7 +314,9 @@ ingress/API 层用 owner 排除规则阻止 mirror 被重复发现，worker 层�
 
 **这是导入前必须做决策的一条，不是注意事项。**
 
-Gitea 的 system webhook 是**服务器级**的，push 到**任何**仓库都会投递。webhook ingress（`handlers/git_capability_webhook.go`）**不按 namespace 过滤**：只要是默认分支的 push 就入队一个 sync job；worker 跑到时，如果该仓库没有已绑定的能力行，就走 `discoverGitCapabilities` —— **扫全树、把每一个能被 `classifyGitCapabilityManifest` 认出的文件都建成一条新的 `capability_items` 行**。
+Gitea 的 system webhook 是**服务器级**的，push 到**任何**仓库都会投递。默认分支的 push 会入队一个 sync job；worker 跑到时，如果该仓库没有已绑定的能力行，就走 `discoverGitCapabilities` —— **扫全树、把每一个能被 `classifyGitCapabilityManifest` 认出的文件都建成一条新的 `capability_items` 行**。
+
+**唯一挡住这件事的就是 owner 排除**（`gitcapability.DiscoveryOwnerExcluded`），它在两层各执行一次：webhook ingress（`handlers/git_capability_webhook.go:163` —— owner 被排除**且**该仓库没有任何已绑定的 git 行时，直接 202 `reason=discovery_owner_excluded`，**不入队**）和 worker 同步（`services/git_capability_sync_service.go:235`）。排除名单没配对，两层都拦不住。
 
 本地实测（3 个 mirror + 1 个索引仓库）：
 
@@ -333,6 +337,12 @@ GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS=costrict-plugins-repo
 
 排除在 **ingress/API 层与 worker 层各执行一次**——两层用的是同一份策略，所以既挡得住 webhook 入口，
 也挡得住绕过入口直接入队的路径，不会因为某一层漏配而产生重复能力项。
+
+> **排除集合的精确定义**（`internal/gitcapability/discovery_policy.go:24`）：
+> `PLUGIN_GIT_MIRROR_OWNER`（默认 `costrict-plugins-repo`）**恒定包含在排除集合里**，
+> `GIT_CAPABILITY_DISCOVERY_EXCLUDED_OWNERS` 是在此之上追加。
+> ⇒ 导进默认 namespace 时，上面第二行是**冗余的**（配了也无害）；
+> **导进任何其它 namespace 时，那个 namespace 必须显式加进第二行**，默认值救不了你。
 
 **备选（只在无法改配置时用）**：
 
