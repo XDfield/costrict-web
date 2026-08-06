@@ -224,6 +224,7 @@ fork 侧接住它走 `unavailable("no git server is bound to this tenant")`
 20260806000200  create_git_quota_rules
 20260806000300  extend_capability_sync_tombstone_causes   ← 见 §3「migration 必须先于 api」
 20260806000400  create_plugin_flatten_migration_runs      ← 只建工具表，见 §4.1
+20260806000500  add_capability_sync_tombstone_flatten_cause ← flatten apply 的硬前置，见 §4.1
 ```
 
 > 这个清单会随开发继续增长。**发布前以 `server/migrations/` 下 `2026080[2-9]*` 的实际文件为准**，
@@ -246,16 +247,22 @@ IF EXISTS uq_item_tag`，再建宽键 `uq_item_tag_source (item_id, tag_id, sour
 
 ### 4.1 `flatten-plugins`：唯一顺序相反的一步
 
-`20260806000400_create_plugin_flatten_migration_runs` 本身只建两张工具表，不碰任何业务行，
-放在第 1 步随 goose 跑掉即可。**真正改数据的是 `migrate flatten-plugins apply`，
-它必须排在 api 部署之后**，与本文档其它所有"migrate 先行"的步骤方向相反。
+这一步用到两个 migration，都只改结构、不碰业务行，放在第 1 步随 goose 跑掉即可：
+`20260806000400_create_plugin_flatten_migration_runs` 建两张工具表，
+`20260806000500_add_capability_sync_tombstone_flatten_cause` 放行 apply 要写的
+tombstone 三元组（`package_flattened` / `data_migration`）。后者是**硬前置**：
+apply 在归档行的同一个事务里给每个持有者写移除指令，少了它 CHECK 会拒绝、整批回滚
+（工具表还能被命令自建，这条 CHECK 不能）。
+
+**真正改数据的是 `migrate flatten-plugins apply`，它必须排在 api 部署之后**，
+与本文档其它所有"migrate 先行"的步骤方向相反。
 
 原因是它清理的对象正由 api 产生：旧 api 的 catalog ingest / archive 上传 / fork 三条路径
 都会写 `capability_items.parent_plugin_id`。**先清理再部署 api，就是边清边生**——
 清理跑完那一刻数据是对的，下一次 catalog ingest 又把子项建回来，
 而且新建的行不在任何一次 run 的计划里，审计上无迹可寻。
 
-⇒ **顺序写死：goose（含 20260806000400）→ api+worker（写者已停）→ 观察一轮 ingest 无新增 → 才 apply。**
+⇒ **顺序写死：goose（含 20260806000400 + 20260806000500）→ api+worker（写者已停）→ 观察一轮 ingest 无新增 → 才 apply。**
 
 完整的执行步骤、判据、校验与回滚条件在 **`PLUGIN_FLATTEN_RUNBOOK.md`**（与本文件同目录）。
 **这是该迁移第一次碰真实数据，照着走，不要临场判断。**

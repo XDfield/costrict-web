@@ -107,36 +107,25 @@ func newPluginFlattenPostgresDB(t *testing.T) *gorm.DB {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
-		// The real 20260805000200 + 20260806000300 shape, including the cause
-		// CHECK: the point of the tombstone tests below is that the migration
-		// writes a row the production constraint accepts, so a fixture without
-		// the constraint would prove nothing.
-		`CREATE TABLE capability_sync_tombstones (
-			id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-			user_id VARCHAR(191) NOT NULL,
-			item_id UUID NOT NULL,
-			reason VARCHAR(32) NOT NULL,
-			lifecycle_reason VARCHAR(32),
-			source VARCHAR(32) NOT NULL,
-			event_id VARCHAR(64) NOT NULL,
-			removed_at TIMESTAMPTZ NOT NULL,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			CONSTRAINT uq_capability_sync_tombstones_user_item UNIQUE (user_id, item_id),
-			CONSTRAINT uq_capability_sync_tombstones_event UNIQUE (event_id),
-			CONSTRAINT chk_capability_sync_tombstones_cause CHECK (
-				(reason = 'git_archived' AND source = 'git_lifecycle'
-					AND lifecycle_reason IS NOT NULL
-					AND lifecycle_reason IN ('manifest_removed','default_branch_missing','repository_deleted'))
-				OR (reason = 'unfavorited' AND source = 'favorite' AND lifecycle_reason IS NULL)
-				OR (reason = 'distribution_revoked' AND source = 'distribution' AND lifecycle_reason IS NULL)
-				OR (reason = 'admin_archived' AND source = 'moderation' AND lifecycle_reason IS NULL)
-				OR (reason = 'item_deleted' AND source = 'catalog' AND lifecycle_reason IS NULL)
-			)
-		)`,
 	} {
 		if err := db.Exec(ddl).Error; err != nil {
 			t.Fatalf("create fixture table: %v", err)
+		}
+	}
+	// capability_sync_tombstones comes from the real migrations rather than a
+	// hand-written copy. The point of the tombstone tests below is that this
+	// command writes a row the PRODUCTION cause CHECK accepts, and a copied
+	// constraint proves that only until somebody widens one of the two texts and
+	// not the other — which is exactly what R6-9 caught in this file's own
+	// bootstrap DDL. The list is the table's whole constraint history, in order.
+	for _, file := range []string{
+		"20260805000200_create_capability_sync_tombstones.sql",
+		"20260805000700_constrain_capability_sync_tombstone_triples.sql",
+		"20260806000300_extend_capability_sync_tombstone_causes.sql",
+		"20260806000500_add_capability_sync_tombstone_flatten_cause.sql",
+	} {
+		if err := applyMigrationUpBlock(db, file); err != nil {
+			t.Fatalf("apply tombstone migration: %v", err)
 		}
 	}
 	if err := ensurePluginFlattenTables(db); err != nil {

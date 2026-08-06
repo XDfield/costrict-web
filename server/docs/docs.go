@@ -24439,7 +24439,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "reason": {
-                    "description": "Reason is git_archived | unfavorited | distribution_revoked.",
+                    "description": "Reason explains the removal; it does not authorize it. The tombstone's\nPRESENCE is the instruction, so the set is OPEN by contract and a client\nMUST NOT reject or ignore a value it does not recognise — report it\nverbatim, fall back to generic user-facing wording, and still remove.\nValues emitted today: git_archived | unfavorited | distribution_revoked |\nadmin_archived | item_deleted | package_flattened.",
                     "type": "string"
                 },
                 "removedAt": {
@@ -24447,7 +24447,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "source": {
-                    "description": "Source is the producing subsystem: git_lifecycle | favorite |\ndistribution. It is determined by Reason.",
+                    "description": "Source is the producing subsystem, determined by Reason and paired with it\none-to-one: git_lifecycle | favorite | distribution | moderation |\ncatalog | data_migration. Open for the same reason Reason is.",
                     "type": "string"
                 }
             }

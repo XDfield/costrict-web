@@ -47,11 +47,16 @@
 ### 写死的顺序
 
 ```
-1. goose migration（含 20260806000400，只建两张工具表）
+1. goose migration（含 20260806000400 建两张工具表、20260806000500 放行
+   package_flattened/data_migration 这个 tombstone 三元组）
 2. 部署 api + worker（写者已随代码消失）
 3. 观察一轮 catalog ingest —— 判据见 §2.3
 4. 才 plan / apply
 ```
+
+> `20260806000500` 是**硬前置**，不是可选项：apply 会在归档行的同一个事务里为每个
+> 持有者写 tombstone（见 §4.5），少了它 CHECK 会拒绝，整批事务回滚。
+> 工具表能靠 `ensurePluginFlattenTables` 自建，这条 CHECK **不能**。
 
 > 与本文档其它步骤方向相反：V4 其它所有 migration 都是"migrate 先行"，
 > 只有这个**数据清理**必须在 api 之后。别把两件事混成一条规则。
@@ -68,8 +73,18 @@ psql -c "\dt plugin_flatten_migration_*"
 
 判据：`plugin_flatten_migration_runs` 和 `plugin_flatten_migration_rows` 都在。
 
-> 不在也能跑 —— 命令启动时会用等价的幂等 DDL 自建（`ensurePluginFlattenTables`）。
+> 不在也能跑 —— 命令启动时会跑迁移文件自己的 Up 块自建（`ensurePluginFlattenTables`）。
 > 但如果这里是空的，说明 goose 没跑完，**先去查 goose，别绕过去**。
+
+还要确认 tombstone 的 CHECK 已经放行本命令要写的三元组（这条没有自建兜底）：
+
+```sql
+SELECT pg_get_constraintdef(oid) LIKE '%package_flattened%' AS ready
+FROM pg_constraint WHERE conname = 'chk_capability_sync_tombstones_cause';
+```
+
+判据：`t`。是 `f` 就说明 `20260806000500` 没跑，**apply 会在第一个有持有者的
+归档行上整批失败**（run 停在 `partial`，可按 run id 续跑，但先去补迁移）。
 
 ### 2.2 api 确实是新的 —— **必须逐 pod 问，不能只问一次**
 
@@ -264,7 +279,7 @@ distributions on candidates   0
 归档会让这些行退出快照的 active 集合。而 snapshot v2 里**缺席不是删除信号**
 （截断的分页、失败的请求，在客户端看来和"这条没了"长得一模一样），
 所以 apply 会在**同一个事务**里为每个持有者写一条 tombstone：
-`reason=admin_archived` / `source=moderation`。
+`reason=package_flattened` / `source=data_migration` / `lifecycle_reason IS NULL`。
 
 - 只有**真的发生了 `active → archived`** 的行才写（CAS 命中才算），
   `unlink_only`（不改状态）和 CAS 失败的行都不写。
@@ -279,19 +294,44 @@ apply 之后核对（`<run-id>` 换成你的）：
 SELECT count(*) FROM capability_sync_tombstones t
 JOIN plugin_flatten_migration_rows r ON r.item_id = t.item_id
 WHERE r.run_id = '<run-id>' AND r.row_state = 'applied' AND r.after_status = 'archived'
-  AND t.reason = 'admin_archived';
+  AND t.reason = 'package_flattened' AND t.source = 'data_migration';
 ```
 
 判据：**等于 §4.5 里"归档行上的不同持有者人数"**（同时收藏又被下发的人只算一次）。
 本地基线是 **1**（唯一那条收藏落在一条 `derived_catalog` 行上）。
 
-> `reason` 用的是 `admin_archived` 而不是一个专门的"迁移归档"原因：
-> 原因集合按合约是**开放**的（客户端遇到不认识的 reason 照样移除），
-> 新增一个更诚实的名字是**合约变更**，需要任务负责人拍板 + 一条 CHECK 迁移。
-> 在现有五个里，`admin_archived`/`moderation` 是唯一每一项事实都成立的：
-> 运维主动跑的（`--confirm`）、状态确实变成 `archived`、关系保留、重新上架即恢复。
-> 其余四个都是**假话**（`git_archived` 还会被 Git 灰度开关吞掉、
-> `unfavorited` 是在告诉用户是他自己取消的、`item_deleted` 声称硬删了一条还在的行）。
+顺便确认没有落到别的原因上（应当返回 0 行）：
+
+```sql
+SELECT t.reason, t.source, count(*) FROM capability_sync_tombstones t
+JOIN plugin_flatten_migration_rows r ON r.item_id = t.item_id
+WHERE r.run_id = '<run-id>' AND r.row_state = 'applied' AND r.after_status = 'archived'
+  AND (t.reason <> 'package_flattened' OR t.source <> 'data_migration')
+GROUP BY 1, 2;
+```
+
+> **为什么是专属 reason 而不是 `admin_archived`（2026-08-06 改）**
+>
+> 这条最初写的是 `admin_archived`/`moderation`——现有五个原因里唯一"其余每一项
+> 事实都成立"的一个。但有一项不成立：**没有任何人做过内容判断**。reason 会一路
+> 走到设备，csc 原样打进日志、并据此生成给用户看的措辞，所以"管理员归档了它"是
+> 在把一个来问"我的能力为什么没了"的用户，指向一个根本没发生过的审核决定。
+> 合约的规矩是 reason 与 effect 必须真实——**合法但虚假的行，和内部自相矛盾的行
+> 是同一种病，只是高了一层**。
+>
+> 新增一个原因之所以便宜，正是因为原因集合按合约是**开放**的：tombstone 的
+> **存在**本身就是移除指令，reason 只负责解释。已在 csc `7552786d7` 上核实过
+> 两侧都没有白名单（`snapshot/client.ts` 只校验 reason 是非空字符串、
+> `contract.ts:describeTombstoneReason` 有 `default` 分支），
+> 所以**零客户端改动、无需版本门槛**。
+>
+> `source` 叫 `data_migration` 而不是 `migration`：同一列上已经有 `moderation`，
+> 两个词在日志里一眼看过去太像。
+>
+> **它不受 Git 灰度开关抑制**：`CSC_SNAPSHOT_LIFECYCLE_PROPAGATION_ENABLED`
+> 只压制 `git_archived`。这一点是承重的（开关默认**关**，被压制就等于本命令的
+> 归档在所有未启用 Git 的部署上全部隐形，即 F-27 重演），由
+> `services.TestPackageFlattenTombstone_SurvivesTheGitLifecycleKillSwitch` 钉住。
 
 ### 4.6 artifact 自校验
 

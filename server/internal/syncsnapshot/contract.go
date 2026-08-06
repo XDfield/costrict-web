@@ -29,12 +29,14 @@ const (
 	ReasonDistributionRevoked = "distribution_revoked"
 	ReasonAdminArchived       = "admin_archived"
 	ReasonItemDeleted         = "item_deleted"
+	ReasonPackageFlattened    = "package_flattened"
 
-	SourceGitLifecycle = "git_lifecycle"
-	SourceFavorite     = "favorite"
-	SourceDistribution = "distribution"
-	SourceModeration   = "moderation"
-	SourceCatalog      = "catalog"
+	SourceGitLifecycle  = "git_lifecycle"
+	SourceFavorite      = "favorite"
+	SourceDistribution  = "distribution"
+	SourceModeration    = "moderation"
+	SourceCatalog       = "catalog"
+	SourceDataMigration = "data_migration"
 )
 
 // Entitlement sources reported on an active item.

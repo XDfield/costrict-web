@@ -201,36 +201,49 @@ const pluginFlattenMigrationFile = "20260806000400_create_plugin_flatten_migrati
 // also means the PostgreSQL tests below exercise the DDL production actually
 // gets, instead of certifying a second one that only tests ever see.
 func ensurePluginFlattenTables(db *gorm.DB) error {
-	statements, err := pluginFlattenMigrationStatements()
+	return applyMigrationUpBlock(db, pluginFlattenMigrationFile)
+}
+
+// applyMigrationUpBlock executes one migration file's Up block statement by
+// statement.
+func applyMigrationUpBlock(db *gorm.DB, file string) error {
+	statements, err := migrationUpStatements(file)
 	if err != nil {
 		return err
 	}
 	for _, ddl := range statements {
 		if err := db.Exec(ddl).Error; err != nil {
-			return fmt.Errorf("ensure plugin flatten tables (%.60s...): %w", ddl, err)
+			return fmt.Errorf("apply %s (%.60s...): %w", file, ddl, err)
 		}
 	}
 	return nil
 }
 
-// pluginFlattenMigrationStatements extracts the Up block of the migration and
-// splits it into individual statements.
+// pluginFlattenMigrationStatements extracts the Up block of the flatten
+// migration. Named separately from the generic helper because the test that
+// asserts the splitter's behaviour is about THIS file's contents.
+func pluginFlattenMigrationStatements() ([]string, error) {
+	return migrationUpStatements(pluginFlattenMigrationFile)
+}
+
+// migrationUpStatements extracts the Up block of a migration and splits it into
+// individual statements.
 //
 // Splitting is done here rather than handing the whole block to one Exec because
 // multi-statement execution depends on which wire protocol the driver picks, and
 // a DDL bootstrap must not depend on that. The splitter understands the two
-// things this file actually contains that hold a semicolon: `--` line comments
+// things these files actually contain that hold a semicolon: `--` line comments
 // and single-quoted literals (the COMMENT ON strings). It is deliberately not a
-// general SQL parser — it is asserted against this one file by test.
-func pluginFlattenMigrationStatements() ([]string, error) {
-	raw, err := migrations.FS.ReadFile(pluginFlattenMigrationFile)
+// general SQL parser — it is asserted against real files by test.
+func migrationUpStatements(file string) ([]string, error) {
+	raw, err := migrations.FS.ReadFile(file)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", pluginFlattenMigrationFile, err)
+		return nil, fmt.Errorf("read %s: %w", file, err)
 	}
 	body := string(raw)
 	start := strings.Index(body, "-- +goose Up")
 	if start < 0 {
-		return nil, fmt.Errorf("%s has no Up block", pluginFlattenMigrationFile)
+		return nil, fmt.Errorf("%s has no Up block", file)
 	}
 	body = body[start+len("-- +goose Up"):]
 	if end := strings.Index(body, "-- +goose Down"); end >= 0 {
@@ -248,7 +261,7 @@ func pluginFlattenMigrationStatements() ([]string, error) {
 
 	statements := splitSQLStatements(clean.String())
 	if len(statements) == 0 {
-		return nil, fmt.Errorf("%s Up block contains no statements", pluginFlattenMigrationFile)
+		return nil, fmt.Errorf("%s Up block contains no statements", file)
 	}
 	return statements, nil
 }
@@ -619,28 +632,42 @@ func applyPluginFlattenBatch(db *gorm.DB, runID string, rows []pluginFlattenPlan
 // definition of "off the shelf" used by the moderation paths; asking the same
 // question a different way here is how one of the two ends up not asking it.
 //
-// # Why the reason is admin_archived
+// # Why the reason is package_flattened and not admin_archived
 //
-// The set is open by contract, and the honest name for this cause would be its
-// own — "a data migration retired a package-derived row". Minting one is a
-// contract change (a CHECK constraint, a const, and a line of documentation that
-// says what it means), and that decision belongs to the task owner rather than
-// to this fix. Among the five reasons that exist, admin_archived/moderation is
-// the only one whose every factual claim is true here: an operator deliberately
-// ran this (`--confirm`, `--created-by`), the row's status is now `archived`,
-// the favorite/receipt rows are preserved, and reactivating the item supersedes
-// the tombstone under the same item id. Each alternative is an outright lie with
-// a cost attached — `git_archived` requires a Git event that did not happen AND
-// is suppressed while the Git rollout flag is off, so the removal would be
-// silently swallowed; `unfavorited` tells the user they did this themselves;
-// `distribution_revoked` points them at a distribution that never existed; and
-// `item_deleted` claims a hard delete of a row that is still there and is
-// rollback-restorable. Imprecise in one word beats false in the whole sentence.
+// This first shipped as `admin_archived`/`moderation`, because that was the only
+// existing triple whose every OTHER claim was true. One claim was not: no
+// moderator looked at anything. The reason travels to the device, csc logs it
+// verbatim and derives the user's wording from it, so "an administrator archived
+// this" points a user asking why their capability vanished at a decision nobody
+// made about content nobody read. The contract's rule is that reason and effect
+// must be truthful, and a legal-but-false row is the same disease as an
+// internally inconsistent one, one layer up.
+//
+// Minting a reason is cheap precisely because the set is open by contract: the
+// tombstone's presence IS the instruction and `reason` only explains it, so a
+// client that does not recognise this value still removes and reports the string
+// verbatim. No csc release, drain window or minimum-version gate is involved.
+// The alternatives remain what they were — `git_archived` requires a Git event
+// that did not happen AND is suppressed while the Git rollout flag is off, so
+// the removal would be silently swallowed; `unfavorited` tells the user they did
+// this themselves; `distribution_revoked` points them at a distribution that
+// never existed; `item_deleted` claims a hard delete of a row that is still
+// there and is rollback-restorable.
+//
+// # Why no rollout flag gates it
+//
+// `data_migration` is not a Git source, so the snapshot service's
+// LifecyclePropagation kill switch — which suppresses `git_archived` only —
+// leaves it alone. That is load-bearing, not incidental: the flag is OFF by
+// default, so a cause it suppressed would make every archive this command
+// performs invisible on every deployment that has not enabled Git, which is
+// F-27 again. services.TestPackageFlattenTombstone_SurvivesTheGitLifecycleKillSwitch
+// pins it.
 func recordPluginFlattenRemovalTx(tx *gorm.DB, r pluginFlattenPlanRow, removedAt time.Time) error {
 	if r.BeforeStatus != "active" || !models.IsCapabilityHiddenStatus(r.AfterStatus) {
 		return nil
 	}
-	if _, err := services.RecordAdminArchiveTombstonesTx(tx, r.ItemID, removedAt); err != nil {
+	if _, err := services.RecordPackageFlattenTombstonesTx(tx, r.ItemID, removedAt); err != nil {
 		return fmt.Errorf("record removal tombstones for %s: %w", r.ItemID, err)
 	}
 	return nil

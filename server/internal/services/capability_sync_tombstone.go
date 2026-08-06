@@ -71,6 +71,8 @@ var ErrInvalidTombstoneCause = errors.New("invalid capability sync tombstone cau
 //     `WHERE status = 'active'` predicate claimed the transition.
 //   - the cascade delete calls RecordItemDeleteTombstonesTx once per item, and
 //     before it removes the favorites and receipts the holder set is read from.
+//   - `migrate flatten-plugins` calls RecordPackageFlattenTombstonesTx only when
+//     its own compare-and-set UPDATE reported one affected row.
 //
 // Over-rotation is chosen where the two are genuinely ambiguous (a user
 // unfavoriting an item that a Git archive already tombstoned): csc re-applying
@@ -173,8 +175,26 @@ func RecordItemDeleteTombstonesTx(tx *gorm.DB, itemID string, deletedAt time.Tim
 	return recordHolderTombstonesTx(tx, itemID, models.SyncTombstoneReasonItemDeleted, "", deletedAt)
 }
 
+// RecordPackageFlattenTombstonesTx is the data-migration entry point:
+// `migrate flatten-plugins` archived a package-derived Plugin child row under
+// the flat capability model.
+//
+// Same calling contract as the other archiving writers: call it ONLY from inside
+// the transaction whose compare-and-set proved this run moved the row off the
+// shelf. The command applies its writes as raw SQL, so `RowsAffected == 1` on
+// its own UPDATE is the proof — see recordPluginFlattenRemovalTx.
+//
+// It has its own reason rather than reusing admin_archived because the reason is
+// shown to the user. Nothing about this removal is a moderation decision: no one
+// looked at the capability, and the row is restorable by `rollback-apply`.
+// Favorites and receipts are preserved, so a rollback reactivates the item and
+// the active item supersedes this tombstone on its own.
+func RecordPackageFlattenTombstonesTx(tx *gorm.DB, itemID string, archivedAt time.Time) (int, error) {
+	return recordHolderTombstonesTx(tx, itemID, models.SyncTombstoneReasonPackageFlattened, "", archivedAt)
+}
+
 // recordHolderTombstonesTx tombstones every current holder of an item with one
-// cause. Shared by all three entry points so "who held this" has exactly one
+// cause. Shared by all four entry points so "who held this" has exactly one
 // definition.
 func recordHolderTombstonesTx(tx *gorm.DB, itemID, reason, lifecycleReason string, removedAt time.Time) (int, error) {
 	if itemID == "" {
@@ -293,6 +313,11 @@ func tombstoneSourceFor(reason, lifecycleReason string) (string, error) {
 			return "", fmt.Errorf("%w: item_deleted carries no lifecycle reason, got %q", ErrInvalidTombstoneCause, lifecycleReason)
 		}
 		return models.SyncTombstoneSourceCatalog, nil
+	case models.SyncTombstoneReasonPackageFlattened:
+		if lifecycleReason != "" {
+			return "", fmt.Errorf("%w: package_flattened carries no lifecycle reason, got %q", ErrInvalidTombstoneCause, lifecycleReason)
+		}
+		return models.SyncTombstoneSourceDataMigration, nil
 	default:
 		return "", fmt.Errorf("%w: unknown reason %q", ErrInvalidTombstoneCause, reason)
 	}

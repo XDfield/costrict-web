@@ -123,15 +123,21 @@ type CapabilitySyncSnapshotItem struct {
 // restore is a distinct event rather than one the client has already applied.
 type CapabilitySyncSnapshotTombstone struct {
 	ItemID string `json:"itemId"`
-	// Reason is git_archived | unfavorited | distribution_revoked.
+	// Reason explains the removal; it does not authorize it. The tombstone's
+	// PRESENCE is the instruction, so the set is OPEN by contract and a client
+	// MUST NOT reject or ignore a value it does not recognise — report it
+	// verbatim, fall back to generic user-facing wording, and still remove.
+	// Values emitted today: git_archived | unfavorited | distribution_revoked |
+	// admin_archived | item_deleted | package_flattened.
 	Reason string `json:"reason"`
 	// LifecycleReason is manifest_removed | default_branch_missing |
 	// repository_deleted, and is present only for reason=git_archived. It is
 	// null — never omitted — for the other reasons, so the key set of a
 	// tombstone is fixed.
 	LifecycleReason *string `json:"lifecycleReason"`
-	// Source is the producing subsystem: git_lifecycle | favorite |
-	// distribution. It is determined by Reason.
+	// Source is the producing subsystem, determined by Reason and paired with it
+	// one-to-one: git_lifecycle | favorite | distribution | moderation |
+	// catalog | data_migration. Open for the same reason Reason is.
 	Source string `json:"source"`
 	// EventID is durable and globally unique. Apply each id at most once.
 	EventID string `json:"eventId"`

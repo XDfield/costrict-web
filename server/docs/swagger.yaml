@@ -2124,15 +2124,22 @@ definitions:
           tombstone is fixed.
         type: string
       reason:
-        description: Reason is git_archived | unfavorited | distribution_revoked.
+        description: |-
+          Reason explains the removal; it does not authorize it. The tombstone's
+          PRESENCE is the instruction, so the set is OPEN by contract and a client
+          MUST NOT reject or ignore a value it does not recognise — report it
+          verbatim, fall back to generic user-facing wording, and still remove.
+          Values emitted today: git_archived | unfavorited | distribution_revoked |
+          admin_archived | item_deleted | package_flattened.
         type: string
       removedAt:
         description: RemovedAt is the server time of the removal transition (RFC 3339).
         type: string
       source:
         description: |-
-          Source is the producing subsystem: git_lifecycle | favorite |
-          distribution. It is determined by Reason.
+          Source is the producing subsystem, determined by Reason and paired with it
+          one-to-one: git_lifecycle | favorite | distribution | moderation |
+          catalog | data_migration. Open for the same reason Reason is.
         type: string
     type: object
   internal_handlers.ConsistencyCheckResponse:

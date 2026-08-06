@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/costrict/costrict-web/server/internal/models"
 	"gorm.io/gorm"
 )
 
@@ -97,11 +98,13 @@ func TestPluginFlatten_ApplyTombstonesEveryHolderOfARowItArchived(t *testing.T) 
 			t.Errorf("holder %s of an archived row received no removal instruction", user)
 			continue
 		}
-		// The cause has to be one the production CHECK accepts AND one that is
-		// not suppressed by the Git rollout flag; see recordPluginFlattenRemovalTx
-		// for why this pair and not another.
-		if got[0] != "admin_archived" || got[1] != "moderation" {
-			t.Errorf("holder %s tombstoned as %s/%s", user, got[0], got[1])
+		// The cause has to be one the production CHECK accepts, one that is not
+		// suppressed by the Git rollout flag, and one that is TRUE — nobody
+		// moderated anything here. See recordPluginFlattenRemovalTx.
+		if got[0] != models.SyncTombstoneReasonPackageFlattened ||
+			got[1] != models.SyncTombstoneSourceDataMigration {
+			t.Errorf("holder %s tombstoned as %s/%s, want package_flattened/data_migration",
+				user, got[0], got[1])
 		}
 	}
 

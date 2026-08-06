@@ -20,6 +20,15 @@ const (
 	// SyncTombstoneReasonItemDeleted is a catalog hard delete: the item row and
 	// its dependents were removed outright.
 	SyncTombstoneReasonItemDeleted = "item_deleted"
+	// SyncTombstoneReasonPackageFlattened is a data migration retiring a
+	// package-derived Plugin child row (`migrate flatten-plugins`): the row was a
+	// duplicate projection of a file inside another item's package, and the flat
+	// capability model has no place for it.
+	//
+	// It exists rather than borrowing admin_archived because no moderator looked
+	// at anything — the reason reaches the device and the user, and telling them
+	// an administrator judged their capability would be false.
+	SyncTombstoneReasonPackageFlattened = "package_flattened"
 )
 
 // Which subsystem produced the tombstone. Determined by Reason; the pairing is
@@ -30,6 +39,10 @@ const (
 	SyncTombstoneSourceDistribution = "distribution"
 	SyncTombstoneSourceModeration   = "moderation"
 	SyncTombstoneSourceCatalog      = "catalog"
+	// SyncTombstoneSourceDataMigration is an operational data migration. Spelled
+	// out rather than "migration" because this same column already carries
+	// "moderation", and the two are near-homographs in a log line.
+	SyncTombstoneSourceDataMigration = "data_migration"
 )
 
 // CapabilitySyncTombstone is the durable, explicit "this user no longer has
