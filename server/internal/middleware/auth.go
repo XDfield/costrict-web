@@ -352,6 +352,18 @@ func introspectToken(token string) (*VerifiedUserInfo, error) {
 	if token == "" {
 		return nil, errInvalidToken
 	}
+	// JWT-shape heuristic: cs-user only signs JWTs (exactly 3 dot-separated
+	// segments — header.payload.signature). Device tokens are random 32-byte
+	// base64-URL strings with no dots; rejecting them here avoids burning a
+	// cs-user verify RPC that would 401 anyway. This is the universal safety
+	// net for device-token-only routes that escape the OptionalAuth path
+	// whitelist (e.g. future routes registered before OptionalAuth is mounted,
+	// or handlers under requireUserOrDeviceAuth that opt into device auth).
+	// OptionalAuth fails open on errInvalidToken; RequireAuth returns 401;
+	// requireUserOrDeviceAuth falls back to VerifyDeviceToken.
+	if strings.Count(token, ".") != 2 {
+		return nil, errInvalidToken
+	}
 
 	sum := sha256.Sum256([]byte(token))
 	cacheKey := hex.EncodeToString(sum[:])
@@ -482,6 +494,34 @@ func introspectTokenViaCSUser(cfg tokenVerifierConfig, token string) (*VerifiedU
 	return info, nil
 }
 
+// deviceTokenRoutePrefixes lists path prefixes mounted WITHOUT RequireAuth
+// whose handlers authenticate via DeviceService.VerifyDeviceToken (an opaque
+// base64 token, never a JWT). OptionalAuth skips cs-user introspection for
+// these so a device-token request doesn't burn a verify RPC (which would 401
+// anyway) on every poll. The handler still runs VerifyDeviceToken itself.
+//
+// Precise prefixes only — `/cloud/device/:deviceID/proxy/*path` requires
+// RequireAuth and must NOT be whitelisted, so `/cloud/device/` (bare) is
+// intentionally absent. The JWT-shape heuristic in introspectToken is the
+// universal safety net for any device-only route missed here; this list is
+// the explicit primary filter.
+var deviceTokenRoutePrefixes = []string{
+	"/cloud/device/notify",      // covers /notify and /notify/responded
+	"/cloud/device/gateway-assign",
+	"/cloud/devices/",           // :deviceID/commands/:commandID/result etc.
+}
+
+// isDeviceTokenRoute reports whether the request path is served by a
+// device-token-only handler. See deviceTokenRoutePrefixes for the contract.
+func isDeviceTokenRoute(path string) bool {
+	for _, prefix := range deviceTokenRoutePrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // OptionalAuth delegates token verification to cs-user via introspectToken.
 // Tokens that fail verification are silently ignored (no auth context
 // populated) so unauthenticated clients can still hit optional routes.
@@ -489,8 +529,18 @@ func introspectTokenViaCSUser(cfg tokenVerifierConfig, token string) (*VerifiedU
 // request degrades to anonymous rather than failing closed, because
 // optional routes (public reads, swagger, etc.) must stay reachable even
 // during a cs-user outage.
+//
+// Device-token-only routes (see deviceTokenRoutePrefixes) short-circuit
+// before introspection: the handler authenticates via VerifyDeviceToken, so
+// spending a cs-user RPC here is pure waste. The whitelist is the primary
+// filter; the JWT-shape check in introspectToken is the universal fallback.
 func OptionalAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if isDeviceTokenRoute(c.Request.URL.Path) {
+			c.Next()
+			return
+		}
+
 		token := ExtractToken(c)
 		if token == "" {
 			c.Next()
