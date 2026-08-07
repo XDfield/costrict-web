@@ -715,14 +715,23 @@ func (s *Service) GetEmploymentIdentitiesBySubjectIDs(ctx context.Context, subje
 // BuildExternalKey). Returns ("", nil) when no user matches — caller treats
 // as "no employment context" rather than failing.
 //
-// Used by the reissue-token handler as a fallback when the server-supplied
-// user_subject_id doesn't match any employment_identities row: server's
-// GetOrCreate can generate a new subject_id while cs-user reuses its existing
-// one (single-source-of-truth on cs-user's side). The handler resolves the
-// cs-user-authoritative subject_id via this lookup and re-queries employment.
+// Lookup chain mirrors GetOrCreateUser (service.go) and GetUserByIdentity
+// (this file):
+//  1. user_auth_identities.external_key → user_subject_id, then confirm the
+//     subject exists in users. This is the authoritative source — login-source
+//     identifiers live only here after the legacy users.casdoor_* columns
+//     were dropped (f90fd54). users.external_key is a denormalized cache that
+//     GetOrCreateUser backfills on each login, so rows that have not logged
+//     in since the column shipped (migration 20260721170000) carry NULL on
+//     users but are still resolvable through the identity row.
+//  2. users.external_key (denormalized cache) — kept as a fallback for rows
+//     where the identity row was somehow lost but the cache survives.
 //
-// Empty externalKey short-circuits to ("", nil) — caller can call without
-// pre-checking. Soft-deleted users are excluded by gorm's DeletedAt handling.
+// Used by both ReissueToken (OAuth callback) and VerifyToken (per-request
+// introspection) to resolve the cs-user-authoritative subject_id from a
+// Casdoor JWT. Empty externalKey short-circuits to ("", nil) — caller can
+// call without pre-checking. Soft-deleted rows on both tables are excluded
+// by gorm's DeletedAt handling.
 func (s *Service) GetSubjectIDByExternalKey(ctx context.Context, externalKey string) (string, error) {
 	if s == nil || s.db == nil {
 		return "", errors.New("user.Service: nil db")
@@ -730,17 +739,33 @@ func (s *Service) GetSubjectIDByExternalKey(ctx context.Context, externalKey str
 	if externalKey == "" {
 		return "", nil
 	}
-	var u models.User
-	err := s.db.WithContext(ctx).
-		Where("external_key = ?", externalKey).
-		Take(&u).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return "", nil
+	db := s.db.WithContext(ctx)
+
+	// Path 1: identity row is authoritative. The unique index on
+	// user_auth_identities.external_key guarantees at most one match.
+	var ident models.UserAuthIdentity
+	if err := db.Where("external_key = ?", externalKey).Take(&ident).Error; err == nil {
+		var u models.User
+		if err := db.Where("subject_id = ?", ident.UserSubjectID).Take(&u).Error; err == nil {
+			return u.SubjectID, nil
+		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", fmt.Errorf("query user by subject_id: %w", err)
+		}
+		// Identity exists but user missing/soft-deleted — fall through to
+		// path 2 before giving up.
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", fmt.Errorf("query identity by external_key: %w", err)
 	}
-	if err != nil {
+
+	// Path 2: denormalized cache on users. Rare in production but kept so
+	// the lookup degrades gracefully rather than dropping users.
+	var u models.User
+	if err := db.Where("external_key = ?", externalKey).Take(&u).Error; err == nil {
+		return u.SubjectID, nil
+	} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return "", fmt.Errorf("query user by external_key: %w", err)
 	}
-	return u.SubjectID, nil
+	return "", nil
 }
 
 // GetUserByIdentity resolves a user from a Casdoor-side identity handle
