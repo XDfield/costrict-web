@@ -35,6 +35,7 @@ jobs:
     outputs:
       services: ${{ steps.set-services.outputs.services }}
       version: ${{ steps.version.outputs.version }}
+      publish_latest: ${{ steps.version.outputs.publish_latest }}
       should_push: ${{ steps.set-push.outputs.should_push }}
       build_efficiency_dashboard: ${{ steps.set-services.outputs.build_efficiency_dashboard }}
     steps:
@@ -53,7 +54,16 @@ jobs:
             TAG="${GITHUB_REF#refs/tags/}"
             VERSION="${TAG#v}"
           fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "Invalid version: $VERSION" >&2
+            exit 1
+          fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+          if [[ "$VERSION" == *-* ]]; then
+            echo "publish_latest=false" >> $GITHUB_OUTPUT
+          else
+            echo "publish_latest=true" >> $GITHUB_OUTPUT
+          fi
           echo "Version: $VERSION"
 
       - name: Set services to build
@@ -181,6 +191,14 @@ jobs:
           echo "dockerfile=$DOCKERFILE" >> $GITHUB_OUTPUT
           echo "image_name=$IMAGE_NAME" >> $GITHUB_OUTPUT
           echo "image_tag=${{ env.REGISTRY }}/${IMAGE_NAME}:${VERSION}" >> $GITHUB_OUTPUT
+          {
+            echo "tags<<EOF"
+            echo "${{ env.REGISTRY }}/${IMAGE_NAME}:${VERSION}"
+            if [ "${{ needs.prepare.outputs.publish_latest }}" = "true" ]; then
+              echo "${{ env.REGISTRY }}/${IMAGE_NAME}:latest"
+            fi
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
 
       - name: Set build args
         id: build_args
@@ -197,9 +215,7 @@ jobs:
           context: ${{ steps.image.outputs.context }}
           file: ${{ steps.image.outputs.dockerfile }}
           push: ${{ needs.prepare.outputs.should_push == 'true' }}
-          tags: |
-            ${{ env.REGISTRY }}/${{ steps.image.outputs.image_name }}:${{ needs.prepare.outputs.version }}
-            ${{ env.REGISTRY }}/${{ steps.image.outputs.image_name }}:latest
+          tags: ${{ steps.image.outputs.tags }}
           build-args: ${{ steps.build_args.outputs.args }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -253,7 +269,7 @@ jobs:
           push: true
           tags: |
             ${{ env.REGISTRY }}/efficiency-dashboard-backend:${{ needs.prepare.outputs.version }}
-            ${{ env.REGISTRY }}/efficiency-dashboard-backend:latest
+            ${{ needs.prepare.outputs.publish_latest == 'true' && format('{0}/efficiency-dashboard-backend:latest', env.REGISTRY) || '' }}
           build-args: VERSION=${{ needs.prepare.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
