@@ -1427,3 +1427,74 @@ func TestGetEmploymentIdentity_NilDBGuard(t *testing.T) {
 		t.Fatal("expected error from nil-receiver Service, got nil")
 	}
 }
+
+// TestGetSubjectIDByExternalKey_IdentityRowOnly covers the production
+// regression: a user_auth_identities row exists but users.external_key is
+// NULL (the user hasn't logged in since the column shipped). The lookup
+// must still resolve via the identity row — querying users.external_key
+// alone misses these rows and breaks the VerifyToken fallback path.
+func TestGetSubjectIDByExternalKey_IdentityRowOnly(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+
+	const subjectID = "usr_phone_25c2130d"
+	const externalKey = "casdoor:phone:b74e5889-546e-4cc9-9ec5-a0f3de1874c0"
+
+	// User row WITHOUT external_key populated (NULL on users).
+	if err := svc.db.Create(&models.User{
+		TenantID:  "default",
+		SubjectID: subjectID,
+		ShortID:   "u-phonetest",
+		Username:  "phone-user",
+	}).Error; err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	// Identity row carries the durable external_key.
+	if err := svc.db.Create(&models.UserAuthIdentity{
+		TenantID:      "default",
+		UserSubjectID: subjectID,
+		Provider:      "phone",
+		ExternalKey:   externalKey,
+		IsPrimary:     true,
+	}).Error; err != nil {
+		t.Fatalf("seed identity: %v", err)
+	}
+
+	got, err := svc.GetSubjectIDByExternalKey(t.Context(), externalKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != subjectID {
+		t.Errorf("got subject_id=%q, want %q (users.external_key is NULL; must resolve via identity)", got, subjectID)
+	}
+}
+
+// TestGetSubjectIDByExternalKey_NoMatch returns ("", nil) when neither
+// user_auth_identities nor users carries the key — preserves the existing
+// "no row" contract callers depend on (treat as 401, not as an error).
+func TestGetSubjectIDByExternalKey_NoMatch(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+
+	got, err := svc.GetSubjectIDByExternalKey(t.Context(), "casdoor:phone:nope")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got subject_id=%q, want empty string", got)
+	}
+}
+
+// TestGetSubjectIDByExternalKey_EmptyInput short-circuits on empty key.
+func TestGetSubjectIDByExternalKey_EmptyInput(t *testing.T) {
+	t.Parallel()
+	svc := newEmploymentMappingService(t)
+
+	got, err := svc.GetSubjectIDByExternalKey(t.Context(), "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("got subject_id=%q, want empty string", got)
+	}
+}
