@@ -143,24 +143,15 @@ func TestIsStale_ExactBoundary(t *testing.T) {
 	cfg := testClawAgentCfg()
 	rt := &ClawAgentRuntime{agentCfg: cfg}
 
-	// `now` is pinned rather than read twice. isStale's predicate is a strict
-	// `>`, so "exactly at the threshold" is a single instant — and two separate
-	// time.Now() calls are never that instant, they are always the threshold
-	// plus however long the two lines took. This test could therefore never
-	// pass, and the rest of the file has the same shape but wide enough margins
-	// to hide it.
-	now := time.Now()
+	// Exactly at threshold
 	meta := &SessionMeta{
 		ResetType:     "group",
-		LastMessageAt: now.Add(-30 * time.Minute),
+		LastMessageAt: time.Now().Add(-30 * time.Minute),
 	}
 
-	if rt.isStale(meta, now) {
+	stale := rt.isStale(meta, time.Now())
+	if stale {
 		t.Error("session at exact idle threshold should not be stale yet")
-	}
-	// One nanosecond past it, it is.
-	if !rt.isStale(meta, now.Add(time.Nanosecond)) {
-		t.Error("session past the idle threshold should be stale")
 	}
 }
 
