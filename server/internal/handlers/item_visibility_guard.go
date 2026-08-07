@@ -146,7 +146,9 @@ func applyGitBrowseVisibilityFilter(query *gorm.DB, c *gin.Context, db *gorm.DB)
 	}
 
 	return query.Where(
-		"content_backend <> ? OR (git_visibility_verified_at IS NOT NULL AND git_visibility_verified_at >= ?) OR created_by = ? OR EXISTS (SELECT 1 FROM repo_members WHERE repo_members.repo_id = capability_items.repo_id AND repo_members.user_id = ?)",
+		// repo_members.repo_id is UUID in PostgreSQL, while capability_items.repo_id
+		// is text because it also admits sentinel values such as "public".
+		"content_backend <> ? OR (git_visibility_verified_at IS NOT NULL AND git_visibility_verified_at >= ?) OR created_by = ? OR EXISTS (SELECT 1 FROM repo_members WHERE CAST(repo_members.repo_id AS TEXT) = capability_items.repo_id AND repo_members.user_id = ?)",
 		contentBackendGit, cutoff, userID, userID,
 	)
 }

@@ -14,6 +14,7 @@ package handlers
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +24,7 @@ import (
 	"github.com/costrict/costrict-web/server/internal/middleware"
 	"github.com/costrict/costrict-web/server/internal/models"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // Item ids are real UUIDs because capability_items.id is a PostgreSQL `uuid`
@@ -67,6 +69,28 @@ func guardedItemPaths(itemID string) []string {
 		"/api/items/" + itemID + "/versions",
 		"/api/items/" + itemID + "/git-history",
 		"/api/items/" + itemID + "/download",
+	}
+}
+
+func TestApplyGitBrowseVisibilityFilter_UsesTextRepositoryIDBoundary(t *testing.T) {
+	defer setupTestDB(t)()
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set(middleware.UserIDKey, "usr_550e8400-e29b-41d4-a716-446655440000")
+
+	db := database.GetDB()
+	query := applyGitBrowseVisibilityFilter(
+		db.Session(&gorm.Session{DryRun: true}).Model(&models.CapabilityItem{}),
+		c,
+		db,
+	)
+	result := query.Find(&[]models.CapabilityItem{})
+	if result.Error != nil {
+		t.Fatalf("build visibility query: %v", result.Error)
+	}
+	const boundary = "CAST(repo_members.repo_id AS TEXT) = capability_items.repo_id"
+	if sql := result.Statement.SQL.String(); !strings.Contains(sql, boundary) {
+		t.Fatalf("visibility query omitted UUID-to-text repository boundary: %s", sql)
 	}
 }
 
